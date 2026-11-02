@@ -1,4 +1,4 @@
-# AP Sentinel — Enterprise Accounts Payable Fraud & Duplicate Detection
+# Blus Invoice Agent — Enterprise Accounts Payable Fraud & Duplicate Detection
 
 A full-stack enterprise React 19 + Express application designed to detect, review, and prevent invoice fraud, duplicates, and tax non-compliance before posting to the general ledger.
 
