@@ -1,0 +1,9 @@
+{
+  "name": "AP Sentinel",
+  "description": "Invoice fraud and duplicate checks for Accounts Payable with 14-rule risk engine, S/4HANA extract batch checks, Fiori review queue, and tamper-evident audit log",
+  "version": "1.0.0",
+  "permissions": [],
+  "capabilities": [
+    "MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"
+  ]
+}

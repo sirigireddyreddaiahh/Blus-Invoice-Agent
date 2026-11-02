@@ -50,6 +50,7 @@ function similarity(a, b) {
 
 // Indian financial year (April to March): 2026-10-30 -> "2026-27"
 function fiscalYear(isoDate) {
+  if (!isoDate || typeof isoDate !== 'string' || !isoDate.includes('-')) return 'UNKNOWN';
   const [y, m] = isoDate.split('-').map(Number);
   const start = m >= 4 ? y : y - 1;
   return `${start}-${String((start + 1) % 100).padStart(2, '0')}`;
@@ -57,9 +58,12 @@ function fiscalYear(isoDate) {
 
 const dayMs = 86400000;
 const toMs = (iso) => Date.parse(iso + 'T00:00:00Z');
-const daysBetween = (a, b) => Math.abs(toMs(a) - toMs(b)) / dayMs;
-const isSunday = (iso) => new Date(toMs(iso)).getUTCDay() === 0;
-const stateOf = (gstin) => (gstin ? gstin.slice(0, 2) : null);
+const daysBetween = (a, b) => {
+  if (!a || !b) return 9999;
+  return Math.abs(toMs(a) - toMs(b)) / dayMs;
+};
+const isSunday = (iso) => (iso ? new Date(toMs(iso)).getUTCDay() === 0 : false);
+const stateOf = (gstin) => (gstin && gstin.length >= 2 ? gstin.slice(0, 2) : null);
 const num = (v) => (v === undefined || v === null || v === '' ? 0 : Number(v));
 
 function dupKeyOf(inv) {

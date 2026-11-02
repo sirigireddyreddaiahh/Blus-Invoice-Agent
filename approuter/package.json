@@ -1,8 +1,11 @@
 {
-  "name": "ap-sentinel-approuter",
-  "version": "0.1.0",
-  "private": true,
-  "description": "Approuter: XSUAA login in front of the CAP service and the starter UI",
-  "scripts": { "start": "node node_modules/@sap/approuter/approuter.js" },
-  "dependencies": { "@sap/approuter": "^23" }
+  "name": "duplicate-invoice-detection-agent-approuter",
+  "version": "1.0.0",
+  "description": "Approuter for Duplicate Invoice Detection Agent",
+  "scripts": {
+    "start": "node node_modules/@sap/approuter/approuter.js"
+  },
+  "dependencies": {
+    "@sap/approuter": "^16.0.0"
+  }
 }

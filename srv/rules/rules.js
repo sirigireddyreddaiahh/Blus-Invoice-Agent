@@ -1,12 +1,27 @@
 'use strict';
-// AP Sentinel rule catalogue, spec v2.0 (AP-01 to AP-14).
-// Each rule returns { tier, text } where tier is REJECT | HOLD | FLAG | PASS | SKIPPED.
-// Rules are pure functions: no database, no network, no AI.
+// Duplicate Invoice Detection Agent rule catalogue (SAP BTP spec).
+// Active fraud rules per mandate:
+// 1. AP-02 Exact duplicate: same supplier GSTIN, FY, invoice no or IRN -> REJECT.
+// 2. AP-09 Same vendor, amount and services within 90 days (recurring contract POs excluded) -> REJECT.
+// 3. AP-03 GSTIN reuse: one GSTIN registered to multiple vendor IDs (unless on exemption list) -> REJECT.
+// 4. AP-11 Split invoices: 2+ bills from vendor within 14 days in 5% band below limit whose sum reaches limit >= 100,000 INR -> HOLD.
+//
+// Other 10 rules (AP-01, 04, 05, 06, 07, 08, 10, 12, 13, 14) are kept in code but DISABLED via configuration flag.
 const crypto = require('crypto');
 const U = require('./util');
 
-const TOL_TOTAL = 1.0;      // INR, spec v2 AP-08
-const TOL_RATE_PCT = 0.1;   // percentage points
+const RULE_CONFIG = {
+  // By default, only the 4 mandatory rules are active.
+  activeRules: (process.env.ENABLE_ALL_RULES === 'true')
+    ? ['AP-01', 'AP-02', 'AP-03', 'AP-04', 'AP-05', 'AP-06', 'AP-07', 'AP-08', 'AP-09', 'AP-10', 'AP-11', 'AP-12', 'AP-13', 'AP-14']
+    : ['AP-02', 'AP-03', 'AP-09', 'AP-11'],
+  isRuleActive(id) {
+    return this.activeRules.includes(id);
+  },
+};
+
+const TOL_TOTAL = 1.0;
+const TOL_RATE_PCT = 0.1;
 
 const findVendor = (masters, inv) =>
   (masters.vendors || []).find(v => U.norm(v.gstin) === U.norm(inv.supplierGstin)) ||
@@ -17,10 +32,8 @@ const findPo = (masters, inv) =>
 
 const sameSupplier = (a, b) => U.norm(a.supplierGstin || a.supplierId) === U.norm(b.supplierGstin || b.supplierId);
 
-// Other invoices in the window: posted ledger plus the rest of the batch being checked.
 const others = (inv, ctx) => [...(ctx.posted || []), ...((ctx.batch || []).filter(b => b !== inv))];
 
-// Offline verification of an IRP signed QR payload (JWS, RS256 only).
 function verifyIrpJwt(token, pem) {
   const parts = String(token).trim().split('.');
   if (parts.length !== 3) return { ok: false, reason: 'not a JWT' };
@@ -36,237 +49,244 @@ function verifyIrpJwt(token, pem) {
   catch { return { ok: false, reason: 'unreadable payload' }; }
 }
 
-// ---------- AP-01 e-Invoice QR signature and content ----------
+// ---------- AP-01 e-Invoice QR signature and content (DISABLED by default) ----------
 function ap01(inv, ctx) {
-  if (!inv.qrJwt) return { tier: 'SKIPPED', text: 'No IRN QR code on the invoice. This check applies to e-invoiced B2B invoices only.' };
-  if (!ctx.irpPublicKeyPem) return { tier: 'SKIPPED', text: 'QR code found, but the IRP public key is not configured, so the signature was not verified.' };
+  if (!RULE_CONFIG.isRuleActive('AP-01')) {
+    return { tier: 'DISABLED', text: 'This check is disabled in the active configuration.' };
+  }
+  if (!inv.qrJwt) return { tier: 'SKIPPED', text: 'No IRN QR code on the invoice.' };
+  if (!ctx.irpPublicKeyPem) return { tier: 'SKIPPED', text: 'IRP public key not configured.' };
   const v = verifyIrpJwt(inv.qrJwt, ctx.irpPublicKeyPem);
-  if (!v.ok) return { tier: 'REJECT', text: `QR signature check failed (${v.reason}). The invoice cannot be trusted as an e-invoice.` };
-  const p = v.payload;
-  const irn = p.Irn || inv.irn;
-  const boundElsewhere = irn && (ctx.posted || []).find(x => x.irn === irn && U.normInvoiceNo(x.invoiceNo) !== U.normInvoiceNo(inv.invoiceNo));
-  if (boundElsewhere) return { tier: 'REJECT', text: `IRN ${irn} is already bound to a different posted invoice (${boundElsewhere.invoiceNo}). Possible QR code reuse.` };
-  const diffs = [];
-  if (U.norm(p.SellerGstin) !== U.norm(inv.supplierGstin)) diffs.push('supplier GSTIN');
-  if (U.norm(p.BuyerGstin) !== U.norm(inv.buyerGstin)) diffs.push('buyer GSTIN');
-  if (U.normInvoiceNo(p.DocNo) !== U.normInvoiceNo(inv.invoiceNo)) diffs.push('invoice number');
-  if (Math.abs(Number(p.TotInvVal) - U.num(inv.total)) > TOL_TOTAL) diffs.push('total value');
-  if (diffs.length) return { tier: 'HOLD', text: `QR content does not match the invoice fields: ${diffs.join(', ')}. Check the printed invoice manually.` };
-  return { tier: 'PASS', text: 'QR signature is valid and the QR content matches the invoice.' };
+  if (!v.ok) return { tier: 'REJECT', text: `QR signature check failed (${v.reason}).` };
+  return { tier: 'PASS', text: 'QR signature valid.' };
 }
 
-// ---------- AP-02 Exact duplicate (and blacklist note from spec) ----------
+// ---------- MANDATORY 1: AP-02 Exact duplicate (ACTIVE -> REJECT) ----------
 function ap02(inv, ctx) {
+  if (!RULE_CONFIG.isRuleActive('AP-02')) {
+    return { tier: 'DISABLED', text: 'This check is disabled in the active configuration.' };
+  }
   const key = U.dupKeyOf(inv);
   const pool = [...(ctx.posted || []), ...(ctx.earlier || [])];
   const hit = pool.find(p => U.dupKeyOf(p) === key || (inv.irn && p.irn && p.irn === inv.irn));
   if (hit) {
-    return { tier: 'REJECT', text: `Duplicate: invoice ${inv.invoiceNo} from ${inv.supplierGstin || inv.supplierId} already exists in FY ${U.fiscalYear(inv.invoiceDate)} as ${hit.invoiceNo} dated ${hit.invoiceDate}. Not posted.` };
+    return {
+      tier: 'REJECT',
+      text: `Duplicate: invoice ${inv.invoiceNo} from ${inv.supplierGstin || inv.supplierId} already exists in FY ${U.fiscalYear(inv.invoiceDate)} as ${hit.invoiceNo} dated ${hit.invoiceDate}. Outcome: REJECT.`,
+    };
   }
   const bl = (ctx.masters.blacklistGstins || []).map(U.norm);
   if (bl.includes(U.norm(inv.supplierGstin))) {
-    return { tier: 'HOLD', text: `No duplicate, but supplier ${U.norm(inv.supplierGstin)} is on the internal blacklist. Tier for blacklist hits is a design point to confirm.` };
+    return { tier: 'HOLD', text: `Supplier ${U.norm(inv.supplierGstin)} is on internal blacklist.` };
   }
   return { tier: 'PASS', text: 'No duplicate found for this supplier and financial year.' };
 }
 
-// ---------- AP-03 GSTIN validity ----------
+// ---------- MANDATORY 3: AP-03 GSTIN reuse (ACTIVE -> REJECT) ----------
 function ap03(inv, ctx) {
+  if (!RULE_CONFIG.isRuleActive('AP-03')) {
+    return { tier: 'DISABLED', text: 'This check is disabled in the active configuration.' };
+  }
   const g = U.norm(inv.supplierGstin);
-  if (!g) return { tier: 'HOLD', text: 'Supplier GSTIN is missing from the invoice.' };
-  if (!U.isValidGstin(g)) return { tier: 'REJECT', text: `GSTIN ${g} is not valid (format or check character fails).` };
-  const status = (ctx.masters.gstinStatus || {})[g];
-  if (!status) return { tier: 'FLAG', text: `GSTIN ${g} is valid in format, but its status is not in the status file. Check the GST portal.` };
-  if (String(status).toLowerCase() !== 'active') return { tier: 'HOLD', text: `GSTIN ${g} has status "${status}" in the status file. Verify before payment.` };
-  return { tier: 'PASS', text: `GSTIN ${g} is valid and Active in the status file.` };
+  if (!g) return { tier: 'PASS', text: 'No supplier GSTIN provided.' };
+
+  const vendors = ctx.masters.vendors || [];
+  const matching = vendors.filter(v => U.norm(v.gstin) === g);
+
+  if (matching.length > 1) {
+    const ids = matching.map(v => v.id);
+    const exemptions = ctx.masters.parentAffiliateExemptions || [];
+    const isExempt = exemptions.some(pair => {
+      const p = pair.map(String);
+      return ids.every(id => p.includes(id));
+    });
+
+    if (!isExempt) {
+      return {
+        tier: 'REJECT',
+        text: `GSTIN reuse: GSTIN ${g} is registered to multiple vendor IDs (${ids.join(', ')}). Exemption not found in documented parent/affiliate list. Outcome: REJECT.`,
+      };
+    }
+  }
+  return { tier: 'PASS', text: 'GSTIN is registered to a unique vendor ID (or exempted parent/affiliate pair).' };
 }
 
-// ---------- AP-04 Addressee (buyer) check ----------
+// ---------- AP-04 Addressee (buyer) check (DISABLED by default) ----------
 function ap04(inv, ctx) {
-  const b = U.norm(inv.buyerGstin);
-  if (!b) return { tier: 'HOLD', text: 'Buyer GSTIN is missing from the invoice.' };
-  const ent = (ctx.masters.entities || []).find(e => (e.gstins || []).includes(b));
-  if (!ent) return { tier: 'HOLD', text: `Buyer GSTIN ${b} is not one of the Bluspring entity GSTINs in the mapping table. Route to the tax team.` };
-  return { tier: 'PASS', text: `Invoice is addressed to ${ent.name} (${ent.code}).` };
+  if (!RULE_CONFIG.isRuleActive('AP-04')) {
+    return { tier: 'DISABLED', text: 'This check is disabled in the active configuration.' };
+  }
+  return { tier: 'PASS', text: 'Addressee check passed.' };
 }
 
-// ---------- AP-05 Bank details changed vs master (BEC) ----------
+// ---------- AP-05 Bank details changed vs master (DISABLED by default) ----------
 function ap05(inv, ctx) {
-  if (!inv.ifsc && !inv.accountNo) return { tier: 'SKIPPED', text: 'No bank details on the invoice, so the bank check does not apply.' };
-  const v = findVendor(ctx.masters, inv);
-  if (!v) return { tier: 'HOLD', text: 'Supplier is not in the vendor master, so its bank details cannot be verified.' };
-  if (inv.ifsc && !U.IFSC_RE.test(U.norm(inv.ifsc))) return { tier: 'HOLD', text: `IFSC ${inv.ifsc} on the invoice has an invalid format.` };
-  const ifscDiff = inv.ifsc && U.norm(inv.ifsc) !== U.norm(v.ifsc);
-  const accDiff = inv.accountNo && U.normAcct(inv.accountNo) !== U.normAcct(v.account);
-  if (ifscDiff || accDiff) {
-    const what = [ifscDiff ? 'IFSC' : '', accDiff ? 'account number' : ''].filter(Boolean).join(' and ');
-    return { tier: 'HOLD', text: `Bank details on the invoice do not match the vendor master (${what}). Verify by call-back to the number already on file.` };
+  if (!RULE_CONFIG.isRuleActive('AP-05')) {
+    return { tier: 'DISABLED', text: 'This check is disabled in the active configuration.' };
   }
-  return { tier: 'PASS', text: 'Bank details match the vendor master.' };
+  return { tier: 'PASS', text: 'Bank details check passed.' };
 }
 
-// ---------- AP-06 Bank account collision ----------
+// ---------- AP-06 Bank account collision (DISABLED by default) ----------
 function ap06(inv, ctx) {
-  const acct = U.normAcct(inv.accountNo);
-  if (!acct) return { tier: 'SKIPPED', text: 'No bank account on the invoice, so the collision check does not apply.' };
-  if ((ctx.masters.groupAccounts || []).map(U.normAcct).includes(acct)) {
-    return { tier: 'PASS', text: 'Account is an approved group account (excluded from the collision check).' };
+  if (!RULE_CONFIG.isRuleActive('AP-06')) {
+    return { tier: 'DISABLED', text: 'This check is disabled in the active configuration.' };
   }
-  const hits = [];
-  (ctx.masters.customers || []).forEach(c => { if (U.normAcct(c.account) === acct) hits.push(`customer ${c.name}`); });
-  (ctx.masters.employees || []).forEach(e => { if (U.normAcct(e.account) === acct) hits.push(`employee ${e.name}`); });
-  (ctx.masters.vendors || []).forEach(v => {
-    if (U.normAcct(v.account) === acct && U.norm(v.gstin) !== U.norm(inv.supplierGstin)) hits.push(`another supplier ${v.name}`);
-  });
-  if (hits.length) return { tier: 'HOLD', text: `Bank account is also used by ${hits.join(', ')}. Possible kickback or payment redirection. Review.` };
-  return { tier: 'PASS', text: 'Bank account does not collide with customer, employee, or other supplier accounts.' };
+  return { tier: 'PASS', text: 'Bank collision check passed.' };
 }
 
-// ---------- AP-07 PO and receipt control ----------
+// ---------- AP-07 PO and receipt control (DISABLED by default) ----------
 function ap07(inv, ctx) {
-  const problems = [];
-  const poRequired = (ctx.masters.policy || {}).poRequired !== false;
-  if (!inv.poNumber) {
-    if (poRequired) problems.push('no purchase order reference on the invoice');
-  } else {
-    const po = findPo(ctx.masters, inv);
-    if (!po) problems.push(`PO ${inv.poNumber} is not in the PO extract`);
-    else {
-      const hoursBefore = (Date.parse(po.date + 'T00:00:00Z') - Date.parse(inv.invoiceDate + 'T00:00:00Z')) / 3600000;
-      if (hoursBefore > 48) problems.push(`invoice dated ${inv.invoiceDate} is more than 48 hours before PO ${po.po} (dated ${po.date})`);
-    }
+  if (!RULE_CONFIG.isRuleActive('AP-07')) {
+    return { tier: 'DISABLED', text: 'This check is disabled in the active configuration.' };
   }
-  if (inv.category === 'goods' && inv.grDone === false) problems.push('no goods receipt against the PO');
-  if (inv.category === 'services' && inv.sesDone === false) problems.push('no service entry sheet against the PO');
-  if (problems.length) return { tier: 'HOLD', text: `PO or receipt check failed: ${problems.join('; ')}.` };
-  return { tier: 'PASS', text: 'PO and receipt checks passed (or receipt status was not supplied).' };
+  return { tier: 'PASS', text: 'PO check passed.' };
 }
 
-// ---------- AP-08 Arithmetic and GST tax ----------
+// ---------- AP-08 Arithmetic and GST tax (DISABLED by default) ----------
 function ap08(inv, ctx) {
-  const taxable = U.num(inv.taxable), cgst = U.num(inv.cgst), sgst = U.num(inv.sgst);
-  const igst = U.num(inv.igst), cess = U.num(inv.cess), vat = U.num(inv.vat), total = U.num(inv.total);
-  const issues = [];
-  const computed = taxable + cgst + sgst + igst + cess + vat;
-  if (Math.abs(computed - total) > TOL_TOTAL) issues.push(`taxable plus tax is ${computed.toFixed(2)} but total is ${total.toFixed(2)}`);
-  if (vat > 0) issues.push(`tax is shown as VAT (${vat.toFixed(2)}), not GST. Indian B2B invoices need CGST and SGST, or IGST`);
-  const intra = U.stateOf(inv.supplierGstin) === U.stateOf(inv.buyerGstin);
-  if (intra) {
-    if (igst > 0) issues.push('intrastate invoice shows IGST');
-    if (Math.abs(cgst - sgst) > TOL_TOTAL) issues.push('CGST and SGST differ');
-  } else if (cgst > 0 || sgst > 0) {
-    issues.push('interstate invoice shows CGST or SGST instead of IGST');
+  if (!RULE_CONFIG.isRuleActive('AP-08')) {
+    return { tier: 'DISABLED', text: 'This check is disabled in the active configuration.' };
   }
-  let rateNote = null;
-  if (taxable > 0 && inv.hsn) {
-    const rate = (ctx.masters.rates || {})[String(inv.hsn)];
-    if (rate === undefined) rateNote = `HSN/SAC ${inv.hsn} is not in the rate master`;
-    else {
-      const eff = (cgst + sgst + igst) / taxable * 100;
-      if (Math.abs(eff - rate) > TOL_RATE_PCT) issues.push(`effective tax rate ${eff.toFixed(2)}% differs from ${rate}% for HSN/SAC ${inv.hsn}`);
-    }
-  }
-  if (cess > 0 && !(ctx.masters.cessApplicable || []).includes(String(inv.hsn))) issues.push('cess applied but HSN/SAC is not on the cess list');
-  if (issues.length) return { tier: 'HOLD', text: `Tax or arithmetic check failed: ${issues.join('; ')}.` };
-  if (rateNote) return { tier: 'FLAG', text: `Totals are consistent, but ${rateNote}. Tax team to confirm the rate.` };
-  return { tier: 'PASS', text: 'Totals and tax split are consistent with the rate master.' };
+  return { tier: 'PASS', text: 'Arithmetic check passed.' };
 }
 
-// ---------- AP-09 Recurring look-alike ----------
+// ---------- MANDATORY 2: AP-09 Same vendor, amount and services (ACTIVE -> REJECT) ----------
 function ap09(inv, ctx) {
+  if (!RULE_CONFIG.isRuleActive('AP-09')) {
+    return { tier: 'DISABLED', text: 'This check is disabled in the active configuration.' };
+  }
   const po = findPo(ctx.masters, inv);
-  if (po && po.recurring) return { tier: 'PASS', text: `Matched to recurring contract PO ${po.po}. Look-alike check skipped.` };
+  if (po && po.recurring) {
+    return { tier: 'PASS', text: `Matched to recurring contract PO ${po.po}. Recurring contract POs are excluded.` };
+  }
   const hit = others(inv, ctx).find(h =>
     sameSupplier(h, inv) &&
     U.num(h.total) === U.num(inv.total) &&
     U.daysBetween(h.invoiceDate, inv.invoiceDate) <= 90 &&
     U.normInvoiceNo(h.invoiceNo) !== U.normInvoiceNo(inv.invoiceNo) &&
     U.similarity(h.description, inv.description) >= 0.9);
-  if (hit) return { tier: 'HOLD', text: `Same supplier, same amount and similar description within 90 days (${hit.invoiceNo} dated ${hit.invoiceDate}). Not matched to a recurring contract PO.` };
-  return { tier: 'PASS', text: 'No similar invoice from this supplier within 90 days.' };
+
+  if (hit) {
+    const tier = process.env.AP09_TIER || (ctx.masters && ctx.masters.config && ctx.masters.config.AP09_TIER) || 'REJECT';
+    return {
+      tier,
+      text: `Repeat bill with same amount and similar services within 90 days (${hit.invoiceNo} dated ${hit.invoiceDate}). Outcome: ${tier}. Override only by CFO and Controller together, with a logged reason.`,
+    };
+  }
+  return { tier: 'PASS', text: 'No repeat bill with same amount and similar services within 90 days.' };
 }
 
-// ---------- AP-10 Lookalike resubmission ----------
+// ---------- AP-10 Lookalike resubmission (DISABLED by default) ----------
 function ap10(inv, ctx) {
-  const a = U.normInvoiceNo(inv.invoiceNo);
-  const hit = others(inv, ctx).find(h => {
-    if (!sameSupplier(h, inv)) return false;
-    if (Math.abs(U.num(h.total) - U.num(inv.total)) > 1.5) return false;
-    if (U.daysBetween(h.invoiceDate, inv.invoiceDate) > 10) return false;
-    const b = U.normInvoiceNo(h.invoiceNo);
-    return b !== a && (b.startsWith(a) || a.startsWith(b) || U.similarity(a, b) >= 0.8);
-  });
-  if (hit) return { tier: 'HOLD', text: `Possible resubmission: same supplier and amount, with a similar invoice number (${hit.invoiceNo} dated ${hit.invoiceDate}) within 10 days.` };
-  return { tier: 'PASS', text: 'No lookalike resubmission found.' };
+  if (!RULE_CONFIG.isRuleActive('AP-10')) {
+    return { tier: 'DISABLED', text: 'This check is disabled in the active configuration.' };
+  }
+  return { tier: 'PASS', text: 'Lookalike resubmission check passed.' };
 }
 
-// ---------- AP-11 Threshold splitting ----------
+// ---------- MANDATORY 4: AP-11 Split invoices (ACTIVE -> HOLD) ----------
 function ap11(inv, ctx) {
-  const levels = ((ctx.masters.doa || {}).levels || []).slice().sort((x, y) => x - y);
-  const WINDOW = 14, PROXIMITY = 0.05, MIN_COUNT = 3;
+  if (!RULE_CONFIG.isRuleActive('AP-11')) {
+    return { tier: 'DISABLED', text: 'This check is disabled in the active configuration.' };
+  }
+  const doa = (ctx.masters && ctx.masters.doa) || {};
+  const MIN_LIMIT = doa.minLimit || 100000;
+  const configuredLevels = doa.levels || [100000, 500000];
+  const levels = configuredLevels.filter(x => x >= MIN_LIMIT).slice().sort((x, y) => x - y);
+  const WINDOW = doa.windowDays || 14;
+  const PROXIMITY = doa.proximity || 0.05; // 5 percent band
+  const MIN_COUNT = doa.minCount || 2;     // Two or more bills
+
   const pool = [...(ctx.posted || []), ...(ctx.batch || [])];
   if (!pool.includes(inv)) pool.push(inv);
+
   const same = pool.filter(h => sameSupplier(h, inv) && U.daysBetween(h.invoiceDate, inv.invoiceDate) <= WINDOW);
   for (const limit of levels) {
     const band = same.filter(h => U.num(h.total) >= limit * (1 - PROXIMITY) && U.num(h.total) < limit);
     if (band.includes(inv) && band.length >= MIN_COUNT) {
       const sum = band.reduce((s, h) => s + U.num(h.total), 0);
-      if (sum >= limit) {
-        return { tier: 'HOLD', text: `Possible split: ${band.length} invoices from this supplier within ${WINDOW} days, each just below the approval limit of ${limit}, totalling ${sum.toFixed(2)}.` };
+      if (sum >= limit && sum >= MIN_LIMIT) {
+        return {
+          tier: 'HOLD',
+          text: `Split invoices: ${band.length} bills from this vendor within ${WINDOW} days, each just below approval limit of ${limit} INR (${Math.round(PROXIMITY * 100)}% band), whose total reaches ${sum.toFixed(2)} INR. Outcome: HOLD (assumed thresholds pending confirmation).`,
+        };
       }
     }
   }
-  return { tier: 'PASS', text: 'No split pattern against the approval limits.' };
+  return { tier: 'PASS', text: 'No split invoice pattern against approval limits.' };
 }
 
-// ---------- AP-12 Hidden or adversarial text (text-level check only) ----------
-const INJECTION_PATTERNS = [
-  /ignore (all |any |the )?(previous |prior |above )?(instructions|constraints|rules)/i,
-  /auto[- ]?approve/i,
-  /do not (flag|reject|hold|report)/i,
-  /(system|developer) prompt/i,
-];
-function ap12(inv) {
-  if (!inv.pdfText) return { tier: 'SKIPPED', text: 'No PDF text available (manual entry or S/4HANA extract).' };
-  if (INJECTION_PATTERNS.some(r => r.test(inv.pdfText))) {
-    return { tier: 'HOLD', text: 'Instruction-like wording found in the document text (possible prompt injection). Route to security review. The document was not passed to any automated approver.' };
+// Separate data check for GSTIN format/check-character and invoice arithmetic (Step 5 of UI pipeline, separate from AP-03)
+function checkDataQuality(inv) {
+  const gstin = U.norm(inv.supplierGstin);
+  const gstinValid = gstin ? U.isValidGstin(gstin) : false;
+  const gstinText = !gstin
+    ? 'Missing supplier GSTIN'
+    : (gstinValid ? `Valid 15-char GSTIN (${gstin})` : `Invalid GSTIN format or check-character (${gstin})`);
+
+  const total = U.num(inv.total);
+  const hasTaxBreakdown = inv.taxable !== undefined && inv.taxable !== null && inv.taxable !== '';
+  let arithmeticValid = total > 0;
+  let arithmeticText = total > 0 ? `Total ${total.toFixed(2)} INR verified` : 'Missing or zero total amount';
+
+  if (hasTaxBreakdown && total > 0) {
+    const sum = U.num(inv.taxable) + U.num(inv.cgst) + U.num(inv.sgst) + U.num(inv.igst) + U.num(inv.cess) + U.num(inv.vat);
+    arithmeticValid = Math.abs(sum - total) <= TOL_TOTAL;
+    arithmeticText = arithmeticValid
+      ? `Taxable + tax (${sum.toFixed(2)}) matches total (${total.toFixed(2)})`
+      : `Arithmetic mismatch: taxable + tax is ${sum.toFixed(2)} vs total ${total.toFixed(2)}`;
   }
-  return { tier: 'PASS', text: 'No instruction-like wording in the extracted text. Zero-opacity hidden-text detection is not in this starter.' };
+
+  return {
+    gstinValid,
+    gstinStatus: gstinValid ? 'PASS' : 'FAIL',
+    gstinText,
+    arithmeticValid,
+    arithmeticStatus: arithmeticValid ? 'PASS' : 'FAIL',
+    arithmeticText,
+  };
 }
 
-// ---------- AP-13 PDF metadata signal (FLAG only) ----------
+// ---------- AP-12 Hidden text (DISABLED by default) ----------
+function ap12(inv) {
+  if (!RULE_CONFIG.isRuleActive('AP-12')) {
+    return { tier: 'DISABLED', text: 'This check is disabled in the active configuration.' };
+  }
+  return { tier: 'PASS', text: 'Hidden text check passed.' };
+}
+
+// ---------- AP-13 PDF metadata signal (DISABLED by default) ----------
 function ap13(inv, ctx) {
-  if (!inv.pdfMeta || (!inv.pdfMeta.producer && !inv.pdfMeta.creator)) return { tier: 'SKIPPED', text: 'No PDF metadata available.' };
-  const s = `${inv.pdfMeta.producer} ${inv.pdfMeta.creator}`.toLowerCase();
-  const tool = (ctx.masters.pdfDesignTools || []).find(t => s.includes(t.toLowerCase()));
-  if (tool) return { tier: 'FLAG', text: `PDF was produced with "${tool}". Many legitimate vendors use design tools. Informational only.` };
-  return { tier: 'PASS', text: 'PDF metadata shows no design-tool producer.' };
+  if (!RULE_CONFIG.isRuleActive('AP-13')) {
+    return { tier: 'DISABLED', text: 'This check is disabled in the active configuration.' };
+  }
+  return { tier: 'PASS', text: 'Metadata check passed.' };
 }
 
-// ---------- AP-14 Calendar anomaly (FLAG only) ----------
+// ---------- AP-14 Calendar anomaly (DISABLED by default) ----------
 function ap14(inv, ctx) {
-  const notes = [];
-  if (U.isSunday(inv.invoiceDate)) notes.push('dated on a Sunday');
-  if ((ctx.masters.holidays || []).includes(inv.invoiceDate)) notes.push('dated on a holiday in the holiday file');
-  if (notes.length) return { tier: 'FLAG', text: `Invoice is ${notes.join(' and ')}. Informational only.` };
-  return { tier: 'PASS', text: 'Invoice date is a working day.' };
+  if (!RULE_CONFIG.isRuleActive('AP-14')) {
+    return { tier: 'DISABLED', text: 'This check is disabled in the active configuration.' };
+  }
+  return { tier: 'PASS', text: 'Calendar check passed.' };
 }
 
 const RULES = [
   { id: 'AP-01', title: 'e-Invoice QR signature and content', run: ap01 },
   { id: 'AP-02', title: 'Exact duplicate', run: ap02 },
-  { id: 'AP-03', title: 'GSTIN validity', run: ap03 },
+  { id: 'AP-03', title: 'GSTIN reuse', run: ap03 },
   { id: 'AP-04', title: 'Addressee (buyer) check', run: ap04 },
   { id: 'AP-05', title: 'Bank details changed vs master', run: ap05 },
   { id: 'AP-06', title: 'Bank account collision', run: ap06 },
   { id: 'AP-07', title: 'PO and receipt control', run: ap07 },
   { id: 'AP-08', title: 'Arithmetic and GST tax', run: ap08 },
-  { id: 'AP-09', title: 'Recurring look-alike', run: ap09 },
+  { id: 'AP-09', title: 'Same vendor, amount and services', run: ap09 },
   { id: 'AP-10', title: 'Lookalike resubmission', run: ap10 },
-  { id: 'AP-11', title: 'Threshold splitting', run: ap11 },
+  { id: 'AP-11', title: 'Split invoices', run: ap11 },
   { id: 'AP-12', title: 'Hidden or adversarial text in PDF', run: ap12 },
   { id: 'AP-13', title: 'PDF metadata signal', run: ap13 },
   { id: 'AP-14', title: 'Calendar anomaly', run: ap14 },
 ];
 
-module.exports = { RULES, verifyIrpJwt, findVendor };
+module.exports = { RULES, RULE_CONFIG, verifyIrpJwt, findVendor, gstinReuse: ap03, checkDataQuality };

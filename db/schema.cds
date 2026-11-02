@@ -16,10 +16,10 @@ entity Checks : cuid, managed {
   results       : Composition of many CheckResults on results.check = $self;
 }
 
-// One row per rule per check: all 14 rules, including PASS and SKIPPED.
+// One row per rule per check: all rules, including PASS and DISABLED.
 entity CheckResults : cuid {
   check   : Association to Checks;
-  ruleId  : String(10);
+  ruleId  : String(20);
   title   : String(120);
   tier    : String(10);
   text    : String(1000);
@@ -28,7 +28,7 @@ entity CheckResults : cuid {
 // One row per REJECT, HOLD or FLAG. This is the review queue.
 entity Alerts : cuid, managed {
   check     : Association to Checks;
-  ruleId    : String(10);
+  ruleId    : String(20);
   title     : String(120);
   tier      : String(10);
   text      : String(1000);

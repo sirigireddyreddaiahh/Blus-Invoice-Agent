@@ -1,6 +1,6 @@
 using FraudService from './fraud-service';
 
-// Fiori Elements review queue. The List Report and Object Page are generated from these annotations.
+// Fiori Elements review queue.
 annotate FraudService.Alerts with @(
   UI.HeaderInfo: { TypeName: 'Review item', TypeNamePlural: 'Review queue', Title: { Value: ruleId }, Description: { Value: title } },
   UI.SelectionFields: [ tier, decision, ruleId ],
@@ -25,7 +25,7 @@ annotate FraudService.Alerts with @(
   ] }
 );
 
-// Fiori Elements check history. The object page lists the 14 rule results of each check.
+// Fiori Elements check history.
 annotate FraudService.Checks with @(
   UI.HeaderInfo: { TypeName: 'Invoice check', TypeNamePlural: 'Check history', Title: { Value: invoiceNo }, Description: { Value: supplierName } },
   UI.SelectionFields: [ status, supplierName, source ],

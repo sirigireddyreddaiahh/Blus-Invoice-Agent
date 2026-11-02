@@ -1,61 +1,79 @@
-_schema-version: 3.3.0
+_schema-version: '3.1'
 ID: ap-sentinel
-version: 0.1.0
-description: "AP Sentinel: invoice fraud and duplicate checks for SAP BTP (starter)"
+version: 1.0.0
+description: "AP Sentinel: SAP BTP Invoice Fraud & Duplicate Engine with Read-only AI Assistant"
+
 parameters:
   enable-parallel-deployments: true
+
 build-parameters:
   before-all:
     - builder: custom
       commands:
         - npm install
-        - npx cds build --production
-modules:
-  - name: ap-sentinel-srv
-    type: nodejs
-    path: gen/srv
-    parameters:
-      instances: 1
-      buildpack: nodejs_buildpack
-    build-parameters:
-      builder: npm
-    provides:
-      - name: srv-api # required by consumers of CAP services (e.g. approuter)
-        properties:
-          srv-url: ${default-url}
-    requires:
-      - name: ap-sentinel-auth
-      - name: ap-sentinel-db
 
+modules:
+  # ----------------- DB DEPLOYER -----------------
   - name: ap-sentinel-db-deployer
     type: hdb
-    path: gen/db
+    path: db
     parameters:
       buildpack: nodejs_buildpack
     requires:
-      - name: ap-sentinel-db
-  - name: ap-sentinel
+      - name: ap-sentinel-db-hdi
+        properties:
+          TARGET_CONTAINER: ~{hdi-container-name}
+
+  # ----------------- CAP SERVICE -----------------
+  - name: ap-sentinel-srv
+    type: nodejs
+    path: .
+    parameters:
+      buildpack: nodejs_buildpack
+      memory: 512M
+      disk-quota: 1024M
+    properties:
+      ALLOW_INVOICE_DATA_TO_LLM: "false"
+      CLIENT_DB_LOOKUP_ENABLED: "false"
+      TESSDATA_PATH: "/home/vcap/app"
+    requires:
+      - name: ap-sentinel-db-hdi
+      - name: ap-sentinel-auth
+    provides:
+      - name: srv-api
+        properties:
+          srv-url: ${default-url}
+
+  # ----------------- APPROUTER -----------------
+  - name: ap-sentinel-approuter
     type: approuter.nodejs
     path: approuter
     parameters:
-      keep-existing-routes: true
-      disk-quota: 256M
       memory: 256M
+      disk-quota: 512M
     requires:
+      - name: ap-sentinel-auth
       - name: srv-api
         group: destinations
         properties:
-          name: srv-api # must be used in xs-app.json as well
+          name: srv-api
           url: ~{srv-url}
           forwardAuthToken: true
-      - name: ap-sentinel-auth
-    provides:
-      - name: app-api
-        properties:
-          app-protocol: ${protocol}
-          app-uri: ${default-uri}
 
 resources:
+  # ----------------- HANA HDI CONTAINER -----------------
+  - name: ap-sentinel-db-hdi
+    type: com.sap.xs.hdi-container
+    parameters:
+      service: hana
+      service-plan: hdi-shared
+      config:
+        # Obtain GUID with: cf service ap-sentinel-db --guid (never use the instance name)
+        database_id: "00000000-0000-4000-8000-000000000000"
+    properties:
+      hdi-container-name: ${service-name}
+
+  # ----------------- XSUAA AUTH -----------------
   - name: ap-sentinel-auth
     type: org.cloudfoundry.managed-service
     parameters:
@@ -63,18 +81,5 @@ resources:
       service-plan: application
       path: ./xs-security.json
       config:
-        xsappname: ap-sentinel-${org}-${space}
+        xsappname: ap-sentinel-${space}
         tenant-mode: dedicated
-        oauth2-configuration:
-          credential-types:
-            - "binding-secret"
-            - "x509"
-          redirect-uris:
-            - https://*~{app-api/app-uri}/**
-    requires:
-      - name: app-api
-  - name: ap-sentinel-db
-    type: com.sap.xs.hdi-container
-    parameters:
-      service: hana
-      service-plan: hdi-shared

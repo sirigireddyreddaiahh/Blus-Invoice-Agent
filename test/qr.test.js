@@ -1,4 +1,5 @@
 'use strict';
+process.env.ENABLE_ALL_RULES = 'true';
 // Reads an IRN-style QR code from a PDF page, verifies its RS256 signature, and runs AP-01 on it.
 const { test } = require('node:test');
 const assert = require('node:assert/strict');

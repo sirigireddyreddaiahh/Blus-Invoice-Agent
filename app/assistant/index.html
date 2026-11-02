@@ -1,0 +1,108 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>AP Sentinel — AI Assistant</title>
+  <link rel="stylesheet" href="../style.css">
+</head>
+<body>
+  <header class="brand-header">
+    <div class="brand-title-wrap">
+      <h1>AP Sentinel — Read-Only AI Assistant</h1>
+      <span class="brand-sub">Server-Side Gemini Grounded Assistant</span>
+    </div>
+    <div class="header-status">
+      <a href="../index.html" style="color: #60a5fa; text-decoration: none; font-weight: 600;">&larr; Back to Upload invoice</a>
+    </div>
+  </header>
+
+  <main style="max-width: 960px; margin: 84px auto 40px; padding: 0 20px;">
+    <div class="card">
+      <h3>AI assistant (read-only)</h3>
+      <p class="hint">Explains HOLD or REJECT rules, helps reviewers choose CLEAR, CONFIRM or ESCALATE, counts blocked invoices, explains the audit chain, and drafts vendor discrepancy emails (text only).</p>
+
+      <div class="quick-prompts">
+        <button type="button" class="quick-btn" data-prompt="Why was this held?">Why was this held?</button>
+        <button type="button" class="quick-btn" data-prompt="Draft a vendor email">Draft a vendor email</button>
+        <button type="button" class="quick-btn" data-prompt="Count blocked invoices">Count blocked invoices</button>
+        <button type="button" class="quick-btn" data-prompt="Explain the audit check">Explain the audit check</button>
+      </div>
+
+      <div id="chatMessages" class="chat-container" role="log" aria-live="polite">
+        <div class="chat-bubble assistant">Hello! Ask me about active fraud rules (AP-02, AP-03, AP-09, AP-11), blocked invoice counts, audit chain integrity, or vendor email drafts.</div>
+      </div>
+
+      <div class="btn-row">
+        <label for="chatInput" style="flex: 1;">
+          Your question
+          <input id="chatInput" type="text" placeholder="Ask a question..." autocomplete="off">
+        </label>
+        <button type="button" id="btnSend" class="primary" style="margin-top: 20px;">Send</button>
+      </div>
+    </div>
+  </main>
+
+  <script>
+    const chatMessages = document.getElementById('chatMessages');
+    const chatInput = document.getElementById('chatInput');
+    const btnSend = document.getElementById('btnSend');
+
+    async function send(msg) {
+      const text = String(msg || '').trim();
+      if (!text) return;
+
+      const u = document.createElement('div');
+      u.className = 'chat-bubble user';
+      u.textContent = text;
+      chatMessages.appendChild(u);
+
+      const b = document.createElement('div');
+      b.className = 'chat-bubble assistant';
+      b.textContent = 'Thinking...';
+      chatMessages.appendChild(b);
+      chatMessages.scrollTop = chatMessages.scrollHeight;
+
+      try {
+        const res = await fetch('/fraud/chat', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json', 'Accept': 'application/json' },
+          body: JSON.stringify({ message: text })
+        });
+        const data = await res.json().catch(() => ({}));
+        const reply = data.value !== undefined ? data.value : 'The assistant is not configured.';
+        b.textContent = reply;
+
+        if (/subject:|dear\s|vendor|email/i.test(reply) || /email/i.test(text)) {
+          const wrap = document.createElement('div');
+          const copyBtn = document.createElement('button');
+          copyBtn.type = 'button';
+          copyBtn.className = 'copy-email-btn';
+          copyBtn.textContent = 'Copy email draft';
+          copyBtn.addEventListener('click', async () => {
+            try { await navigator.clipboard.writeText(reply); } catch {}
+            copyBtn.textContent = 'Copied!';
+          });
+          wrap.appendChild(copyBtn);
+          b.appendChild(wrap);
+        }
+      } catch (e) {
+        b.textContent = 'The assistant is not configured.';
+      }
+      chatMessages.scrollTop = chatMessages.scrollHeight;
+    }
+
+    btnSend.addEventListener('click', () => {
+      const v = chatInput.value;
+      chatInput.value = '';
+      send(v);
+    });
+    chatInput.addEventListener('keydown', (e) => {
+      if (e.key === 'Enter') { e.preventDefault(); btnSend.click(); }
+    });
+    document.querySelectorAll('.quick-btn').forEach(btn => {
+      btn.addEventListener('click', () => send(btn.dataset.prompt));
+    });
+  </script>
+</body>
+</html>

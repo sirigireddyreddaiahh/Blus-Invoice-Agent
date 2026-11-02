@@ -1,13 +1,15 @@
 'use strict';
-// Best-effort field extraction from text PDFs. Every field is shown for review before any check.
+// Field extraction and confidence scoring for PDF text layers and OCR outputs.
 const GSTIN_G = /\b\d{2}[A-Z]{5}\d{4}[A-Z][1-9A-Z]Z[0-9A-Z]\b/g;
 const MONTHS = { jan: 1, feb: 2, mar: 3, apr: 4, may: 5, jun: 6, jul: 7, aug: 8, sep: 9, oct: 10, nov: 11, dec: 12 };
+
+const MAX_FILE_BYTES = 10 * 1024 * 1024; // 10 MB
+const LOW_CONFIDENCE_THRESHOLD = 70;     // Assumption until confirmed by client
 
 const first = (text, re) => { const m = text.match(re); return m ? m[1].trim() : null; };
 const money = (text, re) => { const v = first(text, re); return v === null ? undefined : Number(v.replace(/,/g, '')); };
 const num = (s) => Number(String(s).replace(/,/g, ''));
 
-// Dates: 03/07/2023 (day first), 3-7-2023, 3.7.2023, 2023-07-03, 3 Jul 2023
 function toIsoDate(s) {
   if (!s) return null;
   const t = s.trim();
@@ -19,8 +21,7 @@ function toIsoDate(s) {
   return /^\d{4}-\d{2}-\d{2}$/.test(t) ? t : null;
 }
 
-const DATE_RE = /(?:invoice\s*date|date\s*of\s*issue|date\s*of\s*invoice|date)\s*[:\-]\s*(\d{1,2}[\/\-.]\d{1,2}[\/\-.]\d{4}|\d{4}-\d{2}-\d{2}|\d{1,2}\s+[A-Za-z]{3,9}\.?\s+\d{4})/i;
-// Tax summary row of a VAT-style invoice: rate, net, VAT, gross
+const DATE_RE = /(?:invoice\s*date|date\s*of\s*issue|date\s*of\s*invoice|date)\s*[:\-]?\s*(\d{1,2}[\/\-.]\d{1,2}[\/\-.]\d{4}|\d{4}-\d{2}-\d{2}|\d{1,2}\s+[A-Za-z]{3,9}\.?\s+\d{4})/i;
 const SUMMARY_RE = /(\d{1,2}(?:\.\d+)?)\s*%\s+([\d,]+\.\d{2})\s+([\d,]+\.\d{2})\s+([\d,]+\.\d{2})/;
 
 function extractFields(text) {
@@ -30,33 +31,118 @@ function extractFields(text) {
   const isVatStyle = /\bVAT\b/i.test(t) && !/\b(CGST|SGST|IGST)\b/i.test(t);
   const sum = isVatStyle ? t.match(SUMMARY_RE) : null;
   const fields = {
-    supplierName: first(t, /(?:supplier|seller)\s*(?:name)?\s*[:\-]\s*(.+)/i),
-    supplierGstin: gstins[0],
-    buyerGstin: gstins[1],
+    supplierName: first(t, /(?:supplier|seller|vendor)\s*(?:name)?\s*[:\-]\s*([^\n\r]+)/i),
+    supplierGstin: gstins[0] || first(t, /(?:supplier|seller|vendor)\s*gstin\s*[:\-]?\s*([0-9A-Z]{15})/i),
+    buyerGstin: gstins[1] || first(t, /buyer\s*gstin\s*[:\-]?\s*([0-9A-Z]{15})/i),
     buyerTaxId: taxIds.find(id => id !== gstins[0]),
     invoiceNo: first(t, /invoice\s*(?:no\.?|number|#)\s*[:\-]?\s*([A-Za-z0-9\/\-]+)/i),
     invoiceDate: toIsoDate(first(t, DATE_RE)),
-    poNumber: first(t, /\bPO\s*(?:no\.?|number)?\s*[:\-]?\s*(\d{6,12})\b/i),
-    description: first(t, /description\s*[:\-]\s*(.{3,160})/i),
+    poNumber: first(t, /\bPO\s*(?:no\.?|number|#)?\s*[:\-]?\s*(\d{6,12})\b/i),
+    description: first(t, /(?:description|services|items)\s*[:\-]\s*([^\n\r]{3,160})/i),
     hsn: first(t, /(?:HSN|SAC)\s*(?:code)?\s*[:\-]?\s*(\d{4,8})/i),
-    taxable: sum ? num(sum[2]) : money(t, /taxable\s*(?:value|amount)\s*[:\-]?\s*(?:INR|Rs\.?)?\s*([\d,]+\.?\d*)/i),
+    taxable: sum ? num(sum[2]) : money(t, /taxable\s*(?:value|amount)?\s*[:\-]?\s*(?:INR|Rs\.?)?\s*([\d,]+\.?\d*)/i),
     vat: sum ? num(sum[3]) : undefined,
-    cgst: money(t, /cgst[^\n]*?([\d,]+\.\d{2})/i),
-    sgst: money(t, /sgst[^\n]*?([\d,]+\.\d{2})/i),
-    igst: money(t, /igst[^\n]*?([\d,]+\.\d{2})/i),
+    cgst: money(t, /cgst[^\n\r]*?([\d,]+\.\d{2})/i) ?? money(t, /cgst(?:\s*\(\d+%\))?\s*[:\-]\s*(?:INR|Rs\.?)?\s*([\d,]+)/i),
+    sgst: money(t, /sgst[^\n\r]*?([\d,]+\.\d{2})/i) ?? money(t, /sgst(?:\s*\(\d+%\))?\s*[:\-]\s*(?:INR|Rs\.?)?\s*([\d,]+)/i),
+    igst: money(t, /igst[^\n\r]*?([\d,]+\.\d{2})/i) ?? money(t, /igst(?:\s*\(\d+%\))?\s*[:\-]\s*(?:INR|Rs\.?)?\s*([\d,]+)/i),
     total: sum ? num(sum[4])
-      : (money(t, /(?:grand\s*total|total\s*amount\s*payable|amount\s*payable|gross\s*(?:worth|total|amount))\s*[:\-]?\s*(?:INR|Rs\.?)?\s*([\d,]+\.\d{2})/i)
-        ?? money(t, /total\s*(?:amount|value)?\s*[:\-]\s*(?:INR|Rs\.?)?\s*([\d,]+\.\d{2})/i)),
+      : (money(t, /(?:grand\s*total|total\s*amount\s*payable|amount\s*payable|gross\s*(?:worth|total|amount))\s*[:\-]?\s*(?:INR|Rs\.?)?\s*([\d,]+\.?\d*)/i)
+        ?? money(t, /total\s*(?:amount|value)?\s*[:\-]?\s*(?:INR|Rs\.?)?\s*([\d,]+\.?\d*)/i)),
     ifsc: first(t, /\b([A-Z]{4}0[A-Z0-9]{6})\b/),
     accountNo: first(t, /(?:a\/c|account)\s*(?:no\.?|number)?\s*[:\-]?\s*(\d{9,18})/i),
   };
   for (const k of Object.keys(fields)) {
-    if (fields[k] === undefined || fields[k] === null || Number.isNaN(fields[k])) delete fields[k];
+    if (fields[k] === undefined || fields[k] === null || fields[k] === '' || Number.isNaN(fields[k])) delete fields[k];
   }
   return fields;
 }
 
-// Reads the PDF info dictionary as text. Best effort; compressed metadata may be missed.
+/**
+ * Validates and detects file type (PDF, PNG, JPG only) and enforces 10 MB limit.
+ */
+function validateAndDetectFile(fileName, fileBuffer, declaredSize) {
+  const size = declaredSize !== undefined && declaredSize !== null ? Number(declaredSize) : (fileBuffer ? fileBuffer.length : 0);
+  if (size > MAX_FILE_BYTES || (fileBuffer && fileBuffer.length > MAX_FILE_BYTES)) {
+    return {
+      ok: false,
+      error: 'File size exceeds the 10 MB maximum limit.',
+    };
+  }
+
+  const ext = String(fileName || '').toLowerCase().split('.').pop();
+  const allowedExts = ['pdf', 'png', 'jpg', 'jpeg'];
+
+  if (!fileBuffer || fileBuffer.length < 4) {
+    if (!allowedExts.includes(ext)) {
+      return { ok: false, error: 'Unsupported file type. Only PDF, PNG and JPG files are accepted.' };
+    }
+    return { ok: false, error: 'The uploaded file is empty or corrupted.' };
+  }
+
+  const isPdfHeader = fileBuffer.subarray(0, 4).toString('latin1') === '%PDF';
+  const isPngHeader = fileBuffer[0] === 0x89 && fileBuffer[1] === 0x50 && fileBuffer[2] === 0x4E && fileBuffer[3] === 0x47;
+  const isJpgHeader = fileBuffer[0] === 0xFF && fileBuffer[1] === 0xD8 && fileBuffer[2] === 0xFF;
+
+  if (isPdfHeader && (ext === 'pdf' || !ext)) {
+    return { ok: true, kind: 'PDF', label: 'PDF', size };
+  }
+  if (isPngHeader && (ext === 'png' || !ext)) {
+    return { ok: true, kind: 'PNG', label: 'Image (PNG or JPG)', size };
+  }
+  if (isJpgHeader && (ext === 'jpg' || ext === 'jpeg' || !ext)) {
+    return { ok: true, kind: 'JPG', label: 'Image (PNG or JPG)', size };
+  }
+
+  return {
+    ok: false,
+    error: 'Unsupported file type. Only PDF, PNG and JPG files are accepted.',
+  };
+}
+
+/**
+ * Computes field confidence map for extracted fields.
+ * Any field with OCR confidence < 70% is flagged as 'Low'.
+ * Fields 70%-89% are 'Check', >= 90% are 'High'.
+ */
+function computeFieldConfidences(fields, opts = {}) {
+  const { ocrUsed = false, ocrConfidence = 95, words = [], threshold = LOW_CONFIDENCE_THRESHOLD } = opts;
+  const result = {};
+
+  for (const [key, val] of Object.entries(fields || {})) {
+    if (val === undefined || val === null || val === '') continue;
+    let conf = ocrUsed ? Number(ocrConfidence || 82) : 98;
+
+    if (ocrUsed && Array.isArray(words) && words.length > 0) {
+      const tokens = String(val).toLowerCase().split(/\s+/).filter(Boolean);
+      const matched = words.filter(w => {
+        const wt = String(w.text || '').toLowerCase().replace(/[^a-z0-9]/g, '');
+        return tokens.some(t => {
+          const ct = t.replace(/[^a-z0-9]/g, '');
+          return ct && wt && (wt.includes(ct) || ct.includes(wt));
+        });
+      });
+      if (matched.length > 0) {
+        conf = Math.round(matched.reduce((s, w) => s + Number(w.confidence || ocrConfidence), 0) / matched.length);
+      }
+    }
+
+    let label = 'High';
+    if (conf < threshold) {
+      label = 'Low';
+    } else if (conf < 90 || ocrUsed) {
+      label = 'Check';
+    }
+
+    result[key] = {
+      value: val,
+      confidence: conf,
+      label, // 'High' | 'Check' | 'Low'
+    };
+  }
+
+  return result;
+}
+
 function readPdfMeta(buf) {
   const s = buf.toString('latin1');
   const p = s.match(/\/Producer\s*\(([^)]*)\)/);
@@ -64,4 +150,12 @@ function readPdfMeta(buf) {
   return { producer: p ? p[1] : '', creator: c ? c[1] : '' };
 }
 
-module.exports = { extractFields, readPdfMeta, toIsoDate };
+module.exports = {
+  extractFields,
+  readPdfMeta,
+  toIsoDate,
+  validateAndDetectFile,
+  computeFieldConfidences,
+  MAX_FILE_BYTES,
+  LOW_CONFIDENCE_THRESHOLD,
+};

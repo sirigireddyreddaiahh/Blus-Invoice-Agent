@@ -1,37 +1,37 @@
 {
-  "_note": "SAMPLE DATA for testing only. Replace with Bluspring master files before any real use.",
+  "_note": "SAMPLE DATA for testing only. Replace with master files before any real use.",
   "entities": [
     {
-      "code": "BSP01",
-      "name": "Bluspring Entity 01 (name to confirm)",
+      "code": "ENT01",
+      "name": "Sample Buyer Entity 01 (name to confirm)",
       "gstins": [
         "37AABCB1001K1Z7"
       ]
     },
     {
-      "code": "BSP02",
-      "name": "Bluspring Entity 02 (name to confirm)",
+      "code": "ENT02",
+      "name": "Sample Buyer Entity 02 (name to confirm)",
       "gstins": [
         "36AABCB1002K1Z8"
       ]
     },
     {
-      "code": "BSP03",
-      "name": "Bluspring Entity 03 (name to confirm)",
+      "code": "ENT03",
+      "name": "Sample Buyer Entity 03 (name to confirm)",
       "gstins": [
         "29AABCB1003K1Z2"
       ]
     },
     {
-      "code": "BSP04",
-      "name": "Bluspring Entity 04 (name to confirm)",
+      "code": "ENT04",
+      "name": "Sample Buyer Entity 04 (name to confirm)",
       "gstins": [
         "33AABCB1004K1ZC"
       ]
     },
     {
-      "code": "BSP05",
-      "name": "Bluspring Entity 05 (name to confirm)",
+      "code": "ENT05",
+      "name": "Sample Buyer Entity 05 (name to confirm)",
       "gstins": [
         "27AABCB1005K1Z4"
       ]
@@ -127,10 +127,20 @@
   },
   "cessApplicable": [],
   "doa": {
+    "_assumption": "ASSUMPTION UNTIL CLIENT CONFIRMS: minCount=2, windowDays=14, proximity=0.05 (5% band), minLimit=100000, levels=[100000, 500000]",
+    "minCount": 2,
+    "windowDays": 14,
+    "proximity": 0.05,
+    "minLimit": 100000,
     "levels": [
       100000,
       500000
     ]
+  },
+  "config": {
+    "_assumption": "ASSUMPTION UNTIL CLIENT CONFIRMS: AP09_TIER=REJECT, ocrLowConfidenceThreshold=70",
+    "AP09_TIER": "REJECT",
+    "ocrLowConfidenceThreshold": 70
   },
   "holidays": [
     "2026-10-02"
@@ -144,5 +154,6 @@
   ],
   "policy": {
     "poRequired": true
-  }
+  },
+  "parentAffiliateExemptions": []
 }

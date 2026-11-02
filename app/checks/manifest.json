@@ -1,44 +1,60 @@
 {
-  "_version": "1.65.0",
+  "_version": "1.49.0",
   "sap.app": {
     "id": "ap.sentinel.checks",
     "type": "application",
-    "title": "AP Sentinel check history",
-    "description": "Every invoice check, with the result of each of the 14 rules.",
-    "applicationVersion": { "version": "0.1.0" },
+    "title": "Check history",
+    "description": "AP Check History for Duplicate Invoice Detection Agent",
     "dataSources": {
-      "mainService": { "uri": "/fraud/", "type": "OData", "settings": { "odataVersion": "4.0" } }
-    }
-  },
-  "sap.ui5": {
-    "dependencies": { "minUI5Version": "1.120.0", "libs": { "sap.fe.templates": {} } },
-    "models": {
-      "": {
-        "dataSource": "mainService",
-        "preload": true,
-        "settings": { "operationMode": "Server", "autoExpandSelect": true, "earlyRequests": true }
-      }
-    },
-    "routing": {
-      "routes": [
-        { "pattern": ":?query:", "name": "ChecksList", "target": "ChecksList" },
-        { "pattern": "Checks({key}):?query:", "name": "ChecksDetails", "target": "ChecksDetails" }
-      ],
-      "targets": {
-        "ChecksList": {
-          "type": "Component", "id": "ChecksList", "name": "sap.fe.templates.ListReport",
-          "options": { "settings": {
-            "contextPath": "/Checks", "variantManagement": "Page",
-            "navigation": { "Checks": { "detailPage": "ChecksDetails" } }
-          } }
-        },
-        "ChecksDetails": {
-          "type": "Component", "id": "ChecksDetails", "name": "sap.fe.templates.ObjectPage",
-          "options": { "settings": { "contextPath": "/Checks" } }
+      "mainService": {
+        "uri": "/fraud/",
+        "type": "OData",
+        "settings": {
+          "odataVersion": "4.0"
         }
       }
     }
   },
-  "sap.fiori": { "archeType": "transactional" },
-  "sap.ui": { "technology": "UI5", "fullWidth": true }
+  "sap.ui5": {
+    "dependencies": {
+      "minUI5Version": "1.120.0",
+      "libs": {
+        "sap.fe.templates": {}
+      }
+    },
+    "models": {
+      "": {
+        "dataSource": "mainService",
+        "preload": true,
+        "settings": {
+          "synchronizationMode": "None",
+          "operationMode": "Server",
+          "autoExpandSelect": true,
+          "earlyRequests": true
+        }
+      }
+    },
+    "routing": {
+      "routes": [
+        {
+          "name": "ChecksList",
+          "pattern": ":?query:",
+          "target": "ChecksList"
+        }
+      ],
+      "targets": {
+        "ChecksList": {
+          "type": "Component",
+          "id": "ChecksList",
+          "name": "sap.fe.templates.ListReport",
+          "options": {
+            "settings": {
+              "entitySet": "Checks",
+              "initialLoad": "Enabled"
+            }
+          }
+        }
+      }
+    }
+  }
 }

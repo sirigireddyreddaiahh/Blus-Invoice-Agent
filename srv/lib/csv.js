@@ -39,7 +39,6 @@ const isoDate = (v) => {
   return m ? `${m[3]}-${m[2].padStart(2, '0')}-${m[1].padStart(2, '0')}` : s;
 };
 
-// One CSV row becomes one invoice. Receipt flag: goods use GR (grDone), services use SES (sesDone).
 function s4RowToInvoice(r, index) {
   const category = (r.category || 'services').toLowerCase();
   const received = flag(r.receiptdone);

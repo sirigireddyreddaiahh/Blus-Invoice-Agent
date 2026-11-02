@@ -1,6 +1,4 @@
 'use strict';
-// S/4HANA extract import, the signed-in user in the header, and hidden fields the PDF reader can fill.
-// Uses helpers from app.js: api, state, renderS4Table and $.
 (async () => {
   try {
     const who = await api('whoami', null, 'GET');
@@ -9,16 +7,6 @@
     $('who').textContent = '';
   }
 })();
-
-// Hidden fields: the VAT amount and the buyer tax ID are read from the PDF, but the form does not show them.
-for (const name of ['vat', 'buyerTaxId']) {
-  if (!$('invForm').elements[name]) {
-    const input = document.createElement('input');
-    input.type = 'hidden';
-    input.name = name;
-    $('invForm').appendChild(input);
-  }
-}
 
 $('btnImport').addEventListener('click', async () => {
   const msg = $('s4Msg');

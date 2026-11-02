@@ -1,58 +1,92 @@
 'use strict';
-// Renders PDF pages to bitmaps, used for QR reading and for OCR of scanned pages.
-// pdf.js draws each page onto an @napi-rs/canvas surface, so no browser is needed.
-const { createCanvas } = require('@napi-rs/canvas');
+// Uses jsqr to scan rendered PDF pages or uploaded PNG/JPG images for QR codes.
 const jsQR = require('jsqr');
-const path = require('path');
+try {
+  const { Path2D, ImageData } = require('@napi-rs/canvas');
+  if (Path2D && !global.Path2D) global.Path2D = Path2D;
+  if (ImageData && !global.ImageData) global.ImageData = ImageData;
+} catch {}
 
-// Standard PDF fonts (Helvetica etc.) ship with pdfjs-dist; pdf.js needs them to draw text.
-const STANDARD_FONTS = path.resolve(path.dirname(require.resolve('pdfjs-dist/package.json')), 'standard_fonts').replace(/\\/g, '/') + '/';
-
-let pdfjsPromise = null;
-const loadPdfjs = () => (pdfjsPromise = pdfjsPromise || import('pdfjs-dist/legacy/build/pdf.mjs'));
-
-class CanvasFactory {
-  create(width, height) {
-    const canvas = createCanvas(width, height);
-    return { canvas, context: canvas.getContext('2d') };
-  }
-  reset(cc, width, height) { cc.canvas.width = width; cc.canvas.height = height; }
-  destroy(cc) { cc.canvas.width = 0; cc.canvas.height = 0; cc.canvas = null; cc.context = null; }
-}
-
-// Returns up to maxPages pages as { width, height, rgba, png }.
-async function renderPages(buf, { maxPages = 2, scale = 2 } = {}) {
-  const pdfjs = await loadPdfjs();
-  const doc = await pdfjs.getDocument({
-    data: new Uint8Array(buf), disableFontFace: true, isEvalSupported: false, canvasFactory: new CanvasFactory(), standardFontDataUrl: STANDARD_FONTS,
-  }).promise;
-  const pages = [];
+async function renderPages(pdfBuffer, options = {}) {
   try {
-    for (let p = 1; p <= Math.min(doc.numPages, maxPages); p++) {
-      const page = await doc.getPage(p);
-      const viewport = page.getViewport({ scale });
-      const width = Math.floor(viewport.width), height = Math.floor(viewport.height);
-      const canvas = createCanvas(width, height);
-      const ctx = canvas.getContext('2d');
-      await page.render({ canvasContext: ctx, viewport }).promise;
-      pages.push({ width, height, rgba: ctx.getImageData(0, 0, width, height).data, png: canvas.toBuffer('image/png') });
+    let pdfjsLib;
+    try {
+      pdfjsLib = await import('pdfjs-dist/build/pdf.mjs');
+    } catch {
+      pdfjsLib = await import('pdfjs-dist/legacy/build/pdf.mjs');
     }
-  } finally {
-    if (doc && typeof doc.destroy === 'function') await doc.destroy();
+    const loadingTask = pdfjsLib.getDocument({ data: new Uint8Array(pdfBuffer) });
+    const doc = await loadingTask.promise;
+    const maxPages = Math.min(doc.numPages, options.maxPages || 2);
+    const pages = [];
+
+    for (let i = 1; i <= maxPages; i++) {
+      const page = await doc.getPage(i);
+      const viewport = page.getViewport({ scale: options.scale || 2.0 });
+      try {
+        const { createCanvas } = require('@napi-rs/canvas');
+        const w = Math.max(1, Math.floor(viewport.width));
+        const h = Math.max(1, Math.floor(viewport.height));
+        const canvas = createCanvas(w, h);
+        const ctx = canvas.getContext('2d');
+        await page.render({ canvasContext: ctx, viewport }).promise;
+        const imgData = ctx.getImageData(0, 0, w, h);
+        pages.push({
+          width: imgData.width || w,
+          height: imgData.height || h,
+          data: new Uint8ClampedArray(imgData.data),
+          png: canvas.toBuffer('image/png'),
+        });
+      } catch {
+        // Fallback when canvas render fails
+      }
+    }
+    return pages;
+  } catch {
+    return [];
   }
-  return pages;
 }
 
-const JWT_RE = /^[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+$/;
-
-// First QR code on any page whose content is a compact JWS (the form used for IRN QR codes).
 function findQrJwt(pages) {
-  for (const pg of pages) {
-    const code = jsQR(pg.rgba, pg.width, pg.height, { inversionAttempts: 'attemptBoth' });
-    const text = code && code.data ? code.data.trim() : '';
-    if (JWT_RE.test(text)) return text;
+  if (!Array.isArray(pages)) return null;
+  for (const page of pages) {
+    if (page && page.data && page.width && page.height) {
+      try {
+        const w = Math.floor(page.width);
+        const h = Math.floor(page.height);
+        if (page.data.length === w * h * 4) {
+          const code = jsQR(new Uint8ClampedArray(page.data), w, h);
+          if (code && code.data && code.data.split('.').length === 3) {
+            return code.data;
+          }
+        }
+      } catch {
+        // Ignore binarizer errors on non-QR pages
+      }
+    }
   }
   return null;
 }
 
-module.exports = { renderPages, findQrJwt };
+async function findQrInImage(imageBuffer) {
+  if (!Buffer.isBuffer(imageBuffer) || imageBuffer.length < 8) return null;
+  try {
+    const { createCanvas, loadImage } = require('@napi-rs/canvas');
+    const img = await loadImage(imageBuffer);
+    const w = Math.max(1, Math.floor(img.width));
+    const h = Math.max(1, Math.floor(img.height));
+    const canvas = createCanvas(w, h);
+    const ctx = canvas.getContext('2d');
+    ctx.drawImage(img, 0, 0, w, h);
+    const imgData = ctx.getImageData(0, 0, w, h);
+    const code = jsQR(new Uint8ClampedArray(imgData.data), w, h);
+    if (code && code.data) {
+      return code.data;
+    }
+  } catch {
+    return null;
+  }
+  return null;
+}
+
+module.exports = { renderPages, findQrJwt, findQrInImage };
