@@ -4,22 +4,30 @@
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>AP Sentinel — AI Assistant</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;500;600&family=Outfit:wght@500;600;700&family=Plus+Jakarta+Sans:wght@400;500;600;700&display=swap" rel="stylesheet">
   <link rel="stylesheet" href="../style.css">
 </head>
 <body>
   <header class="brand-header">
     <div class="brand-title-wrap">
-      <h1>AP Sentinel — Read-Only AI Assistant</h1>
+      <h1>AP Sentinel</h1>
+    </div>
+    <div class="header-context">
       <span class="brand-sub">Server-Side Gemini Grounded Assistant</span>
     </div>
     <div class="header-status">
-      <a href="../index.html" style="color: #60a5fa; text-decoration: none; font-weight: 600;">&larr; Back to Upload invoice</a>
+      <a href="../index.html" class="btn">&larr; Back to Upload invoice</a>
     </div>
   </header>
 
-  <main style="max-width: 960px; margin: 84px auto 40px; padding: 0 20px;">
-    <div class="card">
-      <h3>AI assistant (read-only)</h3>
+  <main style="max-width: 980px; margin: 84px auto 40px; padding: 0 20px;">
+    <div class="card assistant-studio-card">
+      <div class="assistant-header-row">
+        <h3>AI assistant (read-only)</h3>
+        <span class="meta-inline">Read-only mode · Server-side context</span>
+      </div>
       <p class="hint">Explains HOLD or REJECT rules, helps reviewers choose CLEAR, CONFIRM or ESCALATE, counts blocked invoices, explains the audit chain, and drafts vendor discrepancy emails (text only).</p>
 
       <div class="quick-prompts">
@@ -33,12 +41,12 @@
         <div class="chat-bubble assistant">Hello! Ask me about active fraud rules (AP-02, AP-03, AP-09, AP-11), blocked invoice counts, audit chain integrity, or vendor email drafts.</div>
       </div>
 
-      <div class="btn-row">
-        <label for="chatInput" style="flex: 1;">
-          Your question
+      <div class="chat-input-bar">
+        <label for="chatInput" class="chat-input-label">
+          <span class="sr-only-label">Your question</span>
           <input id="chatInput" type="text" placeholder="Ask a question..." autocomplete="off">
         </label>
-        <button type="button" id="btnSend" class="primary" style="margin-top: 20px;">Send</button>
+        <button type="button" id="btnSend" class="primary">Send</button>
       </div>
     </div>
   </main>

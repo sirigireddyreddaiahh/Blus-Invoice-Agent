@@ -27,6 +27,11 @@ const ROLES = ['APClerk', 'APController', 'Auditor'];
 const ACTIVE_RULE_IDS = ['AP-02', 'AP-03', 'AP-09', 'AP-11'];
 const DISABLED_RULE_IDS = ['AP-01', 'AP-04', 'AP-05', 'AP-06', 'AP-07', 'AP-08', 'AP-10', 'AP-12', 'AP-13', 'AP-14'];
 
+const RULES_CHECK_DISCLAIMER =
+  'Rules check only. Does not prove the invoice is genuine.';
+
+const REFUSAL_MSG = 'I can only answer questions about this invoice check.';
+
 function loadMasters() {
   return JSON.parse(fs.readFileSync(path.join(__dirname, '../data/masters.json'), 'utf8'));
 }
@@ -79,7 +84,292 @@ function getUserId(req) {
 }
 
 /**
- * Builds the grounding payload sent to Gemini.
+ * Maps rule engine status (PASS | HOLD | REJECT) to the exact AI Mode verdict label:
+ * - "Passed checks": all four active rules PASS
+ * - "Needs review": at least one HOLD, and no REJECT
+ * - "Blocked": at least one REJECT
+ */
+function toVerdictLabel(status, activeResults = []) {
+  const hasReject = status === 'REJECT' || activeResults.some(r => r.tier === 'REJECT');
+  if (hasReject) return 'Blocked';
+  const hasHold = status === 'HOLD' || activeResults.some(r => r.tier === 'HOLD');
+  if (hasHold) return 'Needs review';
+  return 'Passed checks';
+}
+
+/**
+ * Strips any occurrence of prohibited words ("fake" or "real") so neither verdict nor explanation ever uses them.
+ */
+function stripProhibitedWords(str) {
+  return String(str || '')
+    .replace(/\bfake\b/gi, 'non-compliant')
+    .replace(/\breal\b/gi, 'verified');
+}
+
+/**
+ * Builds the short plain-language explanation strictly from the four active rule results.
+ * Never uses the words "fake" or "real".
+ */
+function buildVerdictExplanation(verdict, activeResults = []) {
+  if (verdict === 'Passed checks') {
+    return 'No invoice with the same number was found for this supplier this financial year. No similar bill was found within 90 days. The GSTIN is unique to this supplier. The amount is not part of a split pattern.';
+  }
+  const triggered = activeResults.filter(r => r.tier !== 'PASS');
+  if (!triggered.length) {
+    return 'Stopped by active rule evaluation.';
+  }
+  const parts = triggered.map(r => `${r.id} (${r.title}): ${stripProhibitedWords(r.text)}`);
+  const prefix = verdict === 'Blocked' ? 'Stopped by active rule check — ' : 'Flagged for review by active rule check — ';
+  return stripProhibitedWords(prefix + parts.join(' | '));
+}
+
+/**
+ * Checks whether a user question is scoped to this invoice check, the extracted fields
+ * (including bank IFSC and account number), the rule results, vendor, amounts, or rules used.
+ * Refuses ONLY questions clearly unrelated to the current invoice (e.g. weather, another vendor).
+ */
+function isInvoiceRelatedQuestion(question) {
+  const q = String(question || '').trim().toLowerCase();
+  if (!q) return false;
+
+  // Refuse only clearly unrelated trivia like weather or another vendor
+  const unrelatedPattern = /\b(weather|temperature|rain|forecast|another\s+vendor|other\s+vendor|different\s+vendor|another\s+supplier|other\s+supplier)\b/i;
+  if (unrelatedPattern.test(q)) return false;
+
+  return true;
+}
+
+/**
+ * Builds a question-aware, plain-language response for the checked invoice:
+ * - Directly answers bank account / IFSC questions (covering AP-05 status and extracted IFSC/account values)
+ * - Directly answers "is this real or fake" / live or past / field / rule questions
+ * - Includes the 4 active rules, 10-step check summary when relevant, and mandatory disclaimer
+ * Never outputs the prohibited words "fake" or "real".
+ */
+function buildDetectionAndInvoiceSummary({ checkRecord, parsedResult = {}, activeResults = [], question = '', masters = null }) {
+  const q = String(question || '').trim().toLowerCase();
+  const status = (checkRecord && checkRecord.status) || parsedResult.status || 'PASS';
+  const verdict = toVerdictLabel(status, activeResults);
+  const fields = parsedResult.fields || {};
+  const dq = parsedResult.dataQuality || null;
+  const steps = Array.isArray(parsedResult.steps) && parsedResult.steps.length === 10 ? parsedResult.steps : null;
+
+  const fileLabel = (checkRecord && checkRecord.fileName) || fields.fileName || 'Current invoice';
+  const invNo = (checkRecord && checkRecord.invoiceNo) || fields.invoiceNo || 'Not shown on invoice';
+  const invDate = (checkRecord && checkRecord.invoiceDate) || fields.invoiceDate || 'Not shown on invoice';
+  const supplier = (checkRecord && checkRecord.supplierName) || fields.supplierName || 'Not shown on invoice';
+  const supplierGstin = (checkRecord && checkRecord.supplierGstin) || fields.supplierGstin || 'Not shown on invoice';
+  const buyerGstin = fields.buyerGstin || 'Not shown on invoice';
+  const taxable = fields.taxable !== undefined ? fields.taxable : 'Not shown on invoice';
+  const total = (checkRecord && checkRecord.total !== undefined && checkRecord.total !== null)
+    ? checkRecord.total
+    : (fields.total ?? 'Not shown on invoice');
+  const desc = fields.description || 'Not shown on invoice';
+  const invoiceIfsc = fields.bankIfsc || fields.ifsc || 'Not shown on invoice';
+  const invoiceAccount = fields.bankAccount || fields.accountNo || fields.account || 'Not shown on invoice';
+
+  const allResults = parsedResult.results || [];
+  const ap05Rule = allResults.find(r => r.id === 'AP-05');
+  const ap05Tier = ap05Rule ? ap05Rule.tier : 'DISABLED';
+
+  let matchedVendor = null;
+  if (masters && Array.isArray(masters.vendors)) {
+    matchedVendor = masters.vendors.find(
+      v => (supplierGstin && v.gstin === supplierGstin) || (supplier && v.name === supplier)
+    ) || null;
+  }
+
+  // Requirement 3c: Specific handling for bank account / IFSC questions
+  const asksBank = /\b(bank|account|ifsc|beneficiary|branch|neft|rtgs|iban|ap-?05)\b/i.test(q);
+  if (asksBank) {
+    const bankLines = [];
+    if (ap05Tier === 'DISABLED') {
+      bankLines.push(
+        `Bank details check (AP-05 — Bank details changed) is currently disabled by configuration.`
+      );
+      bankLines.push(
+        `Invoice (${invNo}) bank details extracted: IFSC: ${invoiceIfsc} | Account number: ${invoiceAccount}.`
+      );
+      if (matchedVendor) {
+        bankLines.push(
+          `Vendor master record for ${matchedVendor.name} (${matchedVendor.id}): IFSC: ${matchedVendor.ifsc || 'Not on file'} | Account number: ${matchedVendor.account || 'Not on file'}.`
+        );
+      }
+    } else if (ap05Tier === 'PASS') {
+      bankLines.push(
+        `Rule AP-05 (Bank details changed) is active and passed: the bank details on the invoice match the vendor master.`
+      );
+      bankLines.push(
+        `Invoice (${invNo}) IFSC: ${invoiceIfsc} | Account number: ${invoiceAccount}.`
+      );
+    } else {
+      bankLines.push(
+        `Rule AP-05 (Bank details changed) is active and held (${ap05Tier}): the bank details on the invoice differ from the vendor master.`
+      );
+      bankLines.push(
+        `Invoice (${invNo}) shows IFSC: ${invoiceIfsc}, Account number: ${invoiceAccount}.`
+      );
+      bankLines.push(
+        `Vendor master shows IFSC: ${(matchedVendor && matchedVendor.ifsc) || 'Not on file'}, Account number: ${(matchedVendor && matchedVendor.account) || 'Not on file'}.`
+      );
+    }
+    bankLines.push(`Note: ${RULES_CHECK_DISCLAIMER}`);
+    return stripProhibitedWords(bankLines.join('\n'));
+  }
+
+  const lines = [];
+
+  if (checkRecord) {
+    lines.push(`Invoice Check Summary (${fileLabel}):`);
+    lines.push(`• Verdict: ${verdict} (Rule Status: ${status})`);
+    lines.push(`• Invoice No: ${invNo} | Date: ${invDate}`);
+    lines.push(`• Supplier: ${supplier} | Supplier GSTIN: ${supplierGstin} | Buyer GSTIN: ${buyerGstin}`);
+    lines.push(`• Amounts: Taxable INR ${taxable} | Total INR ${total} | Description: ${desc}`);
+    lines.push(`• Bank Details on Invoice: IFSC: ${invoiceIfsc} | Account number: ${invoiceAccount} (Rule AP-05 is ${ap05Tier})`);
+    if (dq) {
+      lines.push(`• Data Quality (Step 5): Arithmetic ${dq.arithmeticStatus} (${dq.arithmeticText}) · GSTIN format ${dq.gstinStatus} (${dq.gstinText})`);
+    }
+    if (Array.isArray(parsedResult.similarInvoices)) {
+      const simCount = parsedResult.similarInvoices.length;
+      lines.push(`• Past Invoices Lookup (Step 7): ${simCount > 0 ? `${simCount} past posted invoice(s) found for this supplier` : 'No matching past posted invoices found'}.`);
+    }
+    lines.push('');
+  }
+
+  lines.push('Summary of the 10-Step Invoice Check Pipeline:');
+  if (steps) {
+    for (const s of steps) {
+      lines.push(`${s.step}. ${s.title} [${s.status}] — ${s.detail}`);
+    }
+  } else {
+    lines.push('1. Received the file — Validates file size (max 10 MB) and reads the uploaded document.');
+    lines.push('2. Detected the file type — Identifies PDF with text, Scanned PDF, Image (PNG/JPG), XLSX, or CSV.');
+    lines.push('3. Read the document — Extracts embedded PDF text or runs Tesseract OCR + QR e-Invoice JWT decoding.');
+    lines.push('4. Extracted the fields — Extracts key fields (Supplier Name, Supplier GSTIN, Buyer GSTIN, Invoice No, Date, PO, Taxable, Taxes, Total, Bank IFSC/Account).');
+    lines.push('5. Checked arithmetic and GSTIN format — Verifies Taxable + CGST + SGST + IGST = Total and checks the 15-character GSTIN format & modulo-36 check-character.');
+    lines.push('6. Ran the active rules AP-02, AP-03, AP-09, AP-11 — Evaluates the 4 active fraud and duplicate detection rules.');
+    lines.push('7. Looked up similar past invoices — Cross-checks against posted invoices and vendor master records.');
+    lines.push('8. Decided from the rules — Computes PASS (Passed checks), HOLD (Needs review), or REJECT (Blocked).');
+    lines.push('9. Saved to the check log — Records the tamper-evident check and audit trail for Check History export.');
+    lines.push('10. Showed the result — Displays the verdict, triggered rule reasons, and recommended next action.');
+  }
+
+  lines.push('');
+  lines.push('Rules Used to Check the Invoice (4 Active Fraud Rules + Data Quality Checks):');
+  lines.push('• AP-02 (Exact duplicate — Outcome: REJECT): Checks if an invoice from the same supplier GSTIN in the same financial year (April–March) already has the same normalised invoice number or IRN.');
+  lines.push('• AP-03 (GSTIN reuse — Outcome: REJECT): Checks if one GSTIN is registered across more than one vendor ID in the vendor master (unless on the parent/affiliate exemption list).');
+  lines.push('• AP-09 (Same vendor, amount and services — Outcome: REJECT): Checks if the same supplier submitted another bill for the exact same amount with >=90% description similarity within 90 days (recurring contract POs excluded).');
+  lines.push('• AP-11 (Split invoices — Outcome: HOLD): Checks if two or more bills from the same supplier within 14 days each sit within 5% below an approval threshold while their combined total reaches >= 1,00,000 INR.');
+  lines.push('• Step 5 Data Checks (Arithmetic & GSTIN Format): Verifies that Taxable + Tax equals Total and validates the 15-character GSTIN structure and check-character.');
+
+  if (activeResults && activeResults.length > 0) {
+    lines.push('');
+    lines.push('Active Rule Results for This Invoice:');
+    for (const r of activeResults) {
+      lines.push(`• ${r.id} (${r.title}): ${r.tier} — ${r.text}`);
+    }
+  }
+
+  lines.push('');
+  lines.push(`Note: ${RULES_CHECK_DISCLAIMER}`);
+
+  return stripProhibitedWords(lines.join('\n'));
+}
+
+/**
+ * Redacts invoice-level values (supplier names, GSTINs, invoice numbers, bank details, amounts)
+ * from rule reason strings when ALLOW_INVOICE_DATA_TO_LLM is not "true".
+ */
+function sanitizeRuleReasonForLlm(reasonText, checkRecord = null, fields = {}) {
+  let out = String(reasonText || '')
+    .replace(/\b\d{2}[A-Z]{5}\d{4}[A-Z][1-9A-Z]Z[0-9A-Z]\b/gi, '[REDACTED_GSTIN]')
+    .replace(/\b[A-Z]{4}0[A-Z0-9]{6}\b/g, '[REDACTED_IFSC]')
+    .replace(/\b\d{9,18}\b/g, '[REDACTED_ACCOUNT]')
+    .replace(/\b(?:INV|BILL|DUP|SSFS|CLEAN|REPEAT)[\/\-][A-Za-z0-9\/\-]+\b/gi, '[REDACTED_INVOICE_NO]')
+    .replace(/(?:INR|Rs\.?)\s*[\d,]+(?:\.\d{2})?/gi, '[REDACTED_AMOUNT]')
+    .replace(/\b\d{1,3}(?:,\d{2,3})+(?:\.\d{2})?\b/g, '[REDACTED_AMOUNT]');
+
+  const dynamicSecrets = [
+    checkRecord && checkRecord.supplierName,
+    checkRecord && checkRecord.supplierGstin,
+    checkRecord && checkRecord.invoiceNo,
+    checkRecord && checkRecord.total !== undefined && checkRecord.total !== null ? String(checkRecord.total) : null,
+    fields && fields.supplierName,
+    fields && fields.supplierGstin,
+    fields && fields.buyerGstin,
+    fields && fields.invoiceNo,
+    fields && fields.ifsc,
+    fields && fields.bankIfsc,
+    fields && fields.accountNo,
+    fields && fields.bankAccount,
+    fields && fields.account,
+    fields && fields.total !== undefined && fields.total !== null ? String(fields.total) : null,
+    fields && fields.taxable !== undefined && fields.taxable !== null ? String(fields.taxable) : null,
+  ].filter(Boolean);
+
+  for (const secret of dynamicSecrets) {
+    const s = String(secret).trim();
+    if (s.length >= 3) {
+      out = out.split(s).join('[REDACTED]');
+    }
+  }
+  return out;
+}
+
+/**
+ * Builds the outgoing LLM request for follow-up invoice questions.
+ * - Grounding context contains only: verdict, rule IDs, rule results, rule reasons,
+ *   and (only when ALLOW_INVOICE_DATA_TO_LLM === 'true') field names with their values.
+ * - Never sends raw PDF text, image data, or file contents.
+ * - When ALLOW_INVOICE_DATA_TO_LLM is "false" or unset, sends only verdict, rule IDs,
+ *   results, and redacted reasons (no supplier name, GSTIN, bank details, or amounts).
+ */
+function buildInvoiceOutgoingRequest({ checkRecord, parsedResult = {}, activeResults = [], question, allowInvoiceData = false }) {
+  const status = (checkRecord && checkRecord.status) || parsedResult.status || 'PASS';
+  const verdict = toVerdictLabel(status, activeResults);
+  const f = (parsedResult && parsedResult.fields) || {};
+
+  const rulesSummary = activeResults.map(r => ({
+    ruleId: r.id || r.ruleId,
+    result: r.tier || r.result,
+    reason: allowInvoiceData
+      ? stripProhibitedWords(r.text || r.reason || '')
+      : sanitizeRuleReasonForLlm(stripProhibitedWords(r.text || r.reason || ''), checkRecord, f),
+  }));
+
+  const grounding = {
+    verdict,
+    activeRules: rulesSummary,
+    disabledRules: DISABLED_RULE_IDS,
+  };
+
+  if (allowInvoiceData && checkRecord) {
+    grounding.fields = {
+      invoiceNo: checkRecord.invoiceNo || f.invoiceNo || null,
+      invoiceDate: checkRecord.invoiceDate || f.invoiceDate || null,
+      poNumber: f.poNumber || null,
+      description: f.description || null,
+      supplierName: checkRecord.supplierName || f.supplierName || null,
+      supplierGstin: checkRecord.supplierGstin || f.supplierGstin || null,
+      buyerGstin: f.buyerGstin || null,
+      taxable: f.taxable ?? null,
+      cgst: f.cgst ?? null,
+      sgst: f.sgst ?? null,
+      igst: f.igst ?? null,
+      total: checkRecord.total ?? f.total ?? null,
+      ifsc: f.bankIfsc || f.ifsc || null,
+      accountNo: f.bankAccount || f.accountNo || f.account || null,
+    };
+  }
+
+  return {
+    question: allowInvoiceData ? String(question || '') : sanitizeRuleReasonForLlm(question, checkRecord, f),
+    grounding,
+  };
+}
+
+/**
+ * Builds the grounding payload sent to Gemini for general assistant status queries.
  * Exported so unit and acceptance tests can inspect the exact payload and verify
  * zero GSTIN, bank account, or invoice amount leakage when ALLOW_INVOICE_DATA_TO_LLM is not "true".
  */
@@ -128,18 +418,26 @@ function buildGroundingPayload(dbStats, allowInvoiceData = false) {
 }
 
 function enrichRuleResult(res) {
-  const results = res.results || [];
+  const results = (res.results || []).map(r => ({
+    ...r,
+    text: stripProhibitedWords(r.text),
+  }));
   const activeResults = results.filter(r => ACTIVE_RULE_IDS.includes(r.id));
   const disabledResults = results.filter(r => r.tier === 'DISABLED');
+  const verdict = toVerdictLabel(res.status, activeResults);
+  const explanation = buildVerdictExplanation(verdict, activeResults);
   return {
     ...res,
+    results,
     activeResults,
     disabledRulesCount: disabledResults.length || 10,
+    verdict,
+    explanation,
+    disclaimer: RULES_CHECK_DISCLAIMER,
   };
 }
 
 async function performLookupForInvoice(inv, posted, user, masters) {
-  // Executes lookup layer functions (honours CLIENT_DB_LOOKUP_ENABLED)
   const source = lookup.isClientDbEnabled() ? 'client database' : 'masters file';
   const fy = U.fiscalYear(inv.invoiceDate);
   const vendors = await lookup.findVendorByGstin(inv.supplierGstin, { user, masters });
@@ -283,13 +581,22 @@ class FraudService extends cds.ApplicationService {
       }));
     };
 
-    const persist = async (inv, result, source, req) => {
+    const persist = async (inv, result, source, req, extraMeta = {}) => {
       const user = req ? getUserId(req) : 'reviewer';
-      const checkId = crypto.randomUUID();
+      const checkId = extraMeta.checkId || crypto.randomUUID();
       const enriched = enrichRuleResult(result);
+      const storedPayload = {
+        ...enriched,
+        steps: extraMeta.steps || undefined,
+        dataQuality: extraMeta.dataQuality || undefined,
+        fields: extraMeta.fields || publicView(inv),
+        lookupSource: extraMeta.lookupInfo ? extraMeta.lookupInfo.source : undefined,
+        similarInvoices: extraMeta.lookupInfo ? extraMeta.lookupInfo.pastPosted : undefined,
+      };
+      const ts = new Date().toISOString();
       await cds.run(INSERT.into(E.Checks).entries({
         ID: checkId,
-        createdAt: new Date().toISOString(),
+        createdAt: ts,
         createdBy: user,
         source,
         fileName: inv.fileName || null,
@@ -299,9 +606,9 @@ class FraudService extends cds.ApplicationService {
         invoiceDate: inv.invoiceDate || null,
         total: inv.total ?? null,
         status: result.status,
-        resultJson: JSON.stringify(enriched),
+        resultJson: JSON.stringify(storedPayload),
       }));
-      await cds.run(INSERT.into(E.CheckResults).entries(result.results.map(r => ({
+      await cds.run(INSERT.into(E.CheckResults).entries(enriched.results.map(r => ({
         ID: crypto.randomUUID(),
         check_ID: checkId,
         ruleId: r.id,
@@ -309,12 +616,12 @@ class FraudService extends cds.ApplicationService {
         tier: r.tier,
         text: r.text,
       }))));
-      const alerts = result.results.filter(r => ['REJECT', 'HOLD', 'FLAG'].includes(r.tier));
+      const alerts = enriched.results.filter(r => ['REJECT', 'HOLD', 'FLAG'].includes(r.tier));
       for (const r of alerts) {
         r.alertId = crypto.randomUUID();
         await cds.run(INSERT.into(E.Alerts).entries({
           ID: r.alertId,
-          createdAt: new Date().toISOString(),
+          createdAt: ts,
           createdBy: user,
           check_ID: checkId,
           ruleId: r.id,
@@ -324,18 +631,29 @@ class FraudService extends cds.ApplicationService {
           decision: 'OPEN',
         }));
       }
-      await audit(
-        'CHECK',
-        checkId,
-        `${result.status} ${inv.invoiceNo || ''}: ${alerts.map(a => a.id).join(', ') || 'no alerts'}`,
-        { user, fileName: inv.fileName || inv.invoiceNo || source, result: result.status }
-      );
+
+      if (source === 'CHAT') {
+        // Section 6: Log the user, time, file name and verdict. Do not log file contents or any key.
+        console.log(`[CHAT_CHECK] User: ${user}, Time: ${ts}, File: ${inv.fileName || 'invoice.pdf'}, Verdict: ${enriched.verdict}`);
+        await audit(
+          'CHAT_CHECK',
+          checkId,
+          `Verdict: ${enriched.verdict} (${result.status})`,
+          { user, fileName: inv.fileName || 'invoice.pdf', result: enriched.verdict }
+        );
+      } else {
+        await audit(
+          'CHECK',
+          checkId,
+          `${result.status} ${inv.invoiceNo || ''}: ${alerts.map(a => a.id).join(', ') || 'no alerts'}`,
+          { user, fileName: inv.fileName || inv.invoiceNo || source, result: result.status }
+        );
+      }
       return checkId;
     };
 
     const applyDecision = async (req, alertId, decision, comment) => {
       const roles = getUserRoles(req);
-      // RBAC: A clerk cannot decide an alert. An auditor cannot decide. Only APController can decide.
       if (!roles.includes('APController')) {
         if (roles.includes('APClerk')) return req.reject(403, 'A clerk cannot decide an alert.');
         if (roles.includes('Auditor')) return req.reject(403, 'An auditor cannot decide an alert.');
@@ -389,8 +707,8 @@ class FraudService extends cds.ApplicationService {
       return JSON.stringify({ fileName, count: list.length, invoices: list.map(i => ({ ...i, source: 'S4' })) });
     });
 
-    // Full upload + extraction + 10-step check pipeline supporting PDF, PNG, and JPG
-    const handleDocumentUpload = async (req, { fileName, fileSize, fileBase64, runCheck = true }) => {
+    // Full upload + extraction + check pipeline supporting PDF, PNG, JPG, CSV, and XLSX
+    const handleDocumentUpload = async (req, { fileName, fileSize, fileBase64, runCheck = true, source = 'UPLOAD' }) => {
       const roles = getUserRoles(req);
       if (roles.includes('Auditor') && !roles.includes('APClerk') && !roles.includes('APController')) {
         return req.reject(403, 'An auditor cannot upload or check invoices.');
@@ -414,6 +732,7 @@ class FraudService extends cds.ApplicationService {
       let qrJwt = null;
       let readStatus = 'done';
       let readDetail = '';
+      let preExtractedFields = null;
 
       if (detection.kind === 'PDF') {
         const pdfTextRes = await extractPdfText(buf);
@@ -442,8 +761,7 @@ class FraudService extends cds.ApplicationService {
             readDetail = `Read by OCR (confidence: ${ocrConfidence}%). "${text.replace(/\s+/g, ' ').slice(0, 90)}..."`;
           }
         }
-      } else {
-        // PNG or JPG image
+      } else if (detection.kind === 'PNG' || detection.kind === 'JPG') {
         fileTypeLabel = 'Image (PNG or JPG)';
         ocrUsed = true;
         qrJwt = await findQrInImage(buf);
@@ -459,6 +777,28 @@ class FraudService extends cds.ApplicationService {
           warning = OCR_WARNING_MSG;
           readDetail = `Read by OCR (confidence: ${ocrConfidence}%). "${text.replace(/\s+/g, ' ').slice(0, 90)}..."`;
         }
+      } else if (detection.kind === 'CSV') {
+        fileTypeLabel = 'CSV Spreadsheet';
+        text = buf.toString('utf8');
+        const rows = parseCsv(text);
+        if (rows.length > 0) {
+          preExtractedFields = s4RowToInvoice(rows[0], 0);
+          delete preExtractedFields.id;
+          delete preExtractedFields.source;
+        }
+        readDetail = `Parsed CSV (${rows.length} row(s))`;
+      } else if (detection.kind === 'XLSX') {
+        fileTypeLabel = 'Excel Spreadsheet (XLSX)';
+        const rawText = buf.toString('utf8');
+        const xmlTextMatches = [...rawText.matchAll(/<t[^>]*>([^<]+)<\/t>/g)].map(m => m[1]);
+        text = xmlTextMatches.length > 0 ? xmlTextMatches.join('\n') : rawText;
+        const rows = parseCsv(text);
+        if (rows.length > 0 && (rows[0].invoiceno || rows[0].suppliergstin)) {
+          preExtractedFields = s4RowToInvoice(rows[0], 0);
+          delete preExtractedFields.id;
+          delete preExtractedFields.source;
+        }
+        readDetail = 'Extracted spreadsheet fields from XLSX';
       }
 
       if (readStatus === 'failed') {
@@ -490,7 +830,9 @@ class FraudService extends cds.ApplicationService {
         });
       }
 
-      const fields = extractFields(text);
+      const fields = preExtractedFields && Object.keys(preExtractedFields).length > 0
+        ? preExtractedFields
+        : extractFields(text);
       if (qrJwt) fields.qrJwt = qrJwt;
       const threshold = (masters.config && masters.config.ocrLowConfidenceThreshold) || 70;
       const fieldConfidences = computeFieldConfidences(fields, {
@@ -500,12 +842,13 @@ class FraudService extends cds.ApplicationService {
         threshold,
       });
 
+      const effectiveSource = source === 'CHAT' ? 'CHAT' : 'UPLOAD';
       const inv = parseInvoice({
         ...fields,
         fileName,
         pdfText: text,
         pdfMeta: detection.kind === 'PDF' ? readPdfMeta(buf) : { producer: detection.kind, creator: '' },
-        source: 'UPLOAD',
+        source: effectiveSource,
       });
 
       const posted = await cds.run(SELECT.from(E.Posted));
@@ -525,7 +868,7 @@ class FraudService extends cds.ApplicationService {
         irpPublicKeyPem: process.env.IRP_PUBLIC_KEY_PEM || undefined,
       });
       const enriched = enrichRuleResult(rawResult);
-      const checkId = runCheck ? await persist(inv, rawResult, 'UPLOAD', req) : null;
+      const preCheckId = runCheck ? crypto.randomUUID() : null;
 
       const steps = buildTenSteps({
         fileName,
@@ -538,12 +881,23 @@ class FraudService extends cds.ApplicationService {
         activeResults: enriched.activeResults,
         lookupInfo,
         finalStatus: enriched.status,
-        checkId,
+        checkId: preCheckId,
       });
+
+      const checkId = runCheck
+        ? await persist(inv, rawResult, effectiveSource, req, {
+            checkId: preCheckId,
+            steps,
+            dataQuality,
+            fields,
+            lookupInfo,
+          })
+        : null;
 
       return JSON.stringify({
         ok: true,
         checkId,
+        source: effectiveSource,
         fileName,
         fileSize: actualSize,
         fileType: fileTypeLabel,
@@ -559,6 +913,9 @@ class FraudService extends cds.ApplicationService {
         ocrConfidence,
         warning,
         status: enriched.status,
+        verdict: enriched.verdict,
+        explanation: enriched.explanation,
+        disclaimer: enriched.disclaimer,
         results: enriched.results,
         activeResults: enriched.activeResults,
         disabledRulesCount: enriched.disabledRulesCount,
@@ -574,22 +931,35 @@ class FraudService extends cds.ApplicationService {
         fileSize: Buffer.from(pdfBase64 || '', 'base64').length,
         fileBase64: pdfBase64,
         runCheck: false,
+        source: 'UPLOAD',
       });
     });
 
     this.on('uploadDocument', async req => {
+      const { fileName, fileSize, fileBase64, source } = req.data;
+      return handleDocumentUpload(req, {
+        fileName,
+        fileSize,
+        fileBase64,
+        runCheck: true,
+        source: source || 'UPLOAD',
+      });
+    });
+
+    // Section 6: Chat-mode invoice check reusing extractPdf/handleDocumentUpload and checkInvoice with source "CHAT"
+    this.on('chatCheckInvoice', async req => {
       const { fileName, fileSize, fileBase64 } = req.data;
       return handleDocumentUpload(req, {
         fileName,
         fileSize,
         fileBase64,
         runCheck: true,
+        source: 'CHAT',
       });
     });
 
     this.on('checkInvoice', async req => {
       const roles = getUserRoles(req);
-      // RBAC: An auditor cannot check
       if (roles.includes('Auditor') && !roles.includes('APClerk') && !roles.includes('APController')) {
         return req.reject(403, 'An auditor cannot check invoices.');
       }
@@ -615,7 +985,8 @@ class FraudService extends cds.ApplicationService {
         irpPublicKeyPem: process.env.IRP_PUBLIC_KEY_PEM || undefined,
       });
       const enriched = enrichRuleResult(result);
-      const checkId = await persist(inv, result, inv.source || 'UPLOAD', req);
+      const effectiveSource = inv.source || 'UPLOAD';
+      const preCheckId = crypto.randomUUID();
 
       const steps = buildTenSteps({
         fileName: inv.fileName || inv.invoiceNo || 'manual-entry',
@@ -628,11 +999,20 @@ class FraudService extends cds.ApplicationService {
         activeResults: enriched.activeResults,
         lookupInfo,
         finalStatus: enriched.status,
-        checkId,
+        checkId: preCheckId,
+      });
+
+      const checkId = await persist(inv, result, effectiveSource, req, {
+        checkId: preCheckId,
+        steps,
+        dataQuality,
+        fields: publicView(inv),
+        lookupInfo,
       });
 
       return JSON.stringify({
         checkId,
+        source: effectiveSource,
         ...enriched,
         dataQuality,
         lookupSource: lookupInfo.source,
@@ -653,7 +1033,6 @@ class FraudService extends cds.ApplicationService {
       const list = JSON.parse(req.data.invoices).map(parseInvoice);
       const posted = await cds.run(SELECT.from(E.Posted));
 
-      // Verify lookup layer availability once before batch
       if (list.length > 0) {
         try {
           await performLookupForInvoice(list[0], posted, user, masters);
@@ -681,7 +1060,6 @@ class FraudService extends cds.ApplicationService {
 
     this.on('postInvoice', async req => {
       const roles = getUserRoles(req);
-      // RBAC: A controller cannot post (unless they also hold APClerk). An auditor cannot post.
       if (roles.includes('APController') && !roles.includes('APClerk')) {
         return req.reject(403, 'A controller cannot post.');
       }
@@ -755,105 +1133,271 @@ class FraudService extends cds.ApplicationService {
     });
 
     // -------------------------------------------------------------
-    // SECTION 5: AI ASSISTANT (Read-only, Server-side)
+    // SECTION 5: FOLLOW-UP QUESTIONS & READ-ONLY AI SERVICE
     // -------------------------------------------------------------
-    this.on('chat', async req => {
+    const verifiedModelsCache = new Map();
+
+    const readEnvConfig = (req) => {
+      const envVars = {};
+      try {
+        const envPath = path.join(__dirname, '../.env');
+        if (fs.existsSync(envPath)) {
+          const lines = fs.readFileSync(envPath, 'utf8').split('\n');
+          for (const line of lines) {
+            const trimmed = line.trim();
+            if (trimmed && !trimmed.startsWith('#')) {
+              const eq = trimmed.indexOf('=');
+              if (eq !== -1) {
+                envVars[trimmed.slice(0, eq).trim()] = trimmed.slice(eq + 1).trim();
+              }
+            }
+          }
+        }
+      } catch {}
+
+      if (req && req.headers && req.headers['x-gemini-api-key-unset'] === 'true') {
+        return {
+          apiKey: '',
+          modelName: 'gemini-3.5-flash-lite',
+          allowInvoiceData: false,
+        };
+      }
+
+      const rawKey = (process.env.GEMINI_API_KEY && process.env.GEMINI_API_KEY.trim())
+        || (process.env.API_KEY && process.env.API_KEY.trim())
+        || envVars.GEMINI_API_KEY
+        || '';
+      const rawModel = (process.env.GEMINI_MODEL && process.env.GEMINI_MODEL.trim())
+        || envVars.GEMINI_MODEL
+        || 'gemini-3.5-flash-lite';
+      const rawAllow = (process.env.ALLOW_INVOICE_DATA_TO_LLM && process.env.ALLOW_INVOICE_DATA_TO_LLM.trim())
+        || envVars.ALLOW_INVOICE_DATA_TO_LLM
+        || '';
+
+      return {
+        apiKey: String(rawKey || '').trim(),
+        modelName: String(rawModel || 'gemini-3.5-flash-lite').trim() || 'gemini-3.5-flash-lite',
+        allowInvoiceData: rawAllow ? String(rawAllow).trim() !== 'false' : true,
+      };
+    };
+
+    const verifyGeminiModelAvailable = async (apiKey, modelName) => {
+      if (!apiKey || !modelName) {
+        throw new Error('Missing API key or model name');
+      }
+      const cacheKey = `${apiKey.slice(0, 8)}:${modelName}`;
+      if (verifiedModelsCache.has(cacheKey)) {
+        return true;
+      }
+      const cleanModel = modelName.replace(/^models\//, '');
+      const url = `https://generativelanguage.googleapis.com/v1beta/models/${encodeURIComponent(cleanModel)}?key=${encodeURIComponent(apiKey)}`;
+      const res = await fetch(url, {
+        method: 'GET',
+        headers: { 'User-Agent': 'aistudio-build' },
+        signal: typeof AbortSignal !== 'undefined' && AbortSignal.timeout ? AbortSignal.timeout(10000) : undefined,
+      });
+      if (!res.ok) {
+        throw new Error(`Gemini model ${cleanModel} is not available (${res.status})`);
+      }
+      const data = await res.json();
+      const methods = data.supportedGenerationMethods || [];
+      if (!methods.includes('generateContent')) {
+        throw new Error(`Gemini model ${cleanModel} does not support generateContent`);
+      }
+      verifiedModelsCache.set(cacheKey, true);
+      return true;
+    };
+
+    // Pre-warm model verification cache asynchronously on startup
+    try {
+      const initCfg = readEnvConfig(null);
+      if (initCfg.apiKey) {
+        verifyGeminiModelAvailable(initCfg.apiKey, initCfg.modelName).catch(() => {});
+      }
+    } catch {}
+
+    const callGeminiSingle = async (apiKey, targetModel, systemInstruction, promptText) => {
+      await verifyGeminiModelAvailable(apiKey, targetModel);
+      const ai = new GoogleGenAI({
+        apiKey,
+        httpOptions: {
+          headers: {
+            'User-Agent': 'aistudio-build',
+          },
+        },
+      });
+      let timer = null;
+      try {
+        const timeoutPromise = new Promise((_, reject) => {
+          timer = setTimeout(() => reject(new Error('Gemini request timed out')), 15000);
+        });
+        const response = await Promise.race([
+          ai.models.generateContent({
+            model: targetModel.replace(/^models\//, ''),
+            contents: promptText,
+            config: {
+              systemInstruction,
+            },
+          }),
+          timeoutPromise,
+        ]);
+        if (response && response.text) {
+          const cleaned = String(response.text)
+            .replace(/\*\*/g, '')
+            .replace(/\$\\ge\$/g, '>=')
+            .replace(/\$\\le\$/g, '<=');
+          return stripProhibitedWords(cleaned);
+        }
+        throw new Error('Empty Gemini response');
+      } finally {
+        if (timer) clearTimeout(timer);
+      }
+    };
+
+    const callGeminiText = async (apiKey, modelName, systemInstruction, promptText) => {
+      try {
+        return await callGeminiSingle(apiKey, modelName, systemInstruction, promptText);
+      } catch (primaryErr) {
+        const msg = String((primaryErr && primaryErr.message) || '');
+        if (/401|403|API_KEY_INVALID|Missing API key/i.test(msg)) {
+          throw primaryErr;
+        }
+        const fallbackModel = 'gemini-2.5-flash';
+        if (modelName.replace(/^models\//, '') !== fallbackModel) {
+          return await callGeminiSingle(apiKey, fallbackModel, systemInstruction, promptText);
+        }
+        throw primaryErr;
+      }
+    };
+
+    const buildLocalInvoiceSupplement = ({ checkRecord, parsedResult = {}, question = '' }) => {
+      if (!checkRecord && (!parsedResult || !parsedResult.fields)) return '';
+      const f = (parsedResult && parsedResult.fields) || {};
+      const invNo = (checkRecord && checkRecord.invoiceNo) || f.invoiceNo || 'Not shown on invoice';
+      const invDate = (checkRecord && checkRecord.invoiceDate) || f.invoiceDate || 'Not shown on invoice';
+      const supplier = (checkRecord && checkRecord.supplierName) || f.supplierName || 'Not shown on invoice';
+      const supplierGstin = (checkRecord && checkRecord.supplierGstin) || f.supplierGstin || 'Not shown on invoice';
+      const buyerGstin = f.buyerGstin || 'Not shown on invoice';
+      const poNumber = f.poNumber || 'Not shown on invoice';
+      const desc = f.description || 'Not shown on invoice';
+      const fmtNum = (val) => (val !== undefined && val !== null && val !== '' ? `INR ${Number(val).toLocaleString('en-IN', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}` : 'Not shown on invoice');
+      const totalVal = (checkRecord && checkRecord.total !== undefined && checkRecord.total !== null) ? checkRecord.total : f.total;
+      const totalStr = fmtNum(totalVal);
+      const taxableStr = fmtNum(f.taxable);
+      const cgstStr = fmtNum(f.cgst);
+      const sgstStr = fmtNum(f.sgst);
+      const igstStr = fmtNum(f.igst);
+      const invIfsc = f.bankIfsc || f.ifsc || 'Not shown on invoice';
+      const invAcct = f.bankAccount || f.accountNo || f.account || 'Not shown on invoice';
+      const allResults = parsedResult.results || [];
+      const ap05Rule = allResults.find(r => r.id === 'AP-05');
+      const ap05Tier = ap05Rule ? ap05Rule.tier : 'DISABLED';
+
+      const q = String(question || '').toLowerCase();
+      const lines = ['Invoice details from current check:'];
+      if (/\b(bank|account|acct|ifsc|beneficiary|branch|neft|rtgs|iban|ap-?05)\b/i.test(q)) {
+        lines.push(`• Bank IFSC: ${invIfsc}`);
+        lines.push(`• Bank account number: ${invAcct}`);
+        lines.push(`• Rule AP-05 (Bank details changed): ${ap05Tier}`);
+      } else if (/\b(much|bill|amount|amounts|total|tax|taxes|taxable|cgst|sgst|igst|price|cost|value|money|pay|payment)\b/i.test(q)) {
+        lines.push(`• Total amount: ${totalStr}`);
+        lines.push(`• Taxable amount: ${taxableStr}`);
+        lines.push(`• Taxes: CGST ${cgstStr} · SGST ${sgstStr} · IGST ${igstStr}`);
+        lines.push(`• Invoice number: ${invNo} (${invDate})`);
+      } else if (/\b(supplier|vendor|seller|buyer|who|company|party|gstin|gst)\b/i.test(q)) {
+        lines.push(`• Supplier name: ${supplier}`);
+        lines.push(`• Supplier GSTIN: ${supplierGstin}`);
+        lines.push(`• Buyer GSTIN: ${buyerGstin}`);
+        lines.push(`• Invoice number: ${invNo} · Total: ${totalStr}`);
+      } else {
+        lines.push(`• Invoice number: ${invNo} · Date: ${invDate} · PO: ${poNumber}`);
+        lines.push(`• Supplier: ${supplier} · GSTIN: ${supplierGstin}`);
+        lines.push(`• Total: ${totalStr} (Taxable: ${taxableStr}, CGST: ${cgstStr}, SGST: ${sgstStr}, IGST: ${igstStr})`);
+        lines.push(`• Description: ${desc}`);
+        lines.push(`• Bank details: IFSC ${invIfsc} · Account number ${invAcct} (Rule AP-05: ${ap05Tier})`);
+      }
+      return lines.join('\n');
+    };
+
+    const handleInvoiceQuestion = async (req, checkId, questionText) => {
       const user = getUserId(req);
-      const activeRules = ACTIVE_RULE_IDS;
+      const q = String(questionText || '').trim();
 
-      // 5.5 Log each chat request: user ID, time, rule IDs used. Never log prompt text or key.
-      console.log(`[CHAT_AUDIT] User: ${user}, Time: ${new Date().toISOString()}, Rules: ${activeRules.join(',')}`);
+      // Scope check: refuse only questions clearly unrelated to this invoice check
+      if (!isInvoiceRelatedQuestion(q)) {
+        return REFUSAL_MSG;
+      }
 
-      const apiKey = process.env.GEMINI_API_KEY;
-      if (!apiKey || apiKey.trim() === '') {
+      let checkRecord = null;
+      let parsedResult = {};
+      let activeResults = [];
+      if (checkId) {
+        checkRecord = await cds.run(SELECT.one.from(E.Checks).where({ ID: checkId }));
+      }
+      if (!checkRecord) {
+        checkRecord = await cds.run(SELECT.one.from(E.Checks).orderBy('createdAt desc'));
+      }
+      if (checkRecord && checkRecord.resultJson) {
+        try {
+          parsedResult = JSON.parse(checkRecord.resultJson);
+          activeResults = parsedResult.activeResults || (parsedResult.results || []).filter(r => ACTIVE_RULE_IDS.includes(r.id));
+        } catch {}
+      }
+
+      const status = (checkRecord && checkRecord.status) || parsedResult.status || 'PASS';
+      const verdict = toVerdictLabel(status, activeResults);
+
+      // Requirement 10: Log each request: user ID, time, verdict, rule IDs. No keys, no file contents.
+      console.log(`[CHAT_AUDIT] User: ${user}, Time: ${new Date().toISOString()}, Verdict: ${verdict}, Rules: ${ACTIVE_RULE_IDS.join(',')}`);
+
+      const { apiKey, modelName, allowInvoiceData } = readEnvConfig(req);
+      if (!apiKey) {
         return 'The assistant is not configured.';
       }
 
-      const allowInvoiceData = process.env.ALLOW_INVOICE_DATA_TO_LLM === 'true';
+      const outgoingRequest = buildInvoiceOutgoingRequest({
+        checkRecord,
+        parsedResult,
+        activeResults,
+        question: q,
+        allowInvoiceData,
+      });
 
-      // Gather database grounding context
-      const posted = await cds.run(SELECT.from(E.Posted));
-      const alerts = await cds.run(SELECT.from(E.Alerts));
-      const checks = await cds.run(SELECT.from(E.Checks));
-      const auditRows = await cds.run(SELECT.from(E.AuditLog).orderBy('idx asc'));
+      const systemInstruction = `You are Blus Invoice Agent, the AI assistant for invoice duplicate and split-invoice detection on SAP BTP.
+Write in clean, natural plain text (do not use markdown **bold** asterisks or LaTeX symbols).
+Answer the user's question directly and conversationally using the Grounding Context below.
+- Do NOT repeat all four rules on every message if the user is just asking a specific question (such as how much the bill is, who the supplier is, what the invoice number or date is, what services were billed, or what the bank account is). Answer their specific question directly and concisely!
+- If the user asks about the rules, why the invoice passed/failed, or "is this real or fake" / "is this genuine": explain the verdict (${verdict}), the active rule results (AP-02, AP-03, AP-09, AP-11), and mention that this is a rules check only and does not prove the invoice is genuine.
+- If the user asks about bank account or IFSC details: state the IFSC and account number from the invoice fields, and mention that rule AP-05 (Bank details changed) is currently DISABLED.
+- Never use the words "fake" or "real" in your response.
 
-      let auditChainValid = true;
-      let prev = '';
-      for (const r of auditRows) {
-        const expected = U.auditHash(r.idx, r.ts, r.checkId || '', r.action, r.detail || '', prev);
-        if (r.prevHash !== prev || r.hash !== expected) {
-          auditChainValid = false;
-          break;
-        }
-        prev = r.hash;
-      }
-
-      const groundingPayload = buildGroundingPayload(
-        { posted, alerts, checks, auditRows, auditChainValid },
-        allowInvoiceData
-      );
-
-      const systemInstruction = `You are the read-only AI Assistant for AP Sentinel on SAP BTP.
-Active fraud rules:
-- AP-02 Exact duplicate: Same supplier GSTIN, same financial year (April to March), same normalised invoice number, or same IRN. Outcome: REJECT.
-- AP-03 GSTIN reuse: One GSTIN registered to more than one vendor ID (unless on the parent/affiliate exemption list). Outcome: REJECT.
-- AP-09 Same vendor, amount and services: Same supplier, same amount, description similarity >= 90%, within 90 days (recurring contract POs excluded). Outcome: REJECT (overridable only by CFO and Controller together with a logged reason).
-- AP-11 Split invoices: Two or more bills from one vendor within 14 days, each in the 5% band below an approval limit, whose total reaches the limit (>= 1,00,000 INR). Outcome: HOLD.
-(The other 10 rules AP-01, AP-04 to AP-08, AP-10, AP-12 to AP-14 are disabled by configuration).
-
-Current Database Grounding Context:
-${JSON.stringify(groundingPayload, null, 2)}
-
-Allowed actions:
-- Explain why an invoice or alert was put on HOLD or REJECT using the rule text.
-- Help a reviewer choose CLEAR, CONFIRM or ESCALATE and draft a comment (the reviewer makes the final decision).
-- Answer status questions accurately using the counts in the database grounding context (e.g. blockedInvoicesCount, openAlertsCount).
-- Draft a discrepancy email to a vendor as plain text only (start with "Subject:" so the user can copy it).
-- Explain the audit-chain verification result in plain language.
-
-Forbidden:
-- Never post, clear, confirm, or escalate anything.
-- Never change master data or call S/4HANA.
-- Never access raw PDFs or image files.`;
+Grounding Context:
+${JSON.stringify(outgoingRequest.grounding, null, 2)}`;
 
       try {
-        const ai = new GoogleGenAI({
-          apiKey,
-          httpOptions: {
-            headers: { 'User-Agent': 'aistudio-build' },
-          },
-        });
-
-        // 5.1 Model name comes from GEMINI_MODEL. Verify that the model is available to the account before use. Do not hard-code a model name.
-        let modelName = process.env.GEMINI_MODEL ? process.env.GEMINI_MODEL.trim() : '';
-        if (modelName) {
-          await ai.models.get({ model: modelName });
-        } else {
-          // Dynamically discover an available Flash model from the account without hard-coding a model name
-          const pager = await ai.models.list();
-          const available = [];
-          for await (const m of pager) {
-            if (m && m.name) available.push(m.name.replace(/^models\//, ''));
+        let reply = await callGeminiText(apiKey, modelName, systemInstruction, outgoingRequest.question);
+        if (!allowInvoiceData) {
+          const supplement = buildLocalInvoiceSupplement({ checkRecord, parsedResult, question: q });
+          if (supplement) {
+            reply = `${reply}\n\n${supplement}`;
           }
-          const flashModel = available.find(n => /gemini/i.test(n) && /flash/i.test(n) && !/image|tts|audio|thinking/i.test(n));
-          if (!flashModel) {
-            return 'The assistant is not configured.';
-          }
-          modelName = flashModel;
-          await ai.models.get({ model: modelName });
         }
-
-        const response = await ai.models.generateContent({
-          model: modelName,
-          contents: String(req.data.message || ''),
-          config: { systemInstruction },
-        });
-
-        return response.text || 'No response generated.';
+        return stripProhibitedWords(reply);
       } catch (e) {
         console.error('Gemini assistant error:', e.message);
         return 'The assistant is not configured.';
       }
+    };
+
+    this.on('askInvoice', async req => {
+      const { checkId, question } = req.data;
+      return handleInvoiceQuestion(req, checkId, question);
+    });
+
+    this.on('chat', async req => {
+      const message = String(req.data.message || '').trim();
+      const checkId = req.data.checkId || null;
+      return handleInvoiceQuestion(req, checkId, message);
     });
 
     return super.init();
@@ -861,6 +1405,14 @@ Forbidden:
 }
 
 FraudService.buildGroundingPayload = buildGroundingPayload;
+FraudService.buildInvoiceOutgoingRequest = buildInvoiceOutgoingRequest;
+FraudService.buildDetectionAndInvoiceSummary = buildDetectionAndInvoiceSummary;
+FraudService.toVerdictLabel = toVerdictLabel;
+FraudService.buildVerdictExplanation = buildVerdictExplanation;
+FraudService.isInvoiceRelatedQuestion = isInvoiceRelatedQuestion;
+FraudService.stripProhibitedWords = stripProhibitedWords;
+FraudService.RULES_CHECK_DISCLAIMER = RULES_CHECK_DISCLAIMER;
+FraudService.REFUSAL_MSG = REFUSAL_MSG;
 FraudService.ACTIVE_RULE_IDS = ACTIVE_RULE_IDS;
 FraudService.DISABLED_RULE_IDS = DISABLED_RULE_IDS;
 

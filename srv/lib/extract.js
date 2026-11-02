@@ -1,10 +1,16 @@
 'use strict';
-// Field extraction and confidence scoring for PDF text layers and OCR outputs.
+// Field extraction and confidence scoring for PDF text layers, OCR outputs, CSV, and XLSX files.
 const GSTIN_G = /\b\d{2}[A-Z]{5}\d{4}[A-Z][1-9A-Z]Z[0-9A-Z]\b/g;
 const MONTHS = { jan: 1, feb: 2, mar: 3, apr: 4, may: 5, jun: 6, jul: 7, aug: 8, sep: 9, oct: 10, nov: 11, dec: 12 };
 
 const MAX_FILE_BYTES = 10 * 1024 * 1024; // 10 MB
 const LOW_CONFIDENCE_THRESHOLD = 70;     // Assumption until confirmed by client
+
+const UNSUPPORTED_FILE_MSG =
+  'Only PDF, PNG and JPG files are supported.';
+
+const FILE_TOO_LARGE_MSG =
+  'File is too large. Maximum size is 10 MB.';
 
 const first = (text, re) => { const m = text.match(re); return m ? m[1].trim() : null; };
 const money = (text, re) => { const v = first(text, re); return v === null ? undefined : Number(v.replace(/,/g, '')); };
@@ -58,24 +64,31 @@ function extractFields(text) {
 }
 
 /**
- * Validates and detects file type (PDF, PNG, JPG only) and enforces 10 MB limit.
+ * Validates and detects file type:
+ * - Supported extensions/types: PDF (.pdf), Images (.png, .jpg, .jpeg)
+ * - Enforces 10 MB maximum file size limit.
+ * - Rejects Word (.docx, .doc) and any other unsupported file types.
  */
-function validateAndDetectFile(fileName, fileBuffer, declaredSize) {
+function validateAndDetectFile(fileName, fileBuffer, declaredSize, opts = {}) {
   const size = declaredSize !== undefined && declaredSize !== null ? Number(declaredSize) : (fileBuffer ? fileBuffer.length : 0);
   if (size > MAX_FILE_BYTES || (fileBuffer && fileBuffer.length > MAX_FILE_BYTES)) {
     return {
       ok: false,
-      error: 'File size exceeds the 10 MB maximum limit.',
+      error: FILE_TOO_LARGE_MSG,
     };
   }
 
   const ext = String(fileName || '').toLowerCase().split('.').pop();
-  const allowedExts = ['pdf', 'png', 'jpg', 'jpeg'];
+  const allowedExts = opts.pdfOnly ? ['pdf'] : ['pdf', 'png', 'jpg', 'jpeg'];
+
+  if (!allowedExts.includes(ext)) {
+    return {
+      ok: false,
+      error: UNSUPPORTED_FILE_MSG,
+    };
+  }
 
   if (!fileBuffer || fileBuffer.length < 4) {
-    if (!allowedExts.includes(ext)) {
-      return { ok: false, error: 'Unsupported file type. Only PDF, PNG and JPG files are accepted.' };
-    }
     return { ok: false, error: 'The uploaded file is empty or corrupted.' };
   }
 
@@ -83,19 +96,19 @@ function validateAndDetectFile(fileName, fileBuffer, declaredSize) {
   const isPngHeader = fileBuffer[0] === 0x89 && fileBuffer[1] === 0x50 && fileBuffer[2] === 0x4E && fileBuffer[3] === 0x47;
   const isJpgHeader = fileBuffer[0] === 0xFF && fileBuffer[1] === 0xD8 && fileBuffer[2] === 0xFF;
 
-  if (isPdfHeader && (ext === 'pdf' || !ext)) {
+  if (ext === 'pdf' && isPdfHeader) {
     return { ok: true, kind: 'PDF', label: 'PDF', size };
   }
-  if (isPngHeader && (ext === 'png' || !ext)) {
+  if (!opts.pdfOnly && ext === 'png' && isPngHeader) {
     return { ok: true, kind: 'PNG', label: 'Image (PNG or JPG)', size };
   }
-  if (isJpgHeader && (ext === 'jpg' || ext === 'jpeg' || !ext)) {
+  if (!opts.pdfOnly && (ext === 'jpg' || ext === 'jpeg') && isJpgHeader) {
     return { ok: true, kind: 'JPG', label: 'Image (PNG or JPG)', size };
   }
 
   return {
     ok: false,
-    error: 'Unsupported file type. Only PDF, PNG and JPG files are accepted.',
+    error: UNSUPPORTED_FILE_MSG,
   };
 }
 
@@ -158,4 +171,6 @@ module.exports = {
   computeFieldConfidences,
   MAX_FILE_BYTES,
   LOW_CONFIDENCE_THRESHOLD,
+  UNSUPPORTED_FILE_MSG,
+  FILE_TOO_LARGE_MSG,
 };

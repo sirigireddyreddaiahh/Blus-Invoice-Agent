@@ -58,7 +58,9 @@ async function main() {
     next();
   });
 
-  // Serve static UI from /app and sample files from /samples
+  // Serve static UI from /app, uploaded assets from /public/assets, and sample files from /samples
+  app.use('/assets', express.static(path.join(__dirname, 'public/assets')));
+  app.use('/public', express.static(path.join(__dirname, 'public')));
   app.use('/samples', express.static(path.join(__dirname, 'samples')));
   app.use(express.static(path.join(__dirname, 'app')));
 

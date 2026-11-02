@@ -3,195 +3,231 @@
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>AP Sentinel — Duplicate Invoice Detection Agent</title>
-  <meta name="description" content="SAP BTP Accounts Payable Invoice Fraud & Duplicate Check Engine with Read-Only AI Assistant">
-  <meta property="og:title" content="AP Sentinel — Duplicate Invoice Detection Agent">
-  <meta property="og:description" content="SAP BTP Accounts Payable Invoice Fraud & Duplicate Check Engine with Read-Only AI Assistant">
+  <title>Blus Invoice Agent — Catches duplicate and split invoices before they get paid.</title>
+  <meta name="description" content="Blus Invoice Agent — Catches duplicate and split invoices before they get paid.">
+  <meta property="og:title" content="Blus Invoice Agent — Catches duplicate and split invoices before they get paid.">
+  <meta property="og:description" content="Blus Invoice Agent — Catches duplicate and split invoices before they get paid.">
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;500;600&family=Plus+Jakarta+Sans:wght@400;500;600;700;800&display=swap" rel="stylesheet">
   <link rel="stylesheet" href="style.css">
 </head>
 <body>
-  <!-- Dark Brand Header -->
-  <header class="brand-header">
-    <div class="brand-title-wrap">
-      <h1>AP Sentinel</h1>
-      <span class="brand-sub">SAP BTP Supplier Invoice Duplicate &amp; Split-Bill Check</span>
-    </div>
-    <div class="header-status">
-      <span id="headerActiveRules">Active Rules: AP-02, AP-03, AP-09, AP-11</span>
-      <span id="headerUserBadge">Signed in: controller (APClerk, APController)</span>
-    </div>
-  </header>
+  <!-- =========================================================
+       ANIMATED WELCOME SCREEN (Bluspring Navy #001428, Blue #0A1CFF, Green #00D93A)
+       Shown when the app opens, before chat; dismissed once per session.
+       ========================================================= -->
+  <section id="welcomeScreen" class="welcome-screen" aria-label="Welcome to Blus Invoice Agent">
+    <div class="welcome-bg-glow" aria-hidden="true"></div>
+    <svg class="welcome-geo-svg" viewBox="0 0 1440 900" preserveAspectRatio="xMidYMid slice" aria-hidden="true">
+      <!-- Outlined geometric parallelograms & triangles in faint green #00D93A -->
+      <polygon class="geo-shape geo-1" points="140,140 310,140 260,260 90,260" />
+      <polygon class="geo-shape geo-2" points="1120,110 1310,110 1250,240 1060,240" />
+      <polygon class="geo-shape geo-3" points="220,660 360,520 430,710" />
+      <polygon class="geo-shape geo-4" points="1050,620 1260,620 1200,760 990,760" />
+      <polygon class="geo-shape geo-5" points="680,70 790,190 610,210" />
+      <polygon class="geo-shape geo-6" points="80,430 210,360 180,510" />
+      <polygon class="geo-shape geo-7" points="1220,380 1370,310 1330,470" />
+    </svg>
 
-  <div class="app-shell">
-    <!-- 2.1 Fixed Left Sidebar in strict required order -->
-    <aside class="sidebar" aria-label="Primary Navigation">
-      <nav class="sidebar-nav" id="sidebarNav">
-        <button type="button" class="nav-item" data-page="assistant" id="nav-assistant">1. AI assistant</button>
-        <button type="button" class="nav-item active" data-page="upload" id="nav-upload">2. Upload invoice</button>
-        <button type="button" class="nav-item" data-page="s4" id="nav-s4">3. S/4HANA extract</button>
-        <button type="button" class="nav-item" data-page="alerts" id="nav-alerts">4. Review queue</button>
-        <button type="button" class="nav-item" data-page="history" id="nav-history">5. Check history</button>
-        <button type="button" class="nav-item" data-page="activity" id="nav-activity">6. Activity log</button>
-      </nav>
-
-      <div class="sidebar-footer">
-        <div class="sidebar-user-line" id="sidebarUserText">User: controller</div>
-        <div class="sidebar-role-line">
-          <span id="sidebarRoleText">Role: APClerk, APController</span>
-          <label for="roleSwitcher">Switch role (BTP XSUAA preview)
-            <select id="roleSwitcher" aria-label="Switch active role">
-              <option value="APClerk,APController">APController + APClerk</option>
-              <option value="APClerk">APClerk only</option>
-              <option value="APController">APController only</option>
-              <option value="Auditor">Auditor (read-only)</option>
-            </select>
-          </label>
+    <div class="welcome-center">
+      <!-- Logo with subtle soft glow behind it -->
+      <div class="welcome-logo-wrap">
+        <div class="welcome-logo-glow" aria-hidden="true"></div>
+        <div class="welcome-logo-badge">
+          <img src="/assets/aistudio/image_ab18dbf4_6c2be77c.jpg" alt="Blus Invoice Agent logo" class="welcome-logo-img">
         </div>
       </div>
+
+      <!-- Title (fades & slides up 0.6s) -->
+      <h1 class="welcome-title">Blus Invoice Agent</h1>
+
+      <!-- Tagline (fades in 0.3s later, with typewriter effect) -->
+      <div class="welcome-tagline-wrap">
+        <p class="welcome-tagline" id="welcomeTagline">Catches duplicate and split invoices before they get paid.</p>
+      </div>
+
+      <!-- 3 Option Cards (stagger in one by one: fade + rise, 0.15s delay each) -->
+      <div class="welcome-cards-grid" role="list">
+        <button type="button" class="welcome-option-card card-stagger-1" id="welcomeCardUpload" data-welcome-action="upload" role="listitem">
+          <span class="welcome-card-icon" aria-hidden="true">
+            <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><polyline points="14 2 14 8 20 8"/><line x1="12" y1="18" x2="12" y2="12"/><polyline points="9 15 12 12 15 15"/></svg>
+          </span>
+          <span class="welcome-card-title">Upload invoice</span>
+          <span class="welcome-card-desc">Upload a PDF, PNG, or JPG invoice for instant duplicate and split checks.</span>
+        </button>
+
+        <button type="button" class="welcome-option-card card-stagger-2" id="welcomeCardDuplicates" data-welcome-action="duplicates" role="listitem">
+          <span class="welcome-card-icon" aria-hidden="true">
+            <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><rect x="8" y="8" width="12" height="12" rx="2"/><path d="M16 8V6a2 2 0 0 0-2-2H6a2 2 0 0 0-2 2v8a2 2 0 0 0 2 2h2"/></svg>
+          </span>
+          <span class="welcome-card-title">Check duplicates</span>
+          <span class="welcome-card-desc">Verify batch S/4HANA extracts against active rules AP-02, AP-03, AP-09, and AP-11.</span>
+        </button>
+
+        <button type="button" class="welcome-option-card card-stagger-3" id="welcomeCardQueue" data-welcome-action="queue" role="listitem">
+          <span class="welcome-card-icon" aria-hidden="true">
+            <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"/><line x1="12" y1="8" x2="12" y2="12"/><line x1="12" y1="16" x2="12.01" y2="16"/></svg>
+          </span>
+          <span class="welcome-card-title">Review queue</span>
+          <span class="welcome-card-desc">Inspect held and blocked invoices and record controller governance decisions.</span>
+        </button>
+      </div>
+
+      <!-- Primary Start chat button + Ask box -->
+      <div class="welcome-actions-area">
+        <button type="button" id="btnWelcomeStartChat" class="primary welcome-start-btn">Start chat</button>
+
+        <div class="welcome-ask-box" id="welcomeAskBox">
+          <label for="welcomeAskInput" class="chat-input-label">
+            <span class="sr-only-label">Ask Blus Invoice Agent a question</span>
+            <input
+              id="welcomeAskInput"
+              type="text"
+              placeholder="Ask about an invoice or start typing to open chat..."
+              autocomplete="off"
+            >
+          </label>
+          <button type="button" id="btnWelcomeAskSend" class="primary">Send</button>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <!-- Clean Top Bar (Left: Logo + Blus Invoice Agent, Right: AP-02 · AP-03 · AP-09 · AP-11) -->
+  <header class="brand-header">
+    <div class="brand-title-wrap">
+      <button type="button" id="btnMobileMenu" class="mobile-menu-btn" aria-label="Open navigation menu" title="Menu">
+        <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+          <line x1="3" y1="6" x2="21" y2="6"></line>
+          <line x1="3" y1="12" x2="21" y2="12"></line>
+          <line x1="3" y1="18" x2="21" y2="18"></line>
+        </svg>
+      </button>
+      <img src="/assets/aistudio/image_ab18dbf4_6c2be77c.jpg" alt="Blus Invoice Agent" class="brand-header-logo">
+      <h1>Blus Invoice Agent</h1>
+    </div>
+    <span id="headerActiveRules" class="header-rules-text">AP-02 · AP-03 · AP-09 · AP-11</span>
+  </header>
+
+  <div id="sidebarBackdrop" class="sidebar-backdrop hidden" aria-hidden="true"></div>
+
+  <div class="app-shell" id="appShell">
+    <!-- Collapsible Left Sidebar -->
+    <aside class="sidebar" id="appSidebar" aria-label="Primary Navigation">
+      <div class="sidebar-top">
+        <button type="button" id="btnSidebarCollapse" class="sidebar-collapse-btn" aria-label="Toggle sidebar collapse" title="Collapse or expand sidebar">
+          <svg class="collapse-chevron" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+            <polyline points="15 18 9 12 15 6"></polyline>
+          </svg>
+        </button>
+      </div>
+      <nav class="sidebar-nav" id="sidebarNav">
+        <button type="button" class="nav-item active" data-page="upload" id="nav-upload" title="1. Upload invoice">
+          <span class="nav-icon" aria-hidden="true">
+            <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><polyline points="14 2 14 8 20 8"/><line x1="12" y1="18" x2="12" y2="12"/><polyline points="9 15 12 12 15 15"/></svg>
+          </span>
+          <span class="nav-label">1. Upload invoice</span>
+        </button>
+        <button type="button" class="nav-item" data-page="s4" id="nav-s4" title="2. S/4HANA extract">
+          <span class="nav-icon" aria-hidden="true">
+            <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><ellipse cx="12" cy="5" rx="9" ry="3"/><path d="M21 12c0 1.66-4 3-9 3s-9-1.34-9-3"/><path d="M3 5v14c0 1.66 4 3 9 3s9-1.34 9-3V5"/></svg>
+          </span>
+          <span class="nav-label">2. S/4HANA extract</span>
+        </button>
+        <button type="button" class="nav-item" data-page="alerts" id="nav-alerts" title="3. Review queue">
+          <span class="nav-icon" aria-hidden="true">
+            <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"/><line x1="12" y1="8" x2="12" y2="12"/><line x1="12" y1="16" x2="12.01" y2="16"/></svg>
+          </span>
+          <span class="nav-label">3. Review queue</span>
+        </button>
+        <button type="button" class="nav-item" data-page="history" id="nav-history" title="4. Check history">
+          <span class="nav-icon" aria-hidden="true">
+            <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="10"/><polyline points="12 6 12 12 16 14"/></svg>
+          </span>
+          <span class="nav-label">4. Check history</span>
+        </button>
+        <button type="button" class="nav-item" data-page="activity" id="nav-activity" title="5. Activity log">
+          <span class="nav-icon" aria-hidden="true">
+            <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="22 12 18 12 15 21 9 3 6 12 2 12"/></svg>
+          </span>
+          <span class="nav-label">5. Activity log</span>
+        </button>
+      </nav>
     </aside>
 
-    <!-- Main Workspace -->
-    <main class="main-content">
+    <!-- Main Workspace Canvas -->
+    <main class="main-content" id="mainWorkspace">
 
       <!-- =========================================================
-           PAGE 1: AI ASSISTANT (2.7)
+           PAGE 1: CHAT-STYLE INVOICE CHECK
            ========================================================= -->
-      <section id="page-assistant" class="page-section" aria-labelledby="heading-assistant">
-        <div class="page-header">
-          <h2 id="heading-assistant">AI assistant (read-only)</h2>
-          <p>Grounded on aggregated database metrics and active rule definitions. Never executes posting or alert decisions.</p>
-        </div>
+      <section id="page-upload" class="page-section active" aria-label="Invoice check chat">
+        <div id="aiModeView" class="ai-mode-shell">
+          <!-- Chat Message Area: fills all space between top bar and composer; empty on static load -->
+          <div id="aiChatThread" class="ai-chat-thread" role="log" aria-live="polite"></div>
 
-        <div class="card">
-          <h3>Quick questions</h3>
-          <div class="quick-prompts">
-            <button type="button" class="quick-chat-btn" data-prompt="Why was this held?">Why was this held?</button>
-            <button type="button" class="quick-chat-btn" data-prompt="Draft a vendor email">Draft a vendor email</button>
-            <button type="button" class="quick-chat-btn" data-prompt="Count blocked invoices">Count blocked invoices</button>
-            <button type="button" class="quick-chat-btn" data-prompt="Explain the audit check">Explain the audit check</button>
-          </div>
-
-          <div id="chatMessages" class="chat-container" role="log" aria-live="polite">
-            <div class="chat-bubble assistant">Hello! I am the read-only AP Sentinel assistant. Ask me why an invoice was held or rejected, how many invoices are blocked, to explain the audit chain, or to draft a discrepancy email to a vendor.</div>
-          </div>
-
-          <div class="btn-row">
-            <label for="chatInput" style="flex: 1;">
-              Message to assistant
-              <input id="chatInput" type="text" placeholder="Ask about rules, blocked counts, or draft a vendor email..." autocomplete="off">
-            </label>
-            <button type="button" id="btnSendChat" class="primary" style="margin-top: 20px;">Send</button>
-          </div>
-          <div id="chatErrorMsg" class="status-banner error hidden"></div>
-        </div>
-      </section>
-
-      <!-- =========================================================
-           PAGE 2: UPLOAD INVOICE (2.2 - App opens on this page)
-           ========================================================= -->
-      <section id="page-upload" class="page-section active" aria-labelledby="heading-upload">
-        <div class="page-header">
-          <h2 id="heading-upload">Upload invoice</h2>
-          <p>Upload a supplier invoice (PDF, PNG or JPG, up to 10 MB) to extract fields, verify arithmetic and GSTIN, and run active fraud rules.</p>
-        </div>
-
-        <!-- 2.2a Drop Zone Card -->
-        <div class="card" id="uploadDropCard">
-          <h3>1. Select or drop an invoice file</h3>
-          <div id="dropZone" class="drop-zone" tabindex="0" role="region" aria-label="Drop a PDF, PNG or JPG invoice here, or choose a file">
-            <label for="invoiceFileInput" class="drop-zone-label">
-              Drop a PDF, PNG or JPG invoice here, or choose a file.
-            </label>
-            <p class="drop-zone-sub">Accepted formats: PDF, PNG, JPG · Maximum file size: 10 MB</p>
-            <input type="file" id="invoiceFileInput" accept=".pdf,.png,.jpg,.jpeg,application/pdf,image/png,image/jpeg" aria-label="Choose invoice file">
-            <div id="selectedFileInfo" class="file-selected-bar hidden"></div>
-          </div>
-
-          <div class="btn-row" id="uploadActionButtons">
-            <button type="button" id="btnUploadAndCheck" class="primary">Upload and check</button>
-            <label for="samplePresetSelect" style="flex-direction: row; align-items: center; gap: 6px; font-weight: 500;">
-              Sample:
-              <select id="samplePresetSelect" aria-label="Select sample invoice">
-                <option value="clean-pdf">Clean Invoice (PDF)</option>
-                <option value="clean-png">Clean Invoice (PNG Image)</option>
-                <option value="clean-jpg">Clean Invoice (JPG Image)</option>
-                <option value="dup-pdf">Duplicate Invoice (PDF - AP-02)</option>
-                <option value="low-conf">Low OCR Confidence Sample (PNG)</option>
-              </select>
-            </label>
-            <button type="button" id="btnUseSample">Use sample</button>
-            <button type="button" id="btnClearUpload">Clear</button>
-          </div>
-
-          <div id="uploadBanner" class="status-banner hidden" role="status" aria-live="polite"></div>
-        </div>
-
-        <!-- 2.2b 10-Step Progress Panel -->
-        <div class="card" id="stepPanelCard">
-          <h3>2. Processing steps (10-step check pipeline)</h3>
-          <ol id="stepList" class="step-list" aria-label="Invoice processing steps">
-            <!-- Populated dynamically with the 10 steps -->
-          </ol>
-        </div>
-
-        <!-- 2.2c Result Card -->
-        <div id="resultCardUpload" class="card hidden" aria-live="polite"></div>
-
-        <!-- 2.2d & 2.2e Field Table + Preview Side-by-Side -->
-        <div class="card">
-          <h3>3. Extracted invoice fields &amp; document preview</h3>
-          <p class="hint">Each field displays its confidence level (<strong>High</strong>, <strong>Check</strong>, or <strong>Low</strong>). Every <strong>Low</strong> confidence field must be edited or confirmed before <strong>Post to ledger</strong> is enabled.</p>
-
-          <div id="lowConfidenceNotice" class="status-banner warning hidden"></div>
-
-          <div class="upload-workspace-grid">
-            <div>
-              <div class="table-wrap">
-                <table id="fieldTable" aria-label="Extracted invoice fields">
-                  <thead>
-                    <tr>
-                      <th>Field</th>
-                      <th>Value (editable)</th>
-                      <th>Confidence</th>
-                      <th>Confirmation</th>
-                    </tr>
-                  </thead>
-                  <tbody id="fieldTableBody">
-                    <!-- Editable rows populated by app.js -->
-                  </tbody>
-                </table>
-              </div>
-
-              <div class="btn-row" id="fieldActionRow" style="margin-top: 18px;">
-                <button type="button" id="btnPostLedger" class="primary" disabled>Post to ledger</button>
-                <button type="button" id="btnSaveResult">Save result</button>
-              </div>
-              <div id="postResultBanner" class="status-banner hidden" role="status"></div>
-            </div>
-
-            <div>
-              <h4 style="margin-bottom: 8px; font-size: 14px; color: #334155;">Document / Image Preview</h4>
-              <div id="imagePreviewBox" class="preview-box">
-                <span class="hint">Select or upload a PDF, PNG, or JPG invoice to preview it alongside the extracted fields.</span>
+          <!-- Single-file replacement confirmation banner -->
+          <div id="replaceConfirmBar" class="status-banner warning hidden" role="alertdialog" aria-label="Confirm file replacement">
+            <div class="confirm-row">
+              <span id="replaceConfirmText">Replace the current file with the newly selected file?</span>
+              <div class="btn-row" style="margin-top: 0;">
+                <button type="button" id="btnConfirmReplaceFile" class="primary">Replace file</button>
+                <button type="button" id="btnCancelReplaceFile">Keep current file</button>
               </div>
             </div>
+          </div>
+
+          <div id="chatComposerBanner" class="status-banner hidden" role="status" aria-live="polite"></div>
+
+          <!-- Composer bar anchored to the bottom -->
+          <div class="ai-composer" id="aiComposer">
+            <input
+              type="file"
+              id="chatFileInput"
+              class="hidden"
+              accept=".pdf,.png,.jpg,.jpeg,application/pdf,image/png,image/jpeg"
+              aria-label="Attach invoice file"
+            >
+            <button type="button" id="btnAttachPlus" class="btn-attach-plus" title="Attach PDF, PNG or JPG (max 10 MB)" aria-label="Attach file">+</button>
+
+            <!-- File chip inside composer bar, left of the text input -->
+            <div id="composerFileChip" class="composer-file-chip hidden" aria-live="polite">
+              <span class="chip-file-icon" aria-hidden="true">
+                <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><polyline points="14 2 14 8 20 8"/></svg>
+              </span>
+              <span id="chipFileName" class="chip-file-name"></span>
+              <button type="button" id="btnRemoveChipFile" class="chip-remove-btn" aria-label="Remove attached file">X</button>
+            </div>
+
+            <label for="aiComposerInput" class="chat-input-label">
+              <span class="sr-only-label">Ask about an invoice or attach a PDF</span>
+              <input
+                id="aiComposerInput"
+                type="text"
+                placeholder="Ask about an invoice or attach a PDF..."
+                autocomplete="off"
+              >
+            </label>
+            <button type="button" id="btnAiComposerSend" class="primary">Send</button>
           </div>
         </div>
       </section>
 
       <!-- =========================================================
-           PAGE 3: S/4HANA EXTRACT (2.3)
+           PAGE 2: S/4HANA EXTRACT
            ========================================================= -->
       <section id="page-s4" class="page-section" aria-labelledby="heading-s4">
         <div class="page-header">
+          <p class="section-kicker">Batch Ledger Verification</p>
           <h2 id="heading-s4">S/4HANA extract</h2>
           <p>Import a CSV or JSON extract from SAP S/4HANA or load the sample extract, then run batch duplicate and split-bill rules.</p>
         </div>
 
         <div class="card">
           <div class="btn-row" id="s4ActionRow">
-            <label for="s4FileInput" style="flex-direction: row; align-items: center; gap: 8px;">
-              Import file (CSV or JSON):
+            <label for="s4FileInput" class="inline-select-label">
+              Import file (CSV or JSON)
               <input type="file" id="s4FileInput" accept=".csv,.json,text/csv,application/json" aria-label="Import CSV or JSON file">
             </label>
             <button type="button" id="btnImportS4">Import</button>
@@ -200,7 +236,7 @@
           </div>
           <div id="s4Banner" class="status-banner hidden" role="status"></div>
 
-          <div class="table-wrap" style="margin-top: 16px;">
+          <div class="table-wrap">
             <table id="s4Table" aria-label="S/4HANA extract invoices">
               <thead>
                 <tr>
@@ -209,7 +245,7 @@
                   <th>GSTIN</th>
                   <th>Invoice No</th>
                   <th>Date</th>
-                  <th>Total (INR)</th>
+                  <th class="num-col">Total (INR)</th>
                   <th>Status</th>
                   <th>Reason</th>
                 </tr>
@@ -223,18 +259,19 @@
       </section>
 
       <!-- =========================================================
-           PAGE 4: REVIEW QUEUE (2.4)
+           PAGE 3: REVIEW QUEUE
            ========================================================= -->
       <section id="page-alerts" class="page-section" aria-labelledby="heading-alerts">
         <div class="page-header">
+          <p class="section-kicker">Exception Governance &amp; Workflow</p>
           <h2 id="heading-alerts">Review queue</h2>
           <p>Open HOLD and REJECT alerts raised by the active rules. APController users can record Clear, Confirm, or Escalate decisions with a mandatory comment.</p>
         </div>
 
         <div class="card">
-          <div class="btn-row" style="margin-bottom: 14px;">
+          <div class="toolbar-row">
             <button type="button" id="btnRefreshAlerts">Refresh queue</button>
-            <span id="alertsRoleHint" class="hint" style="margin: 0;"></span>
+            <span id="alertsRoleHint" class="meta-inline"></span>
           </div>
           <div id="alertsBanner" class="status-banner hidden"></div>
 
@@ -257,10 +294,11 @@
       </section>
 
       <!-- =========================================================
-           PAGE 5: CHECK HISTORY (2.5)
+           PAGE 4: CHECK HISTORY
            ========================================================= -->
       <section id="page-history" class="page-section" aria-labelledby="heading-history">
         <div class="page-header">
+          <p class="section-kicker">Persistence &amp; Audit Reporting</p>
           <h2 id="heading-history">Check history</h2>
           <p>Every check run recorded in SAP BTP persistence. Exports include the four active rules only while disabled rules remain stored in the database.</p>
         </div>
@@ -288,7 +326,7 @@
               Supplier
               <input type="text" id="filterHistorySupplier" placeholder="Search supplier or GSTIN..." aria-label="Filter by supplier">
             </label>
-            <div class="btn-row" style="margin-top: 0;">
+            <div class="btn-row filter-actions">
               <button type="button" id="btnApplyHistoryFilter">Apply filters</button>
               <button type="button" id="btnExportHistoryCsv" class="primary">Export CSV</button>
               <button type="button" id="btnExportHistoryExcel">Export Excel</button>
@@ -303,7 +341,7 @@
                   <th>File</th>
                   <th>Invoice number</th>
                   <th>Supplier</th>
-                  <th>Total (INR)</th>
+                  <th class="num-col">Total (INR)</th>
                   <th>Status</th>
                   <th>Reviewer</th>
                 </tr>
@@ -315,18 +353,19 @@
       </section>
 
       <!-- =========================================================
-           PAGE 6: ACTIVITY LOG (2.6)
+           PAGE 5: ACTIVITY LOG
            ========================================================= -->
       <section id="page-activity" class="page-section" aria-labelledby="heading-activity">
         <div class="page-header">
+          <p class="section-kicker">Cryptographic Integrity Ledger</p>
           <h2 id="heading-activity">Activity log</h2>
           <p>Read-only hash-chained audit trail of every check, import, decision, and ledger post.</p>
         </div>
 
         <div class="card">
-          <div class="btn-row" style="margin-bottom: 14px; justify-content: space-between;">
-            <div id="auditChainBadge" class="status-banner success" style="margin-top: 0;">Audit Hash Chain: Verified</div>
-            <div class="btn-row" style="margin-top: 0;">
+          <div class="toolbar-row">
+            <div id="auditChainBadge" class="status-banner success">Audit Hash Chain: Verified</div>
+            <div class="btn-row">
               <button type="button" id="btnRefreshActivity">Refresh log</button>
               <button type="button" id="btnExportActivityCsv" class="primary">Export CSV</button>
             </div>

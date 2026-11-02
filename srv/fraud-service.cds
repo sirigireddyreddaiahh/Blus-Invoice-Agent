@@ -15,12 +15,14 @@ service FraudService @(path: '/fraud') {
 
   action importS4Extract(fileName: String, content: String) returns String;
   action extractPdf(fileName: String, pdfBase64: String) returns String;
-  action uploadDocument(fileName: String, fileSize: Integer, fileBase64: String) returns String;
+  action uploadDocument(fileName: String, fileSize: Integer, fileBase64: String, source: String) returns String;
+  action chatCheckInvoice(fileName: String, fileSize: Integer, fileBase64: String) returns String;
   action checkInvoice(invoice: String) returns String;
   action checkBatch(invoices: String) returns String;
   action postInvoice(invoice: String) returns String;
   action decideAlert(alertId: String, decision: String, comment: String) returns String;
 
-  // Read-only server-side AI Assistant action
-  action chat(message: String) returns String;
+  // Read-only server-side AI Assistant actions
+  action chat(message: String, checkId: String) returns String;
+  action askInvoice(checkId: String, question: String) returns String;
 }

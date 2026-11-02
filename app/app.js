@@ -3,43 +3,22 @@
 const ACTIVE_RULE_IDS = ['AP-02', 'AP-03', 'AP-09', 'AP-11'];
 const MAX_FILE_BYTES = 10 * 1024 * 1024; // 10 MB
 
-const FIELD_DEFINITIONS = [
-  { key: 'supplierName', label: 'Supplier name' },
-  { key: 'supplierGstin', label: 'Supplier GSTIN' },
-  { key: 'buyerGstin', label: 'Buyer GSTIN' },
-  { key: 'invoiceNo', label: 'Invoice number' },
-  { key: 'invoiceDate', label: 'Invoice date' },
-  { key: 'poNumber', label: 'PO number' },
-  { key: 'description', label: 'Description' },
-  { key: 'taxable', label: 'Taxable amount (INR)' },
-  { key: 'cgst', label: 'CGST (INR)' },
-  { key: 'sgst', label: 'SGST (INR)' },
-  { key: 'igst', label: 'IGST (INR)' },
-  { key: 'total', label: 'Total amount (INR)' },
-  { key: 'ifsc', label: 'Bank IFSC' },
-  { key: 'accountNo', label: 'Bank account number' },
-];
-
-const DEFAULT_STEPS = [
-  { step: 1, title: 'Received the file.', status: 'waiting', detail: 'Waiting for file selection' },
-  { step: 2, title: 'Detected the file type.', status: 'waiting', detail: 'PDF with text, Scanned PDF, or Image (PNG or JPG)' },
-  { step: 3, title: 'Read the document.', status: 'waiting', detail: 'Waiting to read text layer or OCR' },
-  { step: 4, title: 'Extracted the fields.', status: 'waiting', detail: 'Waiting for field extraction' },
-  { step: 5, title: 'Checked arithmetic and GSTIN format.', status: 'waiting', detail: 'Waiting for arithmetic and GSTIN verification' },
-  { step: 6, title: 'Ran the active rules AP-02, AP-03, AP-09, AP-11.', status: 'waiting', detail: 'Waiting for rule execution' },
-  { step: 7, title: 'Looked up similar past invoices.', status: 'waiting', detail: 'Waiting for lookup layer' },
-  { step: 8, title: 'Decided from the rules.', status: 'waiting', detail: 'Waiting for rule outcome' },
-  { step: 9, title: 'Saved to the check log.', status: 'waiting', detail: 'Waiting to persist check record' },
-  { step: 10, title: 'Showed the result.', status: 'waiting', detail: 'Waiting for final result display' },
-];
+const UNSUPPORTED_FILE_MSG = 'Only PDF, PNG and JPG files are supported.';
+const FILE_TOO_LARGE_MSG = 'File is too large. Maximum size is 10 MB.';
+const RULES_CHECK_DISCLAIMER = 'Rules check only. Does not prove the invoice is genuine.';
+const CHAT_GREETING_MSG = "Hello! I'm Blus Invoice Agent. Upload an invoice and I'll check it for duplicates and split invoices.";
+const SIDEBAR_STORAGE_KEY = 'ap_sentinel_sidebar_collapsed';
+const WELCOME_SESSION_KEY = 'blus_welcome_dismissed';
 
 const state = {
   user: 'controller',
   roles: ['APClerk', 'APController'],
-  selectedFile: null,       // { name, size, type, base64, dataUrl }
+  welcomeDismissed: false,
+  greetingShown: false,
+  selectedFile: null,              // Single attached file in composer chip
+  pendingReplacementFile: null,    // Held until user confirms replacement
+  lastCheckedFile: null,           // Last file sent for checking
   fields: {},
-  fieldConfidences: {},     // { [key]: { value, confidence, label } }
-  confirmedLowFields: new Set(),
   currentResult: null,
   s4List: [],
   s4Results: [],
@@ -63,6 +42,12 @@ function formatMoney(n) {
   const num = Number(n);
   if (Number.isNaN(num)) return String(n);
   return num.toLocaleString('en-IN', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+}
+
+function shortenFileName(name, maxLen = 20) {
+  const s = String(name || '');
+  if (s.length <= maxLen) return s;
+  return s.slice(0, maxLen - 3) + '...';
 }
 
 function getHeaders() {
@@ -112,8 +97,199 @@ function setBanner(id, message, type = 'info') {
 }
 
 // ============================================================================
-// 2.1 SIDEBAR NAVIGATION & ROLE MANAGEMENT
+// 5. SIDEBAR COLLAPSE & MOBILE OVERLAY
 // ============================================================================
+function setSidebarCollapsed(collapsed) {
+  const sidebar = $('appSidebar');
+  if (!sidebar) return;
+  sidebar.classList.toggle('collapsed', Boolean(collapsed));
+  try {
+    localStorage.setItem(SIDEBAR_STORAGE_KEY, collapsed ? '1' : '0');
+  } catch {}
+}
+
+function initSidebarState() {
+  const sidebar = $('appSidebar');
+  if (!sidebar) return;
+  try {
+    const saved = localStorage.getItem(SIDEBAR_STORAGE_KEY);
+    if (saved === '1') {
+      sidebar.classList.add('collapsed');
+    }
+  } catch {}
+}
+
+function closeMobileSidebar() {
+  const sidebar = $('appSidebar');
+  const backdrop = $('sidebarBackdrop');
+  if (sidebar) sidebar.classList.remove('mobile-open');
+  if (backdrop) backdrop.classList.add('hidden');
+}
+
+if ($('btnSidebarCollapse')) {
+  $('btnSidebarCollapse').addEventListener('click', () => {
+    const sidebar = $('appSidebar');
+    if (!sidebar) return;
+    if (window.innerWidth < 768 && sidebar.classList.contains('mobile-open')) {
+      closeMobileSidebar();
+      return;
+    }
+    setSidebarCollapsed(!sidebar.classList.contains('collapsed'));
+  });
+}
+
+if ($('btnMobileMenu')) {
+  $('btnMobileMenu').addEventListener('click', () => {
+    const sidebar = $('appSidebar');
+    const backdrop = $('sidebarBackdrop');
+    if (!sidebar) return;
+    const willOpen = !sidebar.classList.contains('mobile-open');
+    sidebar.classList.toggle('mobile-open', willOpen);
+    if (backdrop) backdrop.classList.toggle('hidden', !willOpen);
+  });
+}
+
+if ($('sidebarBackdrop')) {
+  $('sidebarBackdrop').addEventListener('click', closeMobileSidebar);
+}
+
+// ============================================================================
+// NAVIGATION & ROLE PERMISSIONS
+// ============================================================================
+function ensureChatGreeting() {
+  if (state.greetingShown) return;
+  const thread = $('aiChatThread');
+  if (!thread) return;
+  state.greetingShown = true;
+  if (thread.children.length === 0) {
+    const greetingNode = el('div', CHAT_GREETING_MSG, 'chat-bubble assistant chat-greeting-message');
+    thread.appendChild(greetingNode);
+  }
+}
+
+function dismissWelcomeScreen(opts = {}) {
+  const { immediate = false, targetPage = 'upload', transferText = '', submitTransferred = false, openFilePicker = false } = opts;
+  const welcome = $('welcomeScreen');
+  const shell = $('appShell');
+
+  if (!state.welcomeDismissed) {
+    state.welcomeDismissed = true;
+    try {
+      sessionStorage.setItem(WELCOME_SESSION_KEY, '1');
+    } catch {}
+  }
+
+  ensureChatGreeting();
+
+  if (targetPage) {
+    switchPage(targetPage);
+  }
+
+  const composerInput = $('aiComposerInput');
+  if (transferText && composerInput) {
+    composerInput.value = transferText;
+  }
+
+  if (welcome && !welcome.classList.contains('hidden')) {
+    if (immediate) {
+      welcome.classList.add('hidden');
+    } else {
+      welcome.classList.add('welcome-exit');
+      if (shell) shell.classList.add('chat-fade-in');
+      setTimeout(() => {
+        welcome.classList.add('hidden');
+      }, 500);
+    }
+  }
+
+  if (submitTransferred && transferText.trim()) {
+    if (composerInput) composerInput.value = '';
+    runAiChatCheck(transferText.trim());
+  } else if (openFilePicker && $('chatFileInput')) {
+    $('chatFileInput').click();
+    if (composerInput) composerInput.focus();
+  } else if (targetPage === 'upload' && composerInput) {
+    composerInput.focus();
+    const len = composerInput.value.length;
+    try { composerInput.setSelectionRange(len, len); } catch {}
+  }
+}
+
+function initWelcomeScreen() {
+  const welcome = $('welcomeScreen');
+  if (!welcome) return;
+
+  let alreadyDismissed = false;
+  try {
+    alreadyDismissed = sessionStorage.getItem(WELCOME_SESSION_KEY) === '1';
+  } catch {}
+
+  if (alreadyDismissed) {
+    state.welcomeDismissed = true;
+    welcome.classList.add('hidden');
+    ensureChatGreeting();
+    return;
+  }
+
+  // Option Card 1: Upload invoice
+  if ($('welcomeCardUpload')) {
+    $('welcomeCardUpload').addEventListener('click', () => {
+      dismissWelcomeScreen({ targetPage: 'upload', openFilePicker: true });
+    });
+  }
+
+  // Option Card 2: Check duplicates
+  if ($('welcomeCardDuplicates')) {
+    $('welcomeCardDuplicates').addEventListener('click', () => {
+      dismissWelcomeScreen({ targetPage: 's4' });
+    });
+  }
+
+  // Option Card 3: Review queue
+  if ($('welcomeCardQueue')) {
+    $('welcomeCardQueue').addEventListener('click', () => {
+      dismissWelcomeScreen({ targetPage: 'alerts' });
+    });
+  }
+
+  // Start chat button
+  if ($('btnWelcomeStartChat')) {
+    $('btnWelcomeStartChat').addEventListener('click', () => {
+      const askInput = $('welcomeAskInput');
+      const text = askInput ? askInput.value : '';
+      dismissWelcomeScreen({ targetPage: 'upload', transferText: text, submitTransferred: Boolean(text.trim()) });
+    });
+  }
+
+  // Typing in the welcome ask box immediately transitions to the chat screen and preserves typed text
+  const askInput = $('welcomeAskInput');
+  if (askInput) {
+    askInput.addEventListener('input', () => {
+      if (!state.welcomeDismissed && askInput.value.length > 0) {
+        const val = askInput.value;
+        askInput.value = '';
+        dismissWelcomeScreen({ targetPage: 'upload', transferText: val, submitTransferred: false });
+      }
+    });
+    askInput.addEventListener('keydown', (e) => {
+      if (e.key === 'Enter') {
+        e.preventDefault();
+        const val = askInput.value;
+        askInput.value = '';
+        dismissWelcomeScreen({ targetPage: 'upload', transferText: val, submitTransferred: true });
+      }
+    });
+  }
+
+  if ($('btnWelcomeAskSend')) {
+    $('btnWelcomeAskSend').addEventListener('click', () => {
+      const val = askInput ? askInput.value : '';
+      if (askInput) askInput.value = '';
+      dismissWelcomeScreen({ targetPage: 'upload', transferText: val, submitTransferred: Boolean(val.trim()) });
+    });
+  }
+}
+
 function switchPage(pageId) {
   document.querySelectorAll('.nav-item').forEach(btn => {
     btn.classList.toggle('active', btn.dataset.page === pageId);
@@ -121,6 +297,7 @@ function switchPage(pageId) {
   document.querySelectorAll('.page-section').forEach(sec => {
     sec.classList.toggle('active', sec.id === 'page-' + pageId);
   });
+  closeMobileSidebar();
 
   if (pageId === 'alerts') loadAlertsQueue();
   if (pageId === 'history') loadCheckHistory();
@@ -128,7 +305,13 @@ function switchPage(pageId) {
 }
 
 document.querySelectorAll('.nav-item').forEach(btn => {
-  btn.addEventListener('click', () => switchPage(btn.dataset.page));
+  btn.addEventListener('click', () => {
+    if (!state.welcomeDismissed) {
+      dismissWelcomeScreen({ targetPage: btn.dataset.page });
+    } else {
+      switchPage(btn.dataset.page);
+    }
+  });
 });
 
 function applyRolePermissions() {
@@ -137,23 +320,17 @@ function applyRolePermissions() {
   const canPost = state.roles.includes('APClerk');
   const canDecide = state.roles.includes('APController');
 
-  $('sidebarUserText').textContent = `User: ${state.user}`;
-  $('sidebarRoleText').textContent = `Role: ${state.roles.join(', ')}`;
-  $('headerUserBadge').textContent = `Signed in: ${state.user} (${state.roles.join(', ')})`;
-
-  // Hide Upload, Check, Import, and Post buttons for Auditor (Section 7 & Acceptance Test 18)
-  const uploadBtns = $('uploadActionButtons');
-  if (uploadBtns) uploadBtns.classList.toggle('hidden', !canUploadOrCheck);
-  const dropCard = $('dropZone');
-  if (dropCard) dropCard.classList.toggle('hidden', isAuditorOnly);
+  const attachPlusBtn = $('btnAttachPlus');
+  if (attachPlusBtn) attachPlusBtn.classList.toggle('hidden', !canUploadOrCheck);
+  const aiComposer = $('aiComposer');
+  if (aiComposer) aiComposer.classList.toggle('hidden', isAuditorOnly);
 
   const s4ActionRow = $('s4ActionRow');
   if (s4ActionRow) s4ActionRow.classList.toggle('hidden', !canUploadOrCheck);
 
-  const postBtn = $('btnPostLedger');
-  const saveBtn = $('btnSaveResult');
-  if (postBtn) postBtn.classList.toggle('hidden', !canPost);
-  if (saveBtn) saveBtn.classList.toggle('hidden', !canUploadOrCheck);
+  document.querySelectorAll('.btn-chat-post-ledger').forEach(btn => {
+    btn.classList.toggle('hidden', !canPost);
+  });
 
   const actionHeader = $('alertsActionHeader');
   if (actionHeader) actionHeader.classList.toggle('hidden', !canDecide);
@@ -164,248 +341,43 @@ function applyRolePermissions() {
       : 'Read-only queue view: only APController users can record Clear, Confirm, or Escalate decisions.';
   }
 
-  updatePostButtonState();
-  if ($('page-alerts').classList.contains('active')) {
+  if ($('page-alerts') && $('page-alerts').classList.contains('active')) {
     renderAlertsTable();
   }
 }
 
-$('roleSwitcher').addEventListener('change', (e) => {
-  const val = e.target.value;
-  state.roles = val.split(',').map(s => s.trim()).filter(Boolean);
-  if (state.roles.length === 1) {
-    state.user = state.roles[0] === 'Auditor' ? 'auditor' : (state.roles[0] === 'APClerk' ? 'clerk' : 'controller');
-  } else {
-    state.user = 'controller';
-  }
-  applyRolePermissions();
-});
-
 // ============================================================================
-// 2.2 UPLOAD INVOICE PAGE (10 Steps, Preview, Result Card, Field Table)
+// 4. FILE ATTACHMENT IN THE COMPOSER ONLY (Chip inside composer bar)
 // ============================================================================
-function renderSteps(steps) {
-  const list = $('stepList');
-  list.textContent = '';
-  (steps || DEFAULT_STEPS).forEach(s => {
-    const li = el('li', null, 'step-item');
-    const icon = el('span', s.status, `step-icon ${s.status}`);
-    const body = el('div', null, 'step-body');
-    body.append(
-      el('div', `${s.step}. ${s.title}`, 'step-title'),
-      el('div', s.detail || '', 'step-detail')
-    );
-    li.append(icon, body);
-    list.append(li);
-  });
-}
+function renderComposerFileChip() {
+  const chip = $('composerFileChip');
+  const nameEl = $('chipFileName');
+  if (!chip || !nameEl) return;
 
-function renderPreview(fileObj) {
-  const box = $('imagePreviewBox');
-  box.textContent = '';
-  if (!fileObj) {
-    box.append(el('span', 'Select or upload a PDF, PNG, or JPG invoice to preview it alongside the extracted fields.', 'hint'));
+  if (!state.selectedFile) {
+    chip.classList.add('hidden');
+    nameEl.textContent = '';
     return;
   }
 
-  const ext = String(fileObj.name || '').toLowerCase().split('.').pop();
-  if ((ext === 'png' || ext === 'jpg' || ext === 'jpeg') && fileObj.dataUrl) {
-    const img = document.createElement('img');
-    img.src = fileObj.dataUrl;
-    img.alt = `Invoice preview: ${fileObj.name}`;
-    box.append(img);
-    const cap = el('div', `${fileObj.name} (${Math.max(1, Math.round(fileObj.size / 1024))} KB)`, 'hint');
-    cap.style.marginTop = '8px';
-    box.append(cap);
-  } else {
-    const card = el('div', null);
-    card.append(
-      el('div', `PDF Document: ${fileObj.name}`, 'step-title'),
-      el('div', `Size: ${Math.max(1, Math.round(fileObj.size / 1024))} KB`, 'step-detail')
-    );
-    if (state.currentResult && state.currentResult.pdfText) {
-      const pre = el('pre', state.currentResult.pdfText.slice(0, 400));
-      pre.style.marginTop = '10px';
-      pre.style.padding = '10px';
-      pre.style.background = '#fff';
-      pre.style.border = '1px solid #cbd5e1';
-      pre.style.borderRadius = '4px';
-      pre.style.fontSize = '12px';
-      pre.style.whiteSpace = 'pre-wrap';
-      pre.style.textAlign = 'left';
-      card.append(pre);
-    }
-    box.append(card);
-  }
+  nameEl.textContent = shortenFileName(state.selectedFile.name, 20);
+  nameEl.title = state.selectedFile.name;
+  chip.classList.remove('hidden');
 }
 
-function getUnconfirmedLowFields() {
-  const lowKeys = [];
-  for (const def of FIELD_DEFINITIONS) {
-    const fc = state.fieldConfidences[def.key];
-    if (fc && fc.label === 'Low' && !state.confirmedLowFields.has(def.key)) {
-      lowKeys.push(def.label);
-    }
-  }
-  return lowKeys;
+function removeAttachedFile() {
+  state.selectedFile = null;
+  state.pendingReplacementFile = null;
+  if ($('chatFileInput')) $('chatFileInput').value = '';
+  if ($('replaceConfirmBar')) $('replaceConfirmBar').classList.add('hidden');
+  renderComposerFileChip();
 }
 
-function updatePostButtonState() {
-  const btn = $('btnPostLedger');
-  const notice = $('lowConfidenceNotice');
-  if (!btn) return;
-
-  const unconfirmed = getUnconfirmedLowFields();
-  if (unconfirmed.length > 0) {
-    notice.className = 'status-banner warning';
-    notice.textContent = `Low-confidence field(s) require confirmation before posting to ledger: ${unconfirmed.join(', ')}. Edit or click "Confirm" on each highlighted field.`;
-  } else {
-    notice.className = 'status-banner hidden';
-    notice.textContent = '';
-  }
-
-  const canPostRole = state.roles.includes('APClerk');
-  const hasResult = Boolean(state.currentResult && state.currentResult.status);
-  const isReject = state.currentResult && state.currentResult.status === 'REJECT';
-
-  btn.disabled = !canPostRole || !hasResult || isReject || unconfirmed.length > 0;
+if ($('btnRemoveChipFile')) {
+  $('btnRemoveChipFile').addEventListener('click', removeAttachedFile);
 }
 
-function renderFieldTable() {
-  const tbody = $('fieldTableBody');
-  tbody.textContent = '';
-
-  for (const def of FIELD_DEFINITIONS) {
-    const val = state.fields[def.key] !== undefined && state.fields[def.key] !== null ? state.fields[def.key] : '';
-    const fc = state.fieldConfidences[def.key] || {
-      value: val,
-      confidence: val !== '' ? 95 : 100,
-      label: val !== '' ? 'High' : 'Check',
-    };
-
-    const isLowUnconfirmed = fc.label === 'Low' && !state.confirmedLowFields.has(def.key);
-    const effectiveLabel = (fc.label === 'Low' && state.confirmedLowFields.has(def.key)) ? 'High' : fc.label;
-
-    const tr = document.createElement('tr');
-    if (isLowUnconfirmed) tr.className = 'row-low-confidence';
-
-    const tdLabel = el('td', def.label);
-    const tdInput = document.createElement('td');
-    const input = document.createElement('input');
-    input.type = def.key === 'invoiceDate' ? 'date' : 'text';
-    input.className = 'field-input';
-    input.name = def.key;
-    input.setAttribute('aria-label', def.label);
-    input.value = val;
-
-    input.addEventListener('input', () => {
-      state.fields[def.key] = input.value;
-      if (fc.label === 'Low') {
-        state.confirmedLowFields.add(def.key);
-        renderFieldTable();
-      }
-    });
-    tdInput.append(input);
-
-    const tdConf = document.createElement('td');
-    const badge = el(
-      'span',
-      `${effectiveLabel}${fc.confidence ? ` (${fc.confidence}%)` : ''}`,
-      `badge ${effectiveLabel}`
-    );
-    tdConf.append(badge);
-
-    const tdAction = document.createElement('td');
-    if (isLowUnconfirmed) {
-      const confirmBtn = el('button', 'Confirm field');
-      confirmBtn.type = 'button';
-      confirmBtn.setAttribute('aria-label', `Confirm ${def.label}`);
-      confirmBtn.addEventListener('click', () => {
-        state.confirmedLowFields.add(def.key);
-        renderFieldTable();
-        updatePostButtonState();
-      });
-      tdAction.append(confirmBtn);
-    } else if (fc.label === 'Low' && state.confirmedLowFields.has(def.key)) {
-      tdAction.append(el('span', 'Confirmed by user', 'hint'));
-    } else {
-      tdAction.append(el('span', 'Verified', 'hint'));
-    }
-
-    tr.append(tdLabel, tdInput, tdConf, tdAction);
-    tbody.append(tr);
-  }
-
-  updatePostButtonState();
-}
-
-/**
- * 2.2c Result card:
- * - Large badge (PASS, HOLD or REJECT)
- * - Below it, the four active rules as rows, each with its own badge and reason
- * - Then one grey line: "N rules are disabled by configuration." Do not list the disabled rules on screen.
- */
-function renderResultCard(container, res, headingPrefix = 'Check Result') {
-  if (!container || !res) return;
-  container.classList.remove('hidden');
-  container.textContent = '';
-
-  const header = el('div', null, 'result-card-header');
-  const titleWrap = el('div');
-  titleWrap.append(
-    el('h3', `${headingPrefix}${res.invoice && res.invoice.invoiceNo ? ': ' + res.invoice.invoiceNo : ''}`),
-    el('p', res.status === 'REJECT' ? 'Invoice rejected by active fraud rules. Posting to ledger is blocked.' : (res.status === 'HOLD' ? 'Invoice placed on HOLD for review.' : 'Invoice passed all active fraud rules.'), 'hint')
-  );
-  const bigBadge = el('span', res.status, `badge badge-large ${res.status}`);
-  header.append(titleWrap, bigBadge);
-  container.append(header);
-
-  const allResults = res.results || [];
-  const activeRows = (res.activeResults && res.activeResults.length)
-    ? res.activeResults
-    : allResults.filter(r => ACTIVE_RULE_IDS.includes(r.id));
-  const disabledCount = res.disabledRulesCount !== undefined
-    ? res.disabledRulesCount
-    : allResults.filter(r => r.tier === 'DISABLED').length || 10;
-
-  const listWrap = el('div', null, 'active-rules-list');
-  for (const r of activeRows) {
-    const row = el('div', null, 'active-rule-row');
-    row.append(
-      el('strong', r.id),
-      el('span', r.title || ''),
-      el('span', r.tier, `badge ${r.tier}`),
-      el('span', r.text || '')
-    );
-    listWrap.append(row);
-  }
-  container.append(listWrap);
-
-  const greyLine = el('div', `${disabledCount} rules are disabled by configuration.`, 'disabled-rules-note');
-  container.append(greyLine);
-}
-
-// File Selection & Validation (PDF, PNG, JPG only, max 10 MB)
-function selectFileObject(file) {
-  setBanner('uploadBanner', '');
-  if (!file) return;
-
-  const ext = String(file.name || '').toLowerCase().split('.').pop();
-  const allowed = ['pdf', 'png', 'jpg', 'jpeg'];
-  if (!allowed.includes(ext)) {
-    state.selectedFile = null;
-    $('selectedFileInfo').classList.add('hidden');
-    setBanner('uploadBanner', 'Unsupported file type. Only PDF, PNG and JPG files are accepted.', 'error');
-    return;
-  }
-
-  if (file.size > MAX_FILE_BYTES) {
-    state.selectedFile = null;
-    $('selectedFileInfo').classList.add('hidden');
-    setBanner('uploadBanner', 'File size exceeds the 10 MB maximum limit.', 'error');
-    return;
-  }
-
+function applyValidatedFile(file) {
   const reader = new FileReader();
   reader.onload = () => {
     const dataUrl = String(reader.result || '');
@@ -417,206 +389,361 @@ function selectFileObject(file) {
       base64,
       dataUrl,
     };
-    const kb = Math.max(1, Math.round(file.size / 1024));
-    const info = $('selectedFileInfo');
-    info.textContent = `Selected file: ${file.name} (${kb} KB)`;
-    info.classList.remove('hidden');
-    renderPreview(state.selectedFile);
+    state.pendingReplacementFile = null;
+    if ($('replaceConfirmBar')) $('replaceConfirmBar').classList.add('hidden');
+    renderComposerFileChip();
   };
   reader.readAsDataURL(file);
 }
 
-$('invoiceFileInput').addEventListener('change', (e) => {
-  const f = e.target.files && e.target.files[0];
-  if (f) selectFileObject(f);
-});
+function selectFileObject(file) {
+  if (!state.welcomeDismissed) {
+    dismissWelcomeScreen({ immediate: true, targetPage: 'upload' });
+  }
+  setBanner('chatComposerBanner', '');
+  if (!file) return;
 
-const dropZone = $('dropZone');
-dropZone.addEventListener('dragover', (e) => {
-  e.preventDefault();
-  dropZone.classList.add('dragover');
-});
-dropZone.addEventListener('dragleave', () => dropZone.classList.remove('dragover'));
-dropZone.addEventListener('drop', (e) => {
-  e.preventDefault();
-  dropZone.classList.remove('dragover');
-  const f = e.dataTransfer && e.dataTransfer.files && e.dataTransfer.files[0];
-  if (f) selectFileObject(f);
-});
-
-async function runUploadAndCheck(simulateLowConfidence = false) {
-  if (!state.selectedFile) {
-    setBanner('uploadBanner', 'Please select or drop a PDF, PNG, or JPG invoice file first (or click "Use sample").', 'error');
+  const ext = String(file.name || '').toLowerCase().split('.').pop();
+  const allowed = ['pdf', 'png', 'jpg', 'jpeg'];
+  if (!allowed.includes(ext)) {
+    setBanner('chatComposerBanner', UNSUPPORTED_FILE_MSG, 'error');
     return;
   }
 
-  setBanner('uploadBanner', `Uploading and checking ${state.selectedFile.name}...`, 'info');
-  const runningSteps = DEFAULT_STEPS.map((s, idx) => ({
-    ...s,
-    status: idx < 3 ? 'running' : 'waiting',
-  }));
-  renderSteps(runningSteps);
-
-  try {
-    const out = await api('uploadDocument', {
-      fileName: state.selectedFile.name,
-      fileSize: state.selectedFile.size,
-      fileBase64: state.selectedFile.base64,
-    });
-
-    if (out.steps) renderSteps(out.steps);
-    state.fields = out.fields || {};
-    state.fieldConfidences = out.fieldConfidences || {};
-    state.confirmedLowFields = new Set();
-
-    if (simulateLowConfidence) {
-      state.fieldConfidences.poNumber = {
-        value: state.fields.poNumber || '4500001001',
-        confidence: 58,
-        label: 'Low',
-      };
-    }
-
-    if (out.ok === false) {
-      state.currentResult = null;
-      renderFieldTable();
-      setBanner('uploadBanner', out.error || out.warning || 'Image could not be read. Enter the fields manually.', 'error');
-      return;
-    }
-
-    state.currentResult = out;
-    renderFieldTable();
-    renderPreview(state.selectedFile);
-    renderResultCard($('resultCardUpload'), out, 'Check Result');
-
-    if (out.warning) {
-      setBanner('uploadBanner', out.warning, 'warning');
-    } else {
-      setBanner('uploadBanner', `Completed 10-step check for ${out.fileName}: outcome ${out.status}.`, 'success');
-    }
-  } catch (err) {
-    setBanner('uploadBanner', err.message, 'error');
+  if (file.size > MAX_FILE_BYTES) {
+    setBanner('chatComposerBanner', FILE_TOO_LARGE_MSG, 'error');
+    return;
   }
+
+  // Only one file at a time. Picking a second file replaces the first after confirmation.
+  if (state.selectedFile) {
+    state.pendingReplacementFile = file;
+    const bar = $('replaceConfirmBar');
+    if ($('replaceConfirmText')) {
+      $('replaceConfirmText').textContent =
+        `File "${state.selectedFile.name}" is already attached. Confirm before replacing it with "${file.name}"?`;
+    }
+    if (bar) bar.classList.remove('hidden');
+    return;
+  }
+
+  applyValidatedFile(file);
 }
 
-$('btnUploadAndCheck').addEventListener('click', () => runUploadAndCheck(false));
+if ($('btnConfirmReplaceFile')) {
+  $('btnConfirmReplaceFile').addEventListener('click', () => {
+    if (state.pendingReplacementFile) {
+      applyValidatedFile(state.pendingReplacementFile);
+    }
+  });
+}
 
-$('btnUseSample').addEventListener('click', async () => {
-  const preset = $('samplePresetSelect').value;
-  const map = {
-    'clean-pdf': { url: '/samples/sample-invoice-clean.pdf', name: 'sample-invoice-clean.pdf', mime: 'application/pdf', lowConf: false },
-    'clean-png': { url: '/samples/sample-invoice-clean.png', name: 'sample-invoice-clean.png', mime: 'image/png', lowConf: false },
-    'clean-jpg': { url: '/samples/sample-invoice-clean.jpg', name: 'sample-invoice-clean.jpg', mime: 'image/jpeg', lowConf: false },
-    'dup-pdf': { url: '/samples/sample-invoice-duplicate.pdf', name: 'sample-invoice-duplicate.pdf', mime: 'application/pdf', lowConf: false },
-    'low-conf': { url: '/samples/sample-invoice-clean.png', name: 'sample-invoice-low-ocr.png', mime: 'image/png', lowConf: true },
-  };
-  const cfg = map[preset] || map['clean-pdf'];
-  setBanner('uploadBanner', `Loading ${cfg.name}...`, 'info');
-  try {
-    const r = await fetch(cfg.url);
-    const blob = await r.blob();
-    const reader = new FileReader();
-    reader.onload = async () => {
-      const dataUrl = String(reader.result || '');
-      const base64 = dataUrl.includes(',') ? dataUrl.split(',')[1] : dataUrl;
-      state.selectedFile = {
-        name: cfg.name,
-        size: blob.size,
-        type: cfg.mime,
-        base64,
-        dataUrl,
+if ($('btnCancelReplaceFile')) {
+  $('btnCancelReplaceFile').addEventListener('click', () => {
+    state.pendingReplacementFile = null;
+    if ($('chatFileInput')) $('chatFileInput').value = '';
+    if ($('replaceConfirmBar')) $('replaceConfirmBar').classList.add('hidden');
+  });
+}
+
+if ($('btnAttachPlus')) {
+  $('btnAttachPlus').addEventListener('click', () => {
+    $('chatFileInput').click();
+  });
+}
+
+if ($('chatFileInput')) {
+  $('chatFileInput').addEventListener('change', (e) => {
+    const f = e.target.files && e.target.files[0];
+    if (f) selectFileObject(f);
+  });
+}
+
+// ============================================================================
+// 6, 8 & 9. MESSAGE ORDER, INVOICE CHECK RESULT & FOLLOW-UP CHAT
+// ============================================================================
+function toVerdictLabel(status, activeResults = []) {
+  const hasReject = status === 'REJECT' || activeResults.some(r => r.tier === 'REJECT');
+  if (hasReject) return 'Blocked';
+  const hasHold = status === 'HOLD' || activeResults.some(r => r.tier === 'HOLD');
+  if (hasHold) return 'Needs review';
+  return 'Passed checks';
+}
+
+function renderAiChatResultMessage(res, checkedFileName) {
+  const allResults = res.results || [];
+  const activeRows = (res.activeResults && res.activeResults.length)
+    ? res.activeResults
+    : allResults.filter(r => ACTIVE_RULE_IDS.includes(r.id));
+
+  const verdict = res.verdict || toVerdictLabel(res.status, activeRows);
+  const inv = res.invoice || res.fields || {};
+
+  const msgCard = el('div', null, 'chat-bubble assistant chat-result-message');
+
+  // 8c.1: A verdict badge only: green "Passed checks", amber "Needs review", or red "Blocked"
+  const badgeCls = verdict === 'Passed checks'
+    ? 'verdict-pass'
+    : (verdict === 'Needs review' ? 'verdict-hold' : 'verdict-block');
+  const verdictBadge = el('span', verdict, `verdict-badge ${badgeCls}`);
+  msgCard.appendChild(verdictBadge);
+
+  // 8c.2: Invoice number, date, supplier name, GSTIN, total. One field per line. No table, no grid.
+  const fieldsLines = el('div', null, 'result-fields-lines');
+  const fieldItems = [
+    `Invoice number: ${inv.invoiceNo || '-'}`,
+    `Date: ${inv.invoiceDate || '-'}`,
+    `Supplier name: ${inv.supplierName || '-'}`,
+    `GSTIN: ${inv.supplierGstin || '-'}`,
+    `Total: INR ${inv.total !== undefined ? formatMoney(inv.total) : '-'}`,
+  ];
+  for (const lineText of fieldItems) {
+    fieldsLines.appendChild(el('div', lineText, 'result-field-line'));
+  }
+  msgCard.appendChild(fieldsLines);
+
+  // 8c.3: Four rule results. One line each: rule ID · result badge · short plain-language reason
+  const rulesList = el('div', null, 'chat-active-rules-list');
+  for (const r of activeRows) {
+    const line = el('div', null, 'chat-rule-line');
+    line.append(
+      el('span', r.id, 'rule-id'),
+      el('span', '·', 'rule-sep'),
+      el('span', r.tier, `badge ${r.tier}`),
+      el('span', '·', 'rule-sep'),
+      el('span', r.text || '', 'rule-reason')
+    );
+    rulesList.appendChild(line);
+  }
+  msgCard.appendChild(rulesList);
+
+  // 8c.4: One grey line at the bottom: "Rules check only. Does not prove the invoice is genuine."
+  const noteEl = el('div', RULES_CHECK_DISCLAIMER, 'chat-rules-disclaimer');
+  msgCard.appendChild(noteEl);
+
+  // 8c.5: Two buttons below: "Post to ledger" and "Save result".
+  const actionsRow = el('div', null, 'chat-result-actions');
+  const canPostRole = state.roles.includes('APClerk');
+  const isBlocked = verdict === 'Blocked' || res.status === 'REJECT';
+
+  const btnPost = el('button', 'Post to ledger', 'primary btn-chat-post-ledger');
+  btnPost.type = 'button';
+  btnPost.disabled = isBlocked || !canPostRole;
+  if (!canPostRole) btnPost.classList.add('hidden');
+
+  const btnSave = el('button', 'Save result', 'btn-chat-save-result');
+  btnSave.type = 'button';
+
+  const actionStatusEl = el('div', '', 'status-banner hidden');
+
+  btnPost.addEventListener('click', async () => {
+    if (isBlocked) return;
+    actionStatusEl.className = 'status-banner info';
+    actionStatusEl.textContent = 'Posting invoice to ledger...';
+    try {
+      const payload = {
+        ...state.fields,
+        fileName: checkedFileName || inv.invoiceNo,
+        source: 'CHAT',
       };
-      const kb = Math.max(1, Math.round(blob.size / 1024));
-      const info = $('selectedFileInfo');
-      info.textContent = `Selected file: ${cfg.name} (${kb} KB)`;
-      info.classList.remove('hidden');
-      renderPreview(state.selectedFile);
-      await runUploadAndCheck(cfg.lowConf);
-    };
-    reader.readAsDataURL(blob);
-  } catch (err) {
-    setBanner('uploadBanner', 'Could not load sample file: ' + err.message, 'error');
-  }
-});
+      const out = await api('postInvoice', { invoice: JSON.stringify(payload) });
+      if (out.posted) {
+        actionStatusEl.className = `status-banner ${out.blocked ? 'warning' : 'success'}`;
+        actionStatusEl.textContent = out.blocked
+          ? 'Posted to ledger with payment block (HOLD).'
+          : 'Successfully posted to ledger (PASS).';
+        btnPost.disabled = true;
+      } else {
+        actionStatusEl.className = 'status-banner error';
+        actionStatusEl.textContent = 'Blocked invoices cannot be posted to ledger.';
+      }
+    } catch (err) {
+      actionStatusEl.className = 'status-banner error';
+      actionStatusEl.textContent = err.message;
+    }
+  });
 
-$('btnClearUpload').addEventListener('click', () => {
-  state.selectedFile = null;
-  state.fields = {};
-  state.fieldConfidences = {};
-  state.confirmedLowFields = new Set();
-  state.currentResult = null;
-  $('invoiceFileInput').value = '';
-  $('selectedFileInfo').classList.add('hidden');
-  $('resultCardUpload').classList.add('hidden');
-  setBanner('uploadBanner', '');
-  setBanner('postResultBanner', '');
-  renderSteps(DEFAULT_STEPS);
-  renderFieldTable();
-  renderPreview(null);
-});
+  btnSave.addEventListener('click', async () => {
+    actionStatusEl.className = 'status-banner success';
+    actionStatusEl.textContent = 'Result saved to check history.';
+  });
 
-$('btnSaveResult').addEventListener('click', async () => {
-  setBanner('postResultBanner', 'Saving and re-evaluating invoice fields...', 'info');
+  actionsRow.append(btnPost, btnSave);
+  msgCard.append(actionsRow, actionStatusEl);
+
+  return msgCard;
+}
+
+let chatActionQueue = Promise.resolve();
+
+function enqueueChatAction(fn) {
+  chatActionQueue = chatActionQueue.then(() => fn()).catch((err) => {
+    console.error('Chat action error:', err);
+  });
+  return chatActionQueue;
+}
+
+function scrollChatToBottom() {
+  const thread = $('aiChatThread');
+  if (!thread) return;
+  thread.scrollTop = thread.scrollHeight;
+}
+
+function appendMessageToChat(node) {
+  const thread = $('aiChatThread');
+  if (!thread || !node) return;
+  thread.appendChild(node);
+  scrollChatToBottom();
+}
+
+async function askQuestionInAiThread(questionText, explicitCheckId = '') {
+  const q = String(questionText || '').trim();
+  if (!q) return;
+
+  // User message on the right, newest at the bottom
+  const userBubble = el('div', q, 'chat-bubble user');
+  appendMessageToChat(userBubble);
+
+  // Single thinking indicator on the left while server runs
+  const replyBubble = el('div', 'Thinking...', 'chat-bubble assistant thinking-indicator');
+  appendMessageToChat(replyBubble);
+
   try {
-    const payload = {
-      ...state.fields,
-      fileName: (state.selectedFile && state.selectedFile.name) || 'manual-entry',
-      fileSize: (state.selectedFile && state.selectedFile.size) || 4096,
-      source: 'UPLOAD',
-    };
-    const out = await api('checkInvoice', { invoice: JSON.stringify(payload) });
-    state.currentResult = out;
-    if (out.steps) renderSteps(out.steps);
-    renderResultCard($('resultCardUpload'), out, 'Saved Check Result');
-    updatePostButtonState();
-    setBanner('postResultBanner', `Result saved to check log (${out.status}). Export is available in Check history.`, 'success');
+    const checkId = explicitCheckId || (state.currentResult && state.currentResult.checkId) || '';
+    const reply = await api('askInvoice', { checkId, question: q });
+    replyBubble.classList.remove('thinking-indicator');
+    replyBubble.textContent = typeof reply === 'string' ? reply : JSON.stringify(reply);
   } catch (err) {
-    setBanner('postResultBanner', err.message, 'error');
+    replyBubble.classList.remove('thinking-indicator');
+    replyBubble.textContent = err.message || 'The assistant is not configured.';
   }
-});
+  scrollChatToBottom();
+}
 
-$('btnPostLedger').addEventListener('click', async () => {
-  const unconfirmed = getUnconfirmedLowFields();
-  if (unconfirmed.length > 0) {
-    setBanner('postResultBanner', `Confirm all Low-confidence fields before posting: ${unconfirmed.join(', ')}`, 'error');
+async function performAiChatCheck(userPromptText = '') {
+  if (!state.welcomeDismissed) {
+    dismissWelcomeScreen({ immediate: true, targetPage: 'upload' });
+  }
+  setBanner('chatComposerBanner', '');
+  const trimmedPrompt = String(userPromptText || '').trim();
+
+  if (state.selectedFile) {
+    const fileToSend = state.selectedFile;
+    state.lastCheckedFile = fileToSend;
+
+    // 4. The chip disappears after Send is pressed
+    state.selectedFile = null;
+    if ($('chatFileInput')) $('chatFileInput').value = '';
+    renderComposerFileChip();
+
+    // 8a. User message on the right: "Checking [filename]"
+    appendMessageToChat(el('div', `Checking ${fileToSend.name}`, 'chat-bubble user'));
+
+    // 8b. A single thinking indicator on the left while the server runs
+    const thinkingBubble = el('div', 'Thinking...', 'chat-bubble assistant thinking-indicator');
+    appendMessageToChat(thinkingBubble);
+
+    try {
+      const out = await api('chatCheckInvoice', {
+        fileName: fileToSend.name,
+        fileSize: fileToSend.size,
+        fileBase64: fileToSend.base64,
+      });
+
+      thinkingBubble.remove();
+      state.fields = out.fields || {};
+
+      if (out.ok === false) {
+        state.currentResult = null;
+        appendMessageToChat(
+          el('div', out.error || out.warning || 'Image could not be read.', 'chat-bubble assistant')
+        );
+        return;
+      }
+
+      state.currentResult = out;
+      const resultMsg = renderAiChatResultMessage(out, fileToSend.name);
+      appendMessageToChat(resultMsg);
+
+      if (trimmedPrompt) {
+        await askQuestionInAiThread(trimmedPrompt, out.checkId || '');
+      }
+    } catch (err) {
+      thinkingBubble.remove();
+      appendMessageToChat(el('div', err.message, 'chat-bubble assistant'));
+    }
     return;
   }
-  setBanner('postResultBanner', 'Posting invoice to ledger...', 'info');
-  try {
-    const payload = {
-      ...state.fields,
-      fileName: (state.selectedFile && state.selectedFile.name) || state.fields.invoiceNo,
-      unconfirmedLowFields: unconfirmed,
-    };
-    const out = await api('postInvoice', { invoice: JSON.stringify(payload) });
-    state.currentResult = out;
-    renderResultCard($('resultCardUpload'), out, 'Ledger Post Result');
-    updatePostButtonState();
-    if (out.posted) {
-      setBanner(
-        'postResultBanner',
-        out.blocked ? 'Posted to ledger with payment block (HOLD).' : 'Successfully posted to ledger (PASS).',
-        out.blocked ? 'warning' : 'success'
-      );
-      $('btnPostLedger').disabled = true;
-    } else {
-      setBanner('postResultBanner', 'Not posted: REJECT invoices cannot be posted to ledger.', 'error');
-    }
-  } catch (err) {
-    setBanner('postResultBanner', err.message, 'error');
+
+  if (!trimmedPrompt) {
+    return;
   }
-});
+
+  await askQuestionInAiThread(trimmedPrompt);
+}
+
+function runAiChatCheck(userPromptText = '') {
+  return enqueueChatAction(() => performAiChatCheck(userPromptText));
+}
+
+if ($('btnAiComposerSend')) {
+  $('btnAiComposerSend').addEventListener('click', () => {
+    const input = $('aiComposerInput');
+    const text = input ? input.value.trim() : '';
+    if (input) input.value = '';
+    runAiChatCheck(text);
+  });
+}
+
+if ($('aiComposerInput')) {
+  $('aiComposerInput').addEventListener('keydown', (e) => {
+    if (e.key === 'Enter') {
+      e.preventDefault();
+      $('btnAiComposerSend').click();
+    }
+  });
+}
 
 // ============================================================================
-// 2.3 S/4HANA EXTRACT PAGE
+// S/4HANA EXTRACT PAGE
 // ============================================================================
+function renderResultCard(container, res, headingPrefix = 'Check Result') {
+  if (!container || !res) return;
+  container.classList.remove('hidden');
+  container.textContent = '';
+
+  const allResults = res.results || [];
+  const activeRows = (res.activeResults && res.activeResults.length)
+    ? res.activeResults
+    : allResults.filter(r => ACTIVE_RULE_IDS.includes(r.id));
+
+  const verdict = res.verdict || toVerdictLabel(res.status, activeRows);
+  const header = el('div', `${headingPrefix} — ${verdict} (${res.status})`, 'verdict-badge');
+  container.appendChild(header);
+
+  const listWrap = el('div', null, 'chat-active-rules-list');
+  listWrap.style.marginTop = '10px';
+  for (const r of activeRows) {
+    const row = el('div', null, 'chat-rule-line');
+    row.append(
+      el('span', r.id, 'rule-id'),
+      el('span', '·', 'rule-sep'),
+      el('span', r.tier, `badge ${r.tier}`),
+      el('span', '·', 'rule-sep'),
+      el('span', r.text || '', 'rule-reason')
+    );
+    listWrap.appendChild(row);
+  }
+  container.appendChild(listWrap);
+}
+
 function renderS4Table() {
   const tbody = $('s4TableBody');
+  if (!tbody) return;
   tbody.textContent = '';
   state.s4List.forEach(inv => {
     const res = state.s4Results.find(r => r.id === inv.id);
     const tr = document.createElement('tr');
-    tr.className = 'clickable-row';
     const activeNonPass = res
       ? (res.activeResults || res.results.filter(x => ACTIVE_RULE_IDS.includes(x.id)))
           .filter(x => x.tier !== 'PASS')
@@ -625,12 +752,12 @@ function renderS4Table() {
       : '';
 
     tr.append(
-      el('td', inv.id || '-'),
+      el('td', inv.id || '-', 'mono-cell'),
       el('td', inv.supplierName || '-'),
-      el('td', inv.supplierGstin || '-'),
-      el('td', inv.invoiceNo || '-'),
-      el('td', inv.invoiceDate || '-'),
-      el('td', formatMoney(inv.total))
+      el('td', inv.supplierGstin || '-', 'mono-cell'),
+      el('td', inv.invoiceNo || '-', 'mono-cell'),
+      el('td', inv.invoiceDate || '-', 'mono-cell'),
+      el('td', formatMoney(inv.total), 'num-col')
     );
 
     const tdStatus = document.createElement('td');
@@ -642,71 +769,73 @@ function renderS4Table() {
     tr.append(tdStatus, el('td', res ? (activeNonPass || 'All active rules passed') : 'Click "Check all" to evaluate'));
 
     tr.addEventListener('click', () => {
-      if (!res) {
-        setBanner('s4Banner', 'Click "Check all" first to evaluate this invoice.', 'info');
-        return;
-      }
+      if (!res) return;
       renderResultCard($('resultCardS4'), res, `S/4HANA Invoice ${inv.id}`);
-      $('resultCardS4').scrollIntoView({ behavior: 'smooth' });
     });
 
     tbody.append(tr);
   });
 }
 
-$('btnUseSampleS4').addEventListener('click', async () => {
-  setBanner('s4Banner', 'Loading sample S/4HANA extract...', 'info');
-  try {
-    state.s4List = await api('fetchS4Invoices', null, 'GET');
-    state.s4Results = [];
-    $('resultCardS4').classList.add('hidden');
-    renderS4Table();
-    setBanner('s4Banner', `Loaded ${state.s4List.length} invoices from sample S/4HANA extract. Click "Check all" to run active rules.`, 'success');
-  } catch (err) {
-    setBanner('s4Banner', err.message, 'error');
-  }
-});
-
-$('btnImportS4').addEventListener('click', () => {
-  const f = $('s4FileInput').files && $('s4FileInput').files[0];
-  if (!f) {
-    setBanner('s4Banner', 'Choose a CSV or JSON extract file first.', 'error');
-    return;
-  }
-  const reader = new FileReader();
-  reader.onload = async () => {
+if ($('btnUseSampleS4')) {
+  $('btnUseSampleS4').addEventListener('click', async () => {
+    setBanner('s4Banner', 'Loading sample S/4HANA extract...', 'info');
     try {
-      const out = await api('importS4Extract', { fileName: f.name, content: String(reader.result || '') });
-      state.s4List = out.invoices || [];
+      state.s4List = await api('fetchS4Invoices', null, 'GET');
       state.s4Results = [];
+      if ($('resultCardS4')) $('resultCardS4').classList.add('hidden');
       renderS4Table();
-      setBanner('s4Banner', `Imported ${out.count} invoices from ${out.fileName}. Click "Check all" to run active rules.`, 'success');
+      setBanner('s4Banner', `Loaded ${state.s4List.length} invoices from sample S/4HANA extract.`, 'success');
     } catch (err) {
       setBanner('s4Banner', err.message, 'error');
     }
-  };
-  reader.readAsText(f);
-});
+  });
+}
 
-$('btnCheckAllS4').addEventListener('click', async () => {
-  if (!state.s4List.length) {
-    state.s4List = await api('fetchS4Invoices', null, 'GET');
-  }
-  setBanner('s4Banner', `Running active rules across ${state.s4List.length} invoices...`, 'info');
-  try {
-    state.s4Results = await api('checkBatch', { invoices: JSON.stringify(state.s4List) });
-    renderS4Table();
-    if (state.s4Results.length > 0) {
-      renderResultCard($('resultCardS4'), state.s4Results[0], `S/4HANA Invoice ${state.s4Results[0].id}`);
+if ($('btnImportS4')) {
+  $('btnImportS4').addEventListener('click', () => {
+    const f = $('s4FileInput') && $('s4FileInput').files && $('s4FileInput').files[0];
+    if (!f) {
+      setBanner('s4Banner', 'Choose a CSV or JSON extract file first.', 'error');
+      return;
     }
-    setBanner('s4Banner', `Checked ${state.s4Results.length} S/4HANA invoices. Click any row to view its Result Card.`, 'success');
-  } catch (err) {
-    setBanner('s4Banner', err.message, 'error');
-  }
-});
+    const reader = new FileReader();
+    reader.onload = async () => {
+      try {
+        const out = await api('importS4Extract', { fileName: f.name, content: String(reader.result || '') });
+        state.s4List = out.invoices || [];
+        state.s4Results = [];
+        renderS4Table();
+        setBanner('s4Banner', `Imported ${out.count} invoices from ${out.fileName}.`, 'success');
+      } catch (err) {
+        setBanner('s4Banner', err.message, 'error');
+      }
+    };
+    reader.readAsText(f);
+  });
+}
+
+if ($('btnCheckAllS4')) {
+  $('btnCheckAllS4').addEventListener('click', async () => {
+    if (!state.s4List.length) {
+      state.s4List = await api('fetchS4Invoices', null, 'GET');
+    }
+    setBanner('s4Banner', `Running active rules across ${state.s4List.length} invoices...`, 'info');
+    try {
+      state.s4Results = await api('checkBatch', { invoices: JSON.stringify(state.s4List) });
+      renderS4Table();
+      if (state.s4Results.length > 0) {
+        renderResultCard($('resultCardS4'), state.s4Results[0], `S/4HANA Invoice ${state.s4Results[0].id}`);
+      }
+      setBanner('s4Banner', `Checked ${state.s4Results.length} S/4HANA invoices.`, 'success');
+    } catch (err) {
+      setBanner('s4Banner', err.message, 'error');
+    }
+  });
+}
 
 // ============================================================================
-// 2.4 REVIEW QUEUE PAGE
+// REVIEW QUEUE PAGE
 // ============================================================================
 async function loadAlertsQueue() {
   try {
@@ -719,12 +848,13 @@ async function loadAlertsQueue() {
 
 function renderAlertsTable() {
   const tbody = $('alertsTableBody');
+  if (!tbody) return;
   tbody.textContent = '';
   const canDecide = state.roles.includes('APController');
 
   if (!state.alertsList.length) {
     const tr = document.createElement('tr');
-    const td = el('td', 'No alerts in the review queue yet. Run an invoice check or S/4HANA batch check to populate alerts.');
+    const td = el('td', 'No alerts in the review queue yet.');
     td.colSpan = canDecide ? 6 : 5;
     tr.append(td);
     tbody.append(tr);
@@ -779,7 +909,6 @@ function renderAlertsTable() {
           return b;
         };
 
-        // Clear is hidden for REJECT items (Section 2.4)
         if (alert.tier !== 'REJECT') {
           wrap.append(makeBtn('Clear', 'CLEAR'));
         }
@@ -795,10 +924,12 @@ function renderAlertsTable() {
   }
 }
 
-$('btnRefreshAlerts').addEventListener('click', loadAlertsQueue);
+if ($('btnRefreshAlerts')) {
+  $('btnRefreshAlerts').addEventListener('click', loadAlertsQueue);
+}
 
 // ============================================================================
-// 2.5 CHECK HISTORY PAGE (Filters + CSV & Excel Exports with Active Rules Only)
+// CHECK HISTORY PAGE
 // ============================================================================
 async function loadCheckHistory() {
   try {
@@ -810,10 +941,10 @@ async function loadCheckHistory() {
 }
 
 function getFilteredHistory() {
-  const statusFilter = $('filterHistoryStatus').value;
-  const fromDate = $('filterHistoryFrom').value;
-  const toDate = $('filterHistoryTo').value;
-  const supplierQuery = $('filterHistorySupplier').value.trim().toLowerCase();
+  const statusFilter = $('filterHistoryStatus') ? $('filterHistoryStatus').value : 'ALL';
+  const fromDate = $('filterHistoryFrom') ? $('filterHistoryFrom').value : '';
+  const toDate = $('filterHistoryTo') ? $('filterHistoryTo').value : '';
+  const supplierQuery = $('filterHistorySupplier') ? $('filterHistorySupplier').value.trim().toLowerCase() : '';
 
   return state.historyList.filter(row => {
     if (statusFilter !== 'ALL' && row.status !== statusFilter) return false;
@@ -830,6 +961,7 @@ function getFilteredHistory() {
 
 function renderHistoryTable() {
   const tbody = $('historyTableBody');
+  if (!tbody) return;
   tbody.textContent = '';
   const rows = getFilteredHistory();
 
@@ -846,11 +978,11 @@ function renderHistoryTable() {
     const tr = document.createElement('tr');
     const timeStr = r.createdAt ? new Date(r.createdAt).toLocaleString() : '-';
     tr.append(
-      el('td', timeStr),
-      el('td', r.fileName || r.source || '-'),
-      el('td', r.invoiceNo || '-'),
+      el('td', timeStr, 'mono-cell'),
+      el('td', r.fileName ? `${r.fileName} (${r.source || 'CHAT'})` : (r.source || '-')),
+      el('td', r.invoiceNo || '-', 'mono-cell'),
       el('td', `${r.supplierName || '-'} (${r.supplierGstin || '-'})`),
-      el('td', formatMoney(r.total))
+      el('td', formatMoney(r.total), 'num-col')
     );
     const tdSt = document.createElement('td');
     tdSt.append(el('span', r.status, `badge ${r.status}`));
@@ -859,11 +991,14 @@ function renderHistoryTable() {
   }
 }
 
-$('btnApplyHistoryFilter').addEventListener('click', renderHistoryTable);
+if ($('btnApplyHistoryFilter')) {
+  $('btnApplyHistoryFilter').addEventListener('click', renderHistoryTable);
+}
 
 function buildHistoryActiveRulesCsv(rows) {
   const headers = [
     'Time',
+    'Source',
     'File',
     'Invoice Number',
     'Supplier',
@@ -897,6 +1032,7 @@ function buildHistoryActiveRulesCsv(rows) {
 
     const rowCells = [
       r.createdAt || '',
+      r.source || 'CHAT',
       r.fileName || r.source || '',
       r.invoiceNo || '',
       r.supplierName || '',
@@ -912,7 +1048,6 @@ function buildHistoryActiveRulesCsv(rows) {
     lines.push(rowCells.map(escapeCsv).join(','));
   }
 
-  // Prepend UTF-8 BOM so Microsoft Excel opens the CSV cleanly
   return '\uFEFF' + lines.join('\r\n');
 }
 
@@ -928,22 +1063,26 @@ function triggerDownload(content, filename, mimeType) {
   URL.revokeObjectURL(url);
 }
 
-$('btnExportHistoryCsv').addEventListener('click', () => {
-  const csv = buildHistoryActiveRulesCsv(getFilteredHistory());
-  state.lastExportCsv = csv;
-  window.__lastHistoryExportCsv = csv;
-  triggerDownload(csv, 'ap-sentinel-check-history.csv', 'text/csv;charset=utf-8');
-});
+if ($('btnExportHistoryCsv')) {
+  $('btnExportHistoryCsv').addEventListener('click', () => {
+    const csv = buildHistoryActiveRulesCsv(getFilteredHistory());
+    state.lastExportCsv = csv;
+    window.__lastHistoryExportCsv = csv;
+    triggerDownload(csv, 'ap-sentinel-check-history.csv', 'text/csv;charset=utf-8');
+  });
+}
 
-$('btnExportHistoryExcel').addEventListener('click', () => {
-  const csv = buildHistoryActiveRulesCsv(getFilteredHistory());
-  state.lastExportCsv = csv;
-  window.__lastHistoryExportCsv = csv;
-  triggerDownload(csv, 'ap-sentinel-check-history-excel.csv', 'application/vnd.ms-excel;charset=utf-8');
-});
+if ($('btnExportHistoryExcel')) {
+  $('btnExportHistoryExcel').addEventListener('click', () => {
+    const csv = buildHistoryActiveRulesCsv(getFilteredHistory());
+    state.lastExportCsv = csv;
+    window.__lastHistoryExportCsv = csv;
+    triggerDownload(csv, 'ap-sentinel-check-history-excel.csv', 'application/vnd.ms-excel;charset=utf-8');
+  });
+}
 
 // ============================================================================
-// 2.6 ACTIVITY LOG PAGE
+// ACTIVITY LOG PAGE
 // ============================================================================
 function parseAuditDetail(detailStr) {
   const s = String(detailStr || '');
@@ -964,12 +1103,14 @@ async function loadActivityLog() {
     state.activityList = await odataGet('AuditLog?$orderby=idx desc');
     const chain = await api('verifyAuditChain', null, 'GET');
     const badge = $('auditChainBadge');
-    if (chain.ok) {
-      badge.className = 'status-banner success';
-      badge.textContent = `Audit Hash Chain: Verified (${chain.entries} entries intact)`;
-    } else {
-      badge.className = 'status-banner error';
-      badge.textContent = `Audit Hash Chain: Broken at entry #${chain.brokenAt}`;
+    if (badge) {
+      if (chain.ok) {
+        badge.className = 'status-banner success';
+        badge.textContent = `Audit Hash Chain: Verified (${chain.entries} entries intact)`;
+      } else {
+        badge.className = 'status-banner error';
+        badge.textContent = `Audit Hash Chain: Broken at entry #${chain.brokenAt}`;
+      }
     }
     renderActivityTable();
   } catch (err) {
@@ -979,6 +1120,7 @@ async function loadActivityLog() {
 
 function renderActivityTable() {
   const tbody = $('activityTableBody');
+  if (!tbody) return;
   tbody.textContent = '';
 
   if (!state.activityList.length) {
@@ -994,107 +1136,45 @@ function renderActivityTable() {
     const parsed = parseAuditDetail(row.detail);
     const tr = document.createElement('tr');
     tr.append(
-      el('td', row.ts ? new Date(row.ts).toLocaleString() : '-'),
+      el('td', row.ts ? new Date(row.ts).toLocaleString() : '-', 'mono-cell'),
       el('td', parsed.user),
-      el('td', parsed.file),
-      el('td', row.action),
+      el('td', parsed.file, 'mono-cell'),
+      el('td', row.action, 'mono-cell'),
       el('td', parsed.clean || parsed.result)
     );
     tbody.append(tr);
   }
 }
 
-$('btnRefreshActivity').addEventListener('click', loadActivityLog);
-
-$('btnExportActivityCsv').addEventListener('click', () => {
-  const headers = ['Time', 'User', 'File', 'Action', 'Result'];
-  const escapeCsv = (v) => `"${String(v || '').replace(/"/g, '""')}"`;
-  const lines = [headers.join(',')];
-  for (const row of state.activityList) {
-    const parsed = parseAuditDetail(row.detail);
-    lines.push([row.ts, parsed.user, parsed.file, row.action, parsed.clean || parsed.result].map(escapeCsv).join(','));
-  }
-  triggerDownload('\uFEFF' + lines.join('\r\n'), 'ap-sentinel-activity-log.csv', 'text/csv;charset=utf-8');
-});
-
-// ============================================================================
-// 2.7 AI ASSISTANT PAGE (Read-Only Chat + Quick Prompts + Copy Button on Emails)
-// ============================================================================
-async function sendChatMessage(messageText) {
-  const msg = String(messageText || '').trim();
-  if (!msg) return;
-
-  const container = $('chatMessages');
-  const userBubble = el('div', msg, 'chat-bubble user');
-  container.append(userBubble);
-
-  const botBubble = el('div', 'Thinking...', 'chat-bubble assistant');
-  container.append(botBubble);
-  container.scrollTop = container.scrollHeight;
-
-  try {
-    const reply = await api('chat', { message: msg });
-    const text = typeof reply === 'string' ? reply : JSON.stringify(reply);
-    botBubble.textContent = text;
-
-    // Every drafted email has a Copy button (2.7)
-    if (/subject:|dear\s|vendor|discrepancy|regards/i.test(text) || /email/i.test(msg)) {
-      const copyWrap = el('div');
-      const copyBtn = el('button', 'Copy email draft', 'copy-email-btn');
-      copyBtn.type = 'button';
-      copyBtn.addEventListener('click', async () => {
-        try {
-          await navigator.clipboard.writeText(text);
-          copyBtn.textContent = 'Copied!';
-          setTimeout(() => { copyBtn.textContent = 'Copy email draft'; }, 2000);
-        } catch {
-          copyBtn.textContent = 'Copied!';
-        }
-      });
-      copyWrap.append(copyBtn);
-      botBubble.append(copyWrap);
-    }
-  } catch (err) {
-    botBubble.textContent = err.message || 'The assistant is not configured.';
-  }
-  container.scrollTop = container.scrollHeight;
+if ($('btnRefreshActivity')) {
+  $('btnRefreshActivity').addEventListener('click', loadActivityLog);
 }
 
-$('btnSendChat').addEventListener('click', () => {
-  const input = $('chatInput');
-  const val = input.value;
-  input.value = '';
-  sendChatMessage(val);
-});
-
-$('chatInput').addEventListener('keydown', (e) => {
-  if (e.key === 'Enter') {
-    e.preventDefault();
-    $('btnSendChat').click();
-  }
-});
-
-document.querySelectorAll('.quick-chat-btn').forEach(btn => {
-  btn.addEventListener('click', () => {
-    sendChatMessage(btn.dataset.prompt);
+if ($('btnExportActivityCsv')) {
+  $('btnExportActivityCsv').addEventListener('click', () => {
+    const headers = ['Time', 'User', 'File', 'Action', 'Result'];
+    const escapeCsv = (v) => `"${String(v || '').replace(/"/g, '""')}"`;
+    const lines = [headers.join(',')];
+    for (const row of state.activityList) {
+      const parsed = parseAuditDetail(row.detail);
+      lines.push([row.ts, parsed.user, parsed.file, row.action, parsed.clean || parsed.result].map(escapeCsv).join(','));
+    }
+    triggerDownload('\uFEFF' + lines.join('\r\n'), 'ap-sentinel-activity-log.csv', 'text/csv;charset=utf-8');
   });
-});
+}
 
 // ============================================================================
 // INITIALIZATION
 // ============================================================================
 async function initApp() {
-  renderSteps(DEFAULT_STEPS);
-  renderFieldTable();
+  initSidebarState();
+  initWelcomeScreen();
 
-  // Support ?role=Auditor | APClerk | APController URL query param
   const params = new URLSearchParams(window.location.search);
   const roleParam = params.get('role');
   if (roleParam) {
     state.roles = roleParam.split(',').map(s => s.trim()).filter(Boolean);
     state.user = state.roles[0].toLowerCase();
-    const switcher = $('roleSwitcher');
-    if (switcher) switcher.value = roleParam;
   } else {
     try {
       const who = await api('whoami', null, 'GET');
