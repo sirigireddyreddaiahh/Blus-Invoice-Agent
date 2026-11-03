@@ -1363,9 +1363,12 @@ class FraudService extends cds.ApplicationService {
         allowInvoiceData,
       });
 
-      const systemInstruction = `You are Blus Invoice Agent, the AI assistant for invoice duplicate and split-invoice detection on SAP BTP.
-Write in clean, natural plain text (do not use markdown **bold** asterisks or LaTeX symbols).
+      const systemInstruction = `You are Blus Invoice Agent, the AI assistant that catches duplicate and split invoices before they get paid.
+Write in clean, natural text (do not use LaTeX symbols).
+Never mention "SAP BTP" or "BTP" anywhere in your response.
+When listing invoice fields, rules, or key points, use "Label: Value" format (for example, "Invoice number: 51109396" or "Total amount: INR 9,25,640.10") so the interface highlights the main label in bold black and the answer in normal text.
 Answer the user's question directly and conversationally using the Grounding Context below.
+- If the user says "hi" or greets you: greet them warmly as Blus Invoice Agent and briefly offer to help with the current invoice check or any invoice questions.
 - Do NOT repeat all four rules on every message if the user is just asking a specific question (such as how much the bill is, who the supplier is, what the invoice number or date is, what services were billed, or what the bank account is). Answer their specific question directly and concisely!
 - If the user asks about the rules, why the invoice passed/failed, or "is this real or fake" / "is this genuine": explain the verdict (${verdict}), the active rule results (AP-02, AP-03, AP-09, AP-11), and mention that this is a rules check only and does not prove the invoice is genuine.
 - If the user asks about bank account or IFSC details: state the IFSC and account number from the invoice fields, and mention that rule AP-05 (Bank details changed) is currently DISABLED.
@@ -1376,6 +1379,7 @@ ${JSON.stringify(outgoingRequest.grounding, null, 2)}`;
 
       try {
         let reply = await callGeminiText(apiKey, modelName, systemInstruction, outgoingRequest.question);
+        reply = reply.replace(/\s*\bon\s+SAP\s+BTP\b/gi, '').replace(/\bSAP\s+BTP\b/gi, 'Blus Invoice Agent');
         if (!allowInvoiceData) {
           const supplement = buildLocalInvoiceSupplement({ checkRecord, parsedResult, question: q });
           if (supplement) {

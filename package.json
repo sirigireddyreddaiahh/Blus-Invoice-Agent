@@ -1,7 +1,7 @@
 {
-  "name": "duplicate-invoice-detection-agent",
+  "name": "blus-invoice-agent",
   "version": "1.0.0",
-  "description": "Duplicate Invoice Detection Agent: invoice fraud and duplicate checks for SAP BTP with read-only AI Assistant",
+  "description": "Blus Invoice Agent: catches duplicate and split invoices before they get paid",
   "main": "server.js",
   "scripts": {
     "start": "node server.js",

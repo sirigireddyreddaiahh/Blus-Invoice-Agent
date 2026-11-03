@@ -1,7 +1,7 @@
 {
-  "name": "duplicate-invoice-detection-agent-approuter",
+  "name": "blus-invoice-agent-approuter",
   "version": "1.0.0",
-  "description": "Approuter for Duplicate Invoice Detection Agent",
+  "description": "Approuter for Blus Invoice Agent",
   "scripts": {
     "start": "node node_modules/@sap/approuter/approuter.js"
   },

@@ -156,14 +156,26 @@ if ($('sidebarBackdrop')) {
 // ============================================================================
 // NAVIGATION & ROLE PERMISSIONS
 // ============================================================================
+function getOrCreateChatContentInner() {
+  const thread = $('aiChatThread');
+  if (!thread) return null;
+  let inner = $('chatContentInner');
+  if (!inner) {
+    inner = el('div', null, 'chat-content-inner');
+    inner.id = 'chatContentInner';
+    thread.appendChild(inner);
+  }
+  return inner;
+}
+
 function ensureChatGreeting() {
   if (state.greetingShown) return;
-  const thread = $('aiChatThread');
-  if (!thread) return;
+  const inner = getOrCreateChatContentInner();
+  if (!inner) return;
   state.greetingShown = true;
-  if (thread.children.length === 0) {
+  if (inner.children.length === 0) {
     const greetingNode = el('div', CHAT_GREETING_MSG, 'chat-bubble assistant chat-greeting-message');
-    thread.appendChild(greetingNode);
+    inner.appendChild(greetingNode);
   }
 }
 
@@ -174,9 +186,6 @@ function dismissWelcomeScreen(opts = {}) {
 
   if (!state.welcomeDismissed) {
     state.welcomeDismissed = true;
-    try {
-      sessionStorage.setItem(WELCOME_SESSION_KEY, '1');
-    } catch {}
   }
 
   ensureChatGreeting();
@@ -219,17 +228,11 @@ function initWelcomeScreen() {
   const welcome = $('welcomeScreen');
   if (!welcome) return;
 
-  let alreadyDismissed = false;
   try {
-    alreadyDismissed = sessionStorage.getItem(WELCOME_SESSION_KEY) === '1';
+    sessionStorage.removeItem(WELCOME_SESSION_KEY);
   } catch {}
 
-  if (alreadyDismissed) {
-    state.welcomeDismissed = true;
-    welcome.classList.add('hidden');
-    ensureChatGreeting();
-    return;
-  }
+  welcome.classList.remove('hidden', 'welcome-exit');
 
   // Option Card 1: Upload invoice
   if ($('welcomeCardUpload')) {
@@ -489,16 +492,21 @@ function renderAiChatResultMessage(res, checkedFileName) {
   msgCard.appendChild(verdictBadge);
 
   // 8c.2: Invoice number, date, supplier name, GSTIN, total. One field per line. No table, no grid.
+  // Main label in bold black (#000000), answer value in normal weight.
   const fieldsLines = el('div', null, 'result-fields-lines');
   const fieldItems = [
-    `Invoice number: ${inv.invoiceNo || '-'}`,
-    `Date: ${inv.invoiceDate || '-'}`,
-    `Supplier name: ${inv.supplierName || '-'}`,
-    `GSTIN: ${inv.supplierGstin || '-'}`,
-    `Total: INR ${inv.total !== undefined ? formatMoney(inv.total) : '-'}`,
+    ['Invoice number:', inv.invoiceNo || '-'],
+    ['Date:', inv.invoiceDate || '-'],
+    ['Supplier name:', inv.supplierName || '-'],
+    ['GSTIN:', inv.supplierGstin || '-'],
+    ['Total:', `INR ${inv.total !== undefined ? formatMoney(inv.total) : '-'}`],
   ];
-  for (const lineText of fieldItems) {
-    fieldsLines.appendChild(el('div', lineText, 'result-field-line'));
+  for (const [labelText, valueText] of fieldItems) {
+    const lineEl = el('div', null, 'result-field-line');
+    const labelEl = el('strong', `${labelText} `, 'result-field-label');
+    const valEl = el('span', String(valueText), 'result-field-value');
+    lineEl.append(labelEl, valEl);
+    fieldsLines.appendChild(lineEl);
   }
   msgCard.appendChild(fieldsLines);
 
@@ -507,10 +515,7 @@ function renderAiChatResultMessage(res, checkedFileName) {
   for (const r of activeRows) {
     const line = el('div', null, 'chat-rule-line');
     line.append(
-      el('span', r.id, 'rule-id'),
-      el('span', '·', 'rule-sep'),
       el('span', r.tier, `badge ${r.tier}`),
-      el('span', '·', 'rule-sep'),
       el('span', r.text || '', 'rule-reason')
     );
     rulesList.appendChild(line);
@@ -574,6 +579,40 @@ function renderAiChatResultMessage(res, checkedFileName) {
   return msgCard;
 }
 
+function renderFormattedAssistantReply(container, rawText) {
+  if (!container) return;
+  container.textContent = '';
+  const text = String(rawText || '');
+  const lines = text.split('\n');
+
+  lines.forEach((line, idx) => {
+    if (idx > 0) {
+      container.appendChild(document.createTextNode('\n'));
+    }
+    const trimmed = line.trim();
+    if (!trimmed) return;
+
+    // Match "Label: Value" or "• Label: Value" or "- Label: Value"
+    const kvMatch = line.match(/^(\s*(?:[•\-*]\s+|\d+\.\s+)?[^:\n]{2,48}:)(\s+.*)$/);
+    if (kvMatch) {
+      const strongEl = el('strong', kvMatch[1], 'ai-main-label');
+      const valEl = el('span', kvMatch[2], 'ai-normal-value');
+      container.append(strongEl, valEl);
+      return;
+    }
+
+    // Match standalone section heading ending with ":"
+    if (/^(\s*[^:\n]{3,65}:)\s*$/.test(line)) {
+      const strongEl = el('strong', line, 'ai-main-label');
+      container.appendChild(strongEl);
+      return;
+    }
+
+    const spanEl = el('span', line, 'ai-normal-value');
+    container.appendChild(spanEl);
+  });
+}
+
 let chatActionQueue = Promise.resolve();
 
 function enqueueChatAction(fn) {
@@ -590,9 +629,9 @@ function scrollChatToBottom() {
 }
 
 function appendMessageToChat(node) {
-  const thread = $('aiChatThread');
-  if (!thread || !node) return;
-  thread.appendChild(node);
+  const inner = getOrCreateChatContentInner();
+  if (!inner || !node) return;
+  inner.appendChild(node);
   scrollChatToBottom();
 }
 
@@ -612,7 +651,8 @@ async function askQuestionInAiThread(questionText, explicitCheckId = '') {
     const checkId = explicitCheckId || (state.currentResult && state.currentResult.checkId) || '';
     const reply = await api('askInvoice', { checkId, question: q });
     replyBubble.classList.remove('thinking-indicator');
-    replyBubble.textContent = typeof reply === 'string' ? reply : JSON.stringify(reply);
+    const replyStr = typeof reply === 'string' ? reply : JSON.stringify(reply);
+    renderFormattedAssistantReply(replyBubble, replyStr);
   } catch (err) {
     replyBubble.classList.remove('thinking-indicator');
     replyBubble.textContent = err.message || 'The assistant is not configured.';
@@ -726,10 +766,7 @@ function renderResultCard(container, res, headingPrefix = 'Check Result') {
   for (const r of activeRows) {
     const row = el('div', null, 'chat-rule-line');
     row.append(
-      el('span', r.id, 'rule-id'),
-      el('span', '·', 'rule-sep'),
       el('span', r.tier, `badge ${r.tier}`),
-      el('span', '·', 'rule-sep'),
       el('span', r.text || '', 'rule-reason')
     );
     listWrap.appendChild(row);

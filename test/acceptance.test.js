@@ -54,7 +54,7 @@ test('Acceptance Check 4: The composer is visible on a 1366x768 screen without s
   const html = fs.readFileSync(path.join(__dirname, '../app/index.html'), 'utf8');
   assert.match(css, /\.app-shell\s*\{[\s\S]*?height:\s*100vh;[\s\S]*?overflow:\s*hidden;/);
   assert.match(css, /\.ai-chat-thread\s*\{[\s\S]*?flex:\s*1;[\s\S]*?min-height:\s*0;[\s\S]*?overflow-y:\s*auto;/);
-  assert.match(css, /\.ai-composer\s*\{[\s\S]*?flex-shrink:\s*0;[\s\S]*?margin-top:\s*auto;/);
+  assert.match(css, /\.ai-composer\s*\{[\s\S]*?position:\s*absolute;[\s\S]*?bottom:\s*16px;/);
   assert.match(html, /placeholder="Ask about an invoice or attach a PDF\.\.\."/);
 });
 

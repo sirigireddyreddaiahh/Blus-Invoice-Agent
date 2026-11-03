@@ -1,5 +1,5 @@
 'use strict';
-// Duplicate Invoice Detection Agent rule catalogue (SAP BTP spec).
+// Duplicate Invoice Detection Agent rule catalogue.
 // Active fraud rules per mandate:
 // 1. AP-02 Exact duplicate: same supplier GSTIN, FY, invoice no or IRN -> REJECT.
 // 2. AP-09 Same vendor, amount and services within 90 days (recurring contract POs excluded) -> REJECT.

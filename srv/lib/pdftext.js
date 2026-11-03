@@ -1,6 +1,23 @@
 'use strict';
 // Extracts text from the text layer of a PDF document (supports pdfjs-dist, FlateDecode streams, and literal strings).
+const path = require('path');
 const zlib = require('zlib');
+
+let cachedPdfjsPaths = null;
+function getPdfjsAssetPaths() {
+  if (cachedPdfjsPaths) return cachedPdfjsPaths;
+  try {
+    const pdfjsDir = path.dirname(require.resolve('pdfjs-dist/package.json'));
+    cachedPdfjsPaths = {
+      standardFontDataUrl: path.join(pdfjsDir, 'standard_fonts') + path.sep,
+      cMapUrl: path.join(pdfjsDir, 'cmaps') + path.sep,
+      cMapPacked: true,
+    };
+  } catch {
+    cachedPdfjsPaths = {};
+  }
+  return cachedPdfjsPaths;
+}
 
 function extractTextOperators(contentStr) {
   const parts = [];
@@ -37,11 +54,16 @@ async function extractPdfText(pdfBuffer) {
   try {
     let pdfjsLib;
     try {
-      pdfjsLib = await import('pdfjs-dist/build/pdf.mjs');
-    } catch {
       pdfjsLib = await import('pdfjs-dist/legacy/build/pdf.mjs');
+    } catch {
+      pdfjsLib = await import('pdfjs-dist/build/pdf.mjs');
     }
-    const loadingTask = pdfjsLib.getDocument({ data: new Uint8Array(pdfBuffer) });
+    const assetPaths = getPdfjsAssetPaths();
+    const loadingTask = pdfjsLib.getDocument({
+      data: new Uint8Array(pdfBuffer),
+      ...assetPaths,
+      verbosity: 0,
+    });
     const doc = await loadingTask.promise;
     pageCount = doc.numPages || 1;
     const pageTexts = [];

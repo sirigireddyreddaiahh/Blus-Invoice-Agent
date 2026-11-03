@@ -1,5 +1,6 @@
 'use strict';
 // Uses jsqr to scan rendered PDF pages or uploaded PNG/JPG images for QR codes.
+const path = require('path');
 const jsQR = require('jsqr');
 try {
   const { Path2D, ImageData } = require('@napi-rs/canvas');
@@ -7,15 +8,36 @@ try {
   if (ImageData && !global.ImageData) global.ImageData = ImageData;
 } catch {}
 
+let cachedPdfjsPaths = null;
+function getPdfjsAssetPaths() {
+  if (cachedPdfjsPaths) return cachedPdfjsPaths;
+  try {
+    const pdfjsDir = path.dirname(require.resolve('pdfjs-dist/package.json'));
+    cachedPdfjsPaths = {
+      standardFontDataUrl: path.join(pdfjsDir, 'standard_fonts') + path.sep,
+      cMapUrl: path.join(pdfjsDir, 'cmaps') + path.sep,
+      cMapPacked: true,
+    };
+  } catch {
+    cachedPdfjsPaths = {};
+  }
+  return cachedPdfjsPaths;
+}
+
 async function renderPages(pdfBuffer, options = {}) {
   try {
     let pdfjsLib;
     try {
-      pdfjsLib = await import('pdfjs-dist/build/pdf.mjs');
-    } catch {
       pdfjsLib = await import('pdfjs-dist/legacy/build/pdf.mjs');
+    } catch {
+      pdfjsLib = await import('pdfjs-dist/build/pdf.mjs');
     }
-    const loadingTask = pdfjsLib.getDocument({ data: new Uint8Array(pdfBuffer) });
+    const assetPaths = getPdfjsAssetPaths();
+    const loadingTask = pdfjsLib.getDocument({
+      data: new Uint8Array(pdfBuffer),
+      ...assetPaths,
+      verbosity: 0,
+    });
     const doc = await loadingTask.promise;
     const maxPages = Math.min(doc.numPages, options.maxPages || 2);
     const pages = [];

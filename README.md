@@ -1,13 +1,13 @@
 # Blus Invoice Agent — Enterprise Accounts Payable Fraud & Duplicate Detection
 
-A full-stack enterprise React 19 + Express application designed to detect, review, and prevent invoice fraud, duplicates, and tax non-compliance before posting to the general ledger.
+A full-stack enterprise application designed to catch duplicate and split invoices before they get paid, and prevent invoice fraud and tax non-compliance before posting to the general ledger.
 
-## Core Features Ported & Enhanced
+## Core Features
 
-1. **14-Rule Fraud & Duplicate Catalogue (AP-01 to AP-14)**:
+1. **14-Rule Fraud & Duplicate Catalogue (AP-01 to AP-14)** (with **AP-02, AP-03, AP-09, AP-11** active by default):
    - **AP-01**: e-Invoice QR code JWS RS256 signature verification and IRN cross-invoice binding.
    - **AP-02**: Exact duplicate detection (Supplier GSTIN/ID + Financial Year + Normalized Invoice Number) & Blacklist matching.
-   - **AP-03**: GSTIN weighted base-36 check character format validation and active portal status.
+   - **AP-03**: GSTIN weighted base-36 check character format validation and vendor master uniqueness check.
    - **AP-04**: Addressee (buyer) validation against approved corporate entities (Bluspring entities).
    - **AP-05**: Bank details changed vs. vendor master (BEC — Business Email Compromise detection on IFSC and account number).
    - **AP-06**: Bank account collision detection across customer, employee, and supplier records.
@@ -20,48 +20,39 @@ A full-stack enterprise React 19 + Express application designed to detect, revie
    - **AP-13**: PDF metadata signals (identifies invoices generated in design tools like Canva, Photoshop, Illustrator).
    - **AP-14**: Calendar anomalies (invoices dated on Sundays or gazetted holidays).
 
-2. **Invoice Upload & Interactive Inspection (Screen 1)**:
-   - PDF file upload with automated field extraction.
-   - 5 Instant test scenario presets:
-     - Clean invoice (`PASS`)
-     - Math & GST tax mismatch (`AP-08 HOLD`)
-     - Exact duplicate (`AP-02 REJECT`)
-     - BEC bank details change (`AP-05 HOLD`)
-     - Threshold split (`AP-11 HOLD`)
-   - Post to general ledger (payment blocked automatically if status is `HOLD`; blocked permanently if `REJECT`).
+2. **Upload Invoice & AI Chat Inspection (Step 1)**:
+   - Upload PDF, PNG, or JPG invoices (up to 10 MB) directly in the chat composer.
+   - Automated field extraction (PDF text layer, Tesseract OCR, and QR e-Invoice JWT decoding).
+   - Instant verdict badge (**Passed checks**, **Needs review**, or **Blocked**), extracted invoice fields, and active rule results (`AP-02`, `AP-03`, `AP-09`, `AP-11`).
+   - Post clean or held invoices to the general ledger (payment blocked automatically if status is `HOLD`; blocked permanently if `REJECT`).
 
-3. **S/4HANA Extract & Batch Processing (Screen 2)**:
-   - Import S/4HANA export as CSV or JSON.
-   - Load built-in 10-invoice sample extract.
+3. **S/4HANA Extract & Batch Processing (Step 2)**:
+   - Import S/4HANA export as CSV or JSON, or load the built-in sample extract.
    - Batch check execution with inter-invoice cross-comparisons.
-   - Status filters, reason chips, and slide-over inspection drawer.
 
-4. **Review Queue (Fiori Elements Equivalent)**:
+4. **Review Queue (Step 3)**:
    - Centralized queue of all flagged items (`REJECT`, `HOLD`, `FLAG`).
    - Decision workflow: **CLEAR**, **CONFIRM**, or **ESCALATE** with mandatory reviewer audit comment.
-   - Policy enforcement: `REJECT` tier is fatal and cannot be cleared.
+   - Policy enforcement: `REJECT` tier is final and cannot be cleared.
 
-5. **Posted Invoices Ledger**:
-   - Accounts payable ledger view with active vs. payment-blocked status indicators.
+5. **Check History & Export (Step 4)**:
+   - Filterable history of all checked invoices with CSV and Excel export.
 
-6. **Tamper-Evident SHA-256 Audit Trail**:
-   - Cryptographically chained hash log.
-   - Real-time "Verify Cryptographic Chain" check guaranteeing ledger integrity.
+6. **Tamper-Evident SHA-256 Activity Log (Step 5)**:
+   - Cryptographically chained hash log with real-time integrity verification.
 
-7. **Sentinel AI Copilot (Integrated Chatbot)**:
-   - Powered by Google GenAI SDK (`gemini-3.8-flash`) via server-side `/api/chat`.
-   - Explains any of the 14 rules and why specific invoices were held or rejected.
-   - Guides reviewers on appropriate decisions and drafts audit justifications.
-   - Auto-drafts formal vendor discrepancy inquiry emails for bank changes, PO omissions, or GST credit errors.
+7. **Blus Invoice Agent AI Assistant**:
+   - Powered by Google GenAI SDK (`@google/genai`) via server-side `/fraud/askInvoice`.
+   - Answers follow-up questions about the checked invoice, extracted fields, bank details, and active or disabled rules.
 
 ## Tech Stack
-- **Frontend:** React 19, Vite, Tailwind CSS v4, Lucide Icons
-- **Backend:** Node.js, Express, `@google/genai`
-- **Data & Masters:** In-memory store initialized with Bluspring vendor masters and posted invoice history.
+- **Frontend:** HTML5, Plus Jakarta Sans & JetBrains Mono Typography, Classic Enterprise CSS, Vanilla ES6+ JavaScript
+- **Backend:** Node.js, Express, `@sap/cds`, SQLite, `@google/genai`, `pdfjs-dist`, `tesseract.js`
+- **Data & Masters:** SQLite persistence seeded with Bluspring vendor masters and posted invoice history.
 
 ## Development & Build
 ```bash
-npm run dev    # Starts full-stack Express + Vite on http://0.0.0.0:3000
-npm run build  # Builds optimized Vite production bundle
-npm run lint   # Verifies TypeScript typing with tsc --noEmit
+npm run dev    # Starts Blus Invoice Agent server on http://0.0.0.0:3000
+npm run build  # Verifies application build
+npm test       # Runs the 17 acceptance and regression tests
 ```

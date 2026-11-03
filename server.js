@@ -74,7 +74,7 @@ async function main() {
   await cds.serve('FraudService').from('srv/fraud-service').in(app);
 
   app.listen(PORT, '0.0.0.0', () => {
-    console.log(`AP Sentinel (SAP BTP CAP) listening on http://0.0.0.0:${PORT}`);
+    console.log(`Blus Invoice Agent listening on http://0.0.0.0:${PORT}`);
   });
 }
 
