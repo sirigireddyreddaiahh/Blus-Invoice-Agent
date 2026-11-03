@@ -11,8 +11,8 @@ const SIDEBAR_STORAGE_KEY = 'ap_sentinel_sidebar_collapsed';
 const WELCOME_SESSION_KEY = 'blus_welcome_dismissed';
 
 const state = {
-  user: 'controller',
-  roles: ['APClerk', 'APController'],
+  user: 'user',
+  roles: ['APClerk', 'APController', 'Auditor'],
   welcomeDismissed: false,
   greetingShown: false,
   selectedFile: null,              // Single attached file in composer chip
@@ -22,10 +22,30 @@ const state = {
   currentResult: null,
   s4List: [],
   s4Results: [],
+  s4Page: 1,
+  s4Limit: 50,
+  s4Total: 0,
+  s4TotalPages: 1,
+  s4Counts: { total: 0, pass: 0, hold: 0, reject: 0 },
   alertsList: [],
+  alertsPage: 1,
+  alertsLimit: 50,
+  alertsTotal: 0,
+  alertsTotalPages: 1,
   historyList: [],
+  historyPage: 1,
+  historyLimit: 50,
+  historyTotal: 0,
+  historyTotalPages: 1,
   activityList: [],
+  activityPage: 1,
+  activityLimit: 50,
+  activityTotal: 0,
+  activityTotalPages: 1,
   lastExportCsv: '',
+  currentJobId: null,
+  jobPollTimer: null,
+  jobErrors: [],
 };
 
 const $ = (id) => document.getElementById(id);
@@ -94,6 +114,174 @@ function setBanner(id, message, type = 'info') {
   }
   b.className = `status-banner ${type}`;
   b.textContent = message;
+}
+
+function showToast(message, type = 'success', duration = 4500) {
+  let container = $('appToastContainer');
+  if (!container) {
+    container = el('div', null, 'app-toast-container');
+    container.id = 'appToastContainer';
+    document.body.appendChild(container);
+  }
+  const toast = el('div', message, `app-toast ${type}`);
+  container.appendChild(toast);
+  setTimeout(() => {
+    toast.style.opacity = '0';
+    toast.style.transform = 'translateY(12px)';
+    setTimeout(() => toast.remove(), 320);
+  }, duration);
+}
+
+function updateS4ProgressUI(job, fallbackTotal = 0) {
+  const wrap = $('s4ProgressWrap');
+  const bar = $('s4ProgressBar');
+  const text = $('s4ProgressText');
+  const btnErrors = $('btnViewS4Errors');
+  const btnCancel = $('btnCancelS4');
+  const btnResume = $('btnResumeS4');
+
+  if (!wrap || !bar || !text) return;
+  wrap.classList.remove('hidden');
+
+  const total = job.total || fallbackTotal || (state.s4List ? state.s4List.length : 0) || 1;
+  const processed = Math.min(job.processed || 0, total);
+  const pct = total > 0 ? Math.min(100, Math.max(0, Math.round((processed / total) * 100))) : 0;
+
+  bar.style.width = `${pct}%`;
+  text.textContent = `${processed} of ${total} processed (${pct}%)`;
+
+
+  // One bad invoice must not stop the chunk: record failed invoices in errorsJson (invoice number, reason),
+  // continue with the rest of the chunk, and show a "View errors" link under the progress bar that opens a small list.
+  const errors = Array.isArray(job.errors) ? job.errors : [];
+  state.jobErrors = errors;
+  if (btnErrors) {
+    if (errors.length > 0) {
+      btnErrors.textContent = `View errors (${errors.length})`;
+      btnErrors.classList.remove('hidden');
+      renderS4ErrorsList(errors);
+    } else {
+      btnErrors.classList.add('hidden');
+      if ($('s4ErrorsModal')) $('s4ErrorsModal').classList.add('hidden');
+    }
+  }
+
+  // Button visibility:
+  // Cancel button visible ONLY while the job is QUEUED or RUNNING
+  // Resume button visible when CANCELLED or FAILED and processed < total
+  if (btnCancel && btnResume) {
+    if (job.status === 'QUEUED' || job.status === 'RUNNING') {
+      btnCancel.classList.remove('hidden');
+      btnCancel.disabled = false;
+      btnResume.classList.add('hidden');
+    } else if (job.status === 'CANCELLED' || job.status === 'FAILED') {
+      btnCancel.classList.add('hidden');
+      if (processed < total) {
+        btnResume.classList.remove('hidden');
+        btnResume.disabled = false;
+      } else {
+        btnResume.classList.add('hidden');
+      }
+    } else if (job.status === 'DONE') {
+      btnCancel.classList.add('hidden');
+      btnResume.classList.add('hidden');
+    }
+  }
+}
+
+function renderS4ErrorsList(errors) {
+  const list = $('s4ErrorsList');
+  if (!list) return;
+  list.textContent = '';
+  errors.forEach(err => {
+    const item = el('div', null, 's4-error-item');
+    item.append(
+      el('span', err.invoiceNo || 'Invoice', 's4-error-inv'),
+      el('span', `— ${err.reason || 'Failed to process'}`)
+    );
+    list.appendChild(item);
+  });
+}
+
+function stopJobPolling() {
+  if (state.jobPollTimer) {
+    clearInterval(state.jobPollTimer);
+    state.jobPollTimer = null;
+  }
+}
+
+async function fetchJobStatus(jobId) {
+  try {
+    const res = await fetch('/jobs/' + jobId, {
+      method: 'GET',
+      headers: getHeaders(),
+    });
+    if (!res.ok) return null;
+    return await res.json();
+  } catch (err) {
+    return null;
+  }
+}
+
+async function pollBatchJob(jobId, initialTotal = 0) {
+  stopJobPolling();
+  state.currentJobId = jobId;
+
+  setBanner('s4Banner', 'Processing started', 'info');
+  showToast('Processing started', 'info', 2500);
+
+  // Initialize progress bar UI smoothly
+  updateS4ProgressUI({
+    jobId,
+    status: 'QUEUED',
+    total: initialTotal,
+    processed: 0,
+    errors: [],
+  }, initialTotal);
+
+  const pollInterval = 2000; // Polling every 2 seconds smoothly without flicker
+
+  const checkStatus = async () => {
+    const job = await fetchJobStatus(jobId);
+    if (!job) return;
+
+    updateS4ProgressUI(job, initialTotal);
+    // Live refreshing partial results with server-side pagination and filters
+    loadS4Results(state.s4Page, true);
+
+    if (job.status === 'DONE') {
+      stopJobPolling();
+      const total = job.total || initialTotal || 0;
+      loadS4Results(state.s4Page, true);
+      const doneMsg = `Batch check completed: ${total} invoices processed (${job.passCount || 0} passed, ${job.holdCount || 0} held, ${job.rejectCount || 0} blocked).`;
+      setBanner('s4Banner', doneMsg, 'success');
+      showToast(doneMsg, 'success', 5000);
+      return;
+    }
+
+    if (job.status === 'CANCELLED') {
+      stopJobPolling();
+      const n = job.processed || 0;
+      const total = job.total || initialTotal || 0;
+      loadS4Results(state.s4Page, true);
+      const cancelMsg = `Job cancelled. ${n} invoices were processed.`;
+      setBanner('s4Banner', `Job cancelled. ${n} of ${total} invoices were processed.`, 'info');
+      showToast(cancelMsg, 'info', 5000);
+      return;
+    }
+
+    if (job.status === 'FAILED') {
+      stopJobPolling();
+      loadS4Results(state.s4Page, true);
+      const errMsg = `Job failed: ${job.error || 'Server error'}. Click Resume to continue.`;
+      setBanner('s4Banner', errMsg, 'error');
+      showToast(errMsg, 'error', 6000);
+      return;
+    }
+  };
+
+  setTimeout(checkStatus, 150);
+  state.jobPollTimer = setInterval(checkStatus, pollInterval);
 }
 
 // ============================================================================
@@ -248,10 +436,10 @@ function initWelcomeScreen() {
     });
   }
 
-  // Option Card 3: Review queue
-  if ($('welcomeCardQueue')) {
-    $('welcomeCardQueue').addEventListener('click', () => {
-      dismissWelcomeScreen({ targetPage: 'alerts' });
+  // Option Card 3: Activity log (visible to all roles: Clerk, Auditor, APController)
+  if ($('welcomeCardActivity')) {
+    $('welcomeCardActivity').addEventListener('click', () => {
+      dismissWelcomeScreen({ targetPage: 'activity' });
     });
   }
 
@@ -294,6 +482,9 @@ function initWelcomeScreen() {
 }
 
 function switchPage(pageId) {
+  if (pageId === 'alerts' && !state.roles.includes('APController')) {
+    pageId = 'activity';
+  }
   document.querySelectorAll('.nav-item').forEach(btn => {
     btn.classList.toggle('active', btn.dataset.page === pageId);
   });
@@ -302,9 +493,10 @@ function switchPage(pageId) {
   });
   closeMobileSidebar();
 
-  if (pageId === 'alerts') loadAlertsQueue();
-  if (pageId === 'history') loadCheckHistory();
-  if (pageId === 'activity') loadActivityLog();
+  if (pageId === 's4' && state.currentJobId) loadS4Results(state.s4Page || 1);
+  if (pageId === 'alerts') loadAlertsQueue(state.alertsPage || 1);
+  if (pageId === 'history') loadCheckHistory(state.historyPage || 1);
+  if (pageId === 'activity') loadActivityLog(state.activityPage || 1);
 }
 
 document.querySelectorAll('.nav-item').forEach(btn => {
@@ -322,6 +514,16 @@ function applyRolePermissions() {
   const canUploadOrCheck = state.roles.includes('APClerk') || state.roles.includes('APController');
   const canPost = state.roles.includes('APClerk');
   const canDecide = state.roles.includes('APController');
+
+  // Review queue in sidebar is visible to APController only (hidden for Clerk and Auditor)
+  const navAlerts = $('nav-alerts');
+  if (navAlerts) navAlerts.classList.toggle('hidden', !canDecide);
+
+  // Activity log is visible to all roles (Clerk, Auditor, APController)
+  const navActivity = $('nav-activity');
+  if (navActivity) navActivity.classList.remove('hidden');
+  const welcomeCardActivity = $('welcomeCardActivity');
+  if (welcomeCardActivity) welcomeCardActivity.classList.remove('hidden');
 
   const attachPlusBtn = $('btnAttachPlus');
   if (attachPlusBtn) attachPlusBtn.classList.toggle('hidden', !canUploadOrCheck);
@@ -345,7 +547,11 @@ function applyRolePermissions() {
   }
 
   if ($('page-alerts') && $('page-alerts').classList.contains('active')) {
-    renderAlertsTable();
+    if (!canDecide) {
+      switchPage('activity');
+    } else {
+      renderAlertsTable();
+    }
   }
 }
 
@@ -493,13 +699,27 @@ function renderAiChatResultMessage(res, checkedFileName) {
 
   // 8c.2: Invoice number, date, supplier name, GSTIN, total. One field per line. No table, no grid.
   // Main label in bold black (#000000), answer value in normal weight.
+  // 8c.2: Invoice number, date, supplier name, GSTIN, total, Database match. One field per line. No table, no grid.
+  // Main label in bold black (#000000), answer value in normal weight.
   const fieldsLines = el('div', null, 'result-fields-lines');
+  const dbMatch = res.databaseMatch || {};
+  let dbMatchText = 'Not found in database';
+  if (dbMatch.matched && dbMatch.record) {
+    const rec = dbMatch.record;
+    dbMatchText = `Found in database (${dbMatch.reason}: #${rec.invoiceNo}, ${rec.supplierName}, GSTIN: ${rec.supplierGstin}, Date: ${rec.invoiceDate}, Amount: ${rec.totalFormatted})`;
+  } else if (dbMatch.status === 'Found in database') {
+    dbMatchText = `Found in database (${dbMatch.reason || 'Matched'})`;
+  } else if (dbMatch.status) {
+    dbMatchText = dbMatch.status;
+  }
+
   const fieldItems = [
     ['Invoice number:', inv.invoiceNo || '-'],
     ['Date:', inv.invoiceDate || '-'],
     ['Supplier name:', inv.supplierName || '-'],
     ['GSTIN:', inv.supplierGstin || '-'],
     ['Total:', `INR ${inv.total !== undefined ? formatMoney(inv.total) : '-'}`],
+    ['Database match:', dbMatchText],
   ];
   for (const [labelText, valueText] of fieldItems) {
     const lineEl = el('div', null, 'result-field-line');
@@ -774,44 +994,208 @@ function renderResultCard(container, res, headingPrefix = 'Check Result') {
   container.appendChild(listWrap);
 }
 
+function renderPagination(prefix, { page, totalPages, total, limit, onPageChange }) {
+  const infoEl = $(prefix + 'PaginationInfo');
+  const prevBtn = $(prefix + 'PrevPage');
+  const nextBtn = $(prefix + 'NextPage');
+  const pagesContainer = $(prefix + 'PageNumbers');
+
+  const start = total === 0 ? 0 : (page - 1) * limit + 1;
+  const end = Math.min(page * limit, total);
+  if (infoEl) {
+    infoEl.textContent = `Showing ${start}-${end} of ${total}`;
+  }
+
+  if (prevBtn) {
+    prevBtn.disabled = page <= 1 || total === 0;
+    prevBtn.onclick = () => {
+      if (page > 1) onPageChange(page - 1);
+    };
+  }
+  if (nextBtn) {
+    nextBtn.disabled = page >= totalPages || total === 0;
+    nextBtn.onclick = () => {
+      if (page < totalPages) onPageChange(page + 1);
+    };
+  }
+
+  if (pagesContainer) {
+    pagesContainer.textContent = '';
+    if (totalPages <= 1) return;
+
+    let startPage = Math.max(1, page - 2);
+    let endPage = Math.min(totalPages, startPage + 4);
+    if (endPage - startPage < 4) {
+      startPage = Math.max(1, endPage - 4);
+    }
+
+    if (startPage > 1) {
+      const b1 = el('button', '1', `page-num-btn ${page === 1 ? 'active' : ''}`);
+      b1.type = 'button';
+      b1.onclick = () => onPageChange(1);
+      pagesContainer.appendChild(b1);
+      if (startPage > 2) {
+        const dots = el('span', '…');
+        dots.style.padding = '0 4px';
+        dots.style.color = 'var(--text-muted)';
+        pagesContainer.appendChild(dots);
+      }
+    }
+
+    for (let p = startPage; p <= endPage; p++) {
+      const btn = el('button', String(p), `page-num-btn ${p === page ? 'active' : ''}`);
+      btn.type = 'button';
+      btn.onclick = () => onPageChange(p);
+      pagesContainer.appendChild(btn);
+    }
+
+    if (endPage < totalPages) {
+      if (endPage < totalPages - 1) {
+        const dots = el('span', '…');
+        dots.style.padding = '0 4px';
+        dots.style.color = 'var(--text-muted)';
+        pagesContainer.appendChild(dots);
+      }
+      const bLast = el('button', String(totalPages), `page-num-btn ${page === totalPages ? 'active' : ''}`);
+      bLast.type = 'button';
+      bLast.onclick = () => onPageChange(totalPages);
+      pagesContainer.appendChild(bLast);
+    }
+  }
+}
+
+async function loadS4Results(page = 1, isPolling = false) {
+  state.s4Page = page;
+  const status = $('s4FilterStatus') ? $('s4FilterStatus').value : 'ALL';
+  const search = $('s4FilterSearch') ? $('s4FilterSearch').value.trim() : '';
+
+  try {
+    const params = new URLSearchParams({
+      page: String(page),
+      limit: '50',
+      status,
+      search,
+    });
+    if (state.currentJobId) {
+      params.set('jobId', state.currentJobId);
+    }
+
+    const res = await fetch(`/fraud/s4Results?${params.toString()}`, {
+      method: 'GET',
+      headers: getHeaders(),
+    });
+    if (!res.ok) return;
+    const data = await res.json();
+    state.s4Results = data.rows || [];
+    state.s4Total = data.total || 0;
+    state.s4TotalPages = data.totalPages || 1;
+    state.s4Counts = data.counts || { total: 0, pass: 0, hold: 0, reject: 0 };
+
+    if ($('s4CountTotal')) $('s4CountTotal').textContent = state.s4Counts.total;
+    if ($('s4CountPass')) $('s4CountPass').textContent = state.s4Counts.pass;
+    if ($('s4CountHold')) $('s4CountHold').textContent = state.s4Counts.hold;
+    if ($('s4CountReject')) $('s4CountReject').textContent = state.s4Counts.reject;
+
+    renderS4Table();
+    renderPagination('s4', {
+      page: state.s4Page,
+      totalPages: state.s4TotalPages,
+      total: state.s4Total,
+      limit: 50,
+      onPageChange: (p) => loadS4Results(p),
+    });
+  } catch (err) {
+    if (!isPolling) console.error('Failed to load S4 results:', err);
+  }
+}
+
 function renderS4Table() {
   const tbody = $('s4TableBody');
   if (!tbody) return;
   tbody.textContent = '';
-  state.s4List.forEach(inv => {
-    const res = state.s4Results.find(r => r.id === inv.id);
-    const tr = document.createElement('tr');
-    const activeNonPass = res
-      ? (res.activeResults || res.results.filter(x => ACTIVE_RULE_IDS.includes(x.id)))
-          .filter(x => x.tier !== 'PASS')
-          .map(x => `${x.id}: ${x.text}`)
-          .join(' | ')
-      : '';
 
-    tr.append(
-      el('td', inv.id || '-', 'mono-cell'),
-      el('td', inv.supplierName || '-'),
-      el('td', inv.supplierGstin || '-', 'mono-cell'),
-      el('td', inv.invoiceNo || '-', 'mono-cell'),
-      el('td', inv.invoiceDate || '-', 'mono-cell'),
-      el('td', formatMoney(inv.total), 'num-col')
-    );
+  // If we have server results, render them
+  if (state.s4Results && state.s4Results.length > 0) {
+    state.s4Results.forEach(r => {
+      const tr = document.createElement('tr');
+      const tdDbMatch = document.createElement('td');
+      const dbMatch = r.databaseMatch;
+      if (dbMatch && dbMatch.matched) {
+        const pill = el('span', 'Found in database', 'badge REJECT');
+        pill.style.display = 'inline-block';
+        pill.style.marginBottom = '2px';
+        const hint = el('div', dbMatch.reason || 'Matched existing record', 'hint');
+        tdDbMatch.append(pill, hint);
+      } else {
+        const pill = el('span', 'Not found in database', 'badge PASS');
+        pill.style.display = 'inline-block';
+        pill.style.marginBottom = '2px';
+        const hint = el('div', 'No match in ledger', 'hint');
+        tdDbMatch.append(pill, hint);
+      }
 
-    const tdStatus = document.createElement('td');
-    if (res) {
-      tdStatus.append(el('span', res.status, `badge ${res.status}`));
-    } else {
-      tdStatus.append(el('span', 'PENDING', 'badge SKIPPED'));
-    }
-    tr.append(tdStatus, el('td', res ? (activeNonPass || 'All active rules passed') : 'Click "Check all" to evaluate'));
+      const tdStatus = document.createElement('td');
+      tdStatus.append(el('span', r.status, `badge ${r.status}`));
 
-    tr.addEventListener('click', () => {
-      if (!res) return;
-      renderResultCard($('resultCardS4'), res, `S/4HANA Invoice ${inv.id}`);
+      tr.append(
+        el('td', r.invoiceId || '-', 'mono-cell'),
+        el('td', r.supplierName || '-'),
+        el('td', r.supplierGstin || '-', 'mono-cell'),
+        el('td', r.invoiceNo || '-', 'mono-cell'),
+        el('td', r.invoiceDate || '-', 'mono-cell'),
+        el('td', formatMoney(r.total), 'num-col'),
+        tdDbMatch,
+        tdStatus,
+        el('td', r.reason || (r.status === 'PASS' ? 'All active rules passed' : '-'))
+      );
+
+      tr.addEventListener('click', () => {
+        let parsed = null;
+        try { parsed = typeof r.resultJson === 'string' ? JSON.parse(r.resultJson) : r.resultJson; } catch {}
+        if (parsed) {
+          renderResultCard($('resultCardS4'), parsed, `S/4HANA Invoice ${r.invoiceId || r.invoiceNo}`);
+        }
+      });
+
+      tbody.append(tr);
     });
+    return;
+  }
 
-    tbody.append(tr);
-  });
+  // Pre-check preview if s4List is populated but check hasn't run
+  if (state.s4List && state.s4List.length > 0 && !state.currentJobId) {
+    const previewRows = state.s4List.slice(0, 50);
+    previewRows.forEach(inv => {
+      const tr = document.createElement('tr');
+      const tdDbMatch = document.createElement('td');
+      tdDbMatch.append(el('span', 'Not checked', 'hint'));
+      const tdStatus = document.createElement('td');
+      tdStatus.append(el('span', 'PENDING', 'badge SKIPPED'));
+
+      tr.append(
+        el('td', inv.id || '-', 'mono-cell'),
+        el('td', inv.supplierName || '-'),
+        el('td', inv.supplierGstin || '-', 'mono-cell'),
+        el('td', inv.invoiceNo || '-', 'mono-cell'),
+        el('td', inv.invoiceDate || '-', 'mono-cell'),
+        el('td', formatMoney(inv.total), 'num-col'),
+        tdDbMatch,
+        tdStatus,
+        el('td', 'Click "Check all" to evaluate')
+      );
+      tbody.append(tr);
+    });
+    return;
+  }
+
+  const tr = document.createElement('tr');
+  const msg = state.currentJobId
+    ? 'No invoices match the selected filter.'
+    : 'Import extract file(s) or click "Use sample extract" and "Check all" to evaluate.';
+  const td = el('td', msg);
+  td.colSpan = 9;
+  tr.append(td);
+  tbody.append(tr);
 }
 
 if ($('btnUseSampleS4')) {
@@ -830,25 +1214,201 @@ if ($('btnUseSampleS4')) {
 }
 
 if ($('btnImportS4')) {
-  $('btnImportS4').addEventListener('click', () => {
-    const f = $('s4FileInput') && $('s4FileInput').files && $('s4FileInput').files[0];
-    if (!f) {
-      setBanner('s4Banner', 'Choose a CSV or JSON extract file first.', 'error');
+  $('btnImportS4').addEventListener('click', async () => {
+    const input = $('s4FileInput');
+    const files = input && input.files ? Array.from(input.files) : [];
+    if (!files.length) {
+      setBanner('s4Banner', 'Choose one or more extract or invoice files first.', 'error');
       return;
     }
-    const reader = new FileReader();
-    reader.onload = async () => {
-      try {
-        const out = await api('importS4Extract', { fileName: f.name, content: String(reader.result || '') });
-        state.s4List = out.invoices || [];
-        state.s4Results = [];
-        renderS4Table();
-        setBanner('s4Banner', `Imported ${out.count} invoices from ${out.fileName}.`, 'success');
-      } catch (err) {
-        setBanner('s4Banner', err.message, 'error');
+
+    // 8. Size limit check per file (10 MB)
+    for (const f of files) {
+      if (f.size > 10 * 1024 * 1024) {
+        const msg = `File "${f.name}" is too large. Maximum size is 10 MB.`;
+        setBanner('s4Banner', msg, 'error');
+        showToast(msg, 'error');
+        return;
       }
-    };
-    reader.readAsText(f);
+    }
+
+    setBanner('s4Banner', `Reading ${files.length} file(s)...`, 'info');
+    try {
+      const isDoc = (name) => /\.(pdf|png|jpe?g)$/i.test(name);
+      const docFiles = files.filter(f => isDoc(f.name));
+      const textFiles = files.filter(f => !isDoc(f.name));
+
+      // Handle PDF/image document batch
+      if (docFiles.length > 0 && textFiles.length === 0) {
+        if (docFiles.length > 2000) {
+          const msg = `This batch has ${docFiles.length} invoices. The maximum per job is 2000. Please split the file.`;
+          setBanner('s4Banner', msg, 'error');
+          showToast(msg, 'error');
+          return;
+        }
+
+        // Read one document at a time and free buffer
+        const filePayloads = [];
+        for (let i = 0; i < docFiles.length; i++) {
+          const f = docFiles[i];
+          setBanner('s4Banner', `Reading document ${i + 1} of ${docFiles.length}: ${f.name}...`, 'info');
+          const base64 = await new Promise((resolve, reject) => {
+            const reader = new FileReader();
+            reader.onload = () => {
+              const res = String(reader.result || '');
+              resolve(res.includes(',') ? res.split(',')[1] : res);
+            };
+            reader.onerror = reject;
+            reader.readAsDataURL(f);
+          });
+          filePayloads.push({ fileName: f.name, fileSize: f.size, fileBase64: base64 });
+        }
+
+        setBanner('s4Banner', 'Processing started', 'info');
+        const uploadRes = await fetch('/fraud/uploadBatchDocuments', {
+          method: 'POST',
+          headers: getHeaders(),
+          body: JSON.stringify({ files: filePayloads }),
+        });
+        const job = await uploadRes.json();
+        if (!uploadRes.ok) {
+          throw new Error((job && job.error && job.error.message) || 'Batch document processing failed');
+        }
+
+        if (job && (job.jobId || job.id)) {
+          state.currentJobId = job.jobId || job.id;
+          pollBatchJob(job.jobId || job.id, job.total || docFiles.length);
+        }
+        return;
+      }
+
+      // Handle CSV/JSON extract files
+      const mergedInvoices = [];
+      for (const f of files) {
+        const text = await f.text();
+        const out = await api('importS4Extract', { fileName: f.name, content: text });
+        if (out && Array.isArray(out.invoices)) {
+          mergedInvoices.push(...out.invoices);
+        }
+      }
+
+      if (mergedInvoices.length > 2000) {
+        const msg = `This batch has ${mergedInvoices.length} invoices. The maximum per job is 2000. Please split the file.`;
+        setBanner('s4Banner', msg, 'error');
+        showToast(msg, 'error');
+        return;
+      }
+
+      state.s4List = mergedInvoices;
+      state.s4Results = [];
+      if ($('resultCardS4')) $('resultCardS4').classList.add('hidden');
+      renderS4Table();
+
+      // Immediately create background check job for the imported batch
+      setBanner('s4Banner', 'Processing started', 'info');
+      const job = await api('checkBatch', { invoices: JSON.stringify(state.s4List) });
+      if (job && (job.jobId || job.id)) {
+        state.currentJobId = job.jobId || job.id;
+        pollBatchJob(job.jobId || job.id, state.s4List.length);
+      }
+    } catch (err) {
+      setBanner('s4Banner', err.message, 'error');
+      showToast(err.message, 'error');
+    }
+  });
+}
+
+if ($('btnImportToLedger')) {
+  $('btnImportToLedger').addEventListener('click', async () => {
+    const input = $('s4FileInput');
+    const files = input && input.files ? Array.from(input.files) : [];
+    if (!files.length) {
+      setBanner('s4Banner', 'Choose one or more CSV or JSON extract files first.', 'error');
+      return;
+    }
+    setBanner('s4Banner', `Importing ${files.length} file(s) into database ledger...`, 'info');
+    try {
+      let totalImported = 0;
+      const fileNames = [];
+      for (const f of files) {
+        fileNames.push(f.name);
+        const text = await f.text();
+        const out = await api('importToLedger', { fileName: f.name, content: text });
+        totalImported += (out && out.count) || 0;
+      }
+      setBanner('s4Banner', `Imported ${totalImported} invoices into ledger from ${files.length} file(s) (${fileNames.join(', ')}).`, 'success');
+    } catch (err) {
+      setBanner('s4Banner', err.message, 'error');
+    }
+  });
+}
+
+async function executeDatabaseSearch() {
+  const input = $('inputSearchDb');
+  const q = input ? input.value.trim() : '';
+  const wrap = $('searchDbWrap');
+  const tbody = $('searchDbTableBody');
+  setBanner('searchDbBanner', 'Searching database ledger...', 'info');
+  try {
+    const records = await api('searchDatabase', { query: q });
+    if (!tbody || !wrap) return;
+    tbody.textContent = '';
+    wrap.classList.remove('hidden');
+
+    if (!records.length) {
+      const tr = document.createElement('tr');
+      const td = el('td', `No database records found matching "${q}".`);
+      td.colSpan = 8;
+      tr.append(td);
+      tbody.append(tr);
+      setBanner('searchDbBanner', `0 records found for "${q}".`, 'info');
+      return;
+    }
+
+    for (const r of records) {
+      const tr = document.createElement('tr');
+      const isBlocked = Boolean(r.blocked);
+      const statusBadge = el('span', isBlocked ? 'Payment Block' : 'Booked', `badge ${isBlocked ? 'HOLD' : 'PASS'}`);
+      const tdStatus = document.createElement('td');
+      tdStatus.appendChild(statusBadge);
+
+      tr.append(
+        el('td', r.invoiceNo || '-', 'mono-cell'),
+        el('td', r.supplierName || '-'),
+        el('td', r.supplierGstin || '-', 'mono-cell'),
+        el('td', r.invoiceDate || '-', 'mono-cell'),
+        el('td', formatMoney(r.total), 'num-col'),
+        el('td', r.description || '-'),
+        tdStatus,
+        el('td', r.postedAt ? new Date(r.postedAt).toLocaleString() : '-', 'mono-cell')
+      );
+      tbody.append(tr);
+    }
+    setBanner('searchDbBanner', `Found ${records.length} record(s) in database ledger.`, 'success');
+  } catch (err) {
+    setBanner('searchDbBanner', err.message, 'error');
+  }
+}
+
+if ($('btnSearchDb')) {
+  $('btnSearchDb').addEventListener('click', executeDatabaseSearch);
+}
+
+if ($('inputSearchDb')) {
+  $('inputSearchDb').addEventListener('keydown', (e) => {
+    if (e.key === 'Enter') {
+      e.preventDefault();
+      executeDatabaseSearch();
+    }
+  });
+}
+
+if ($('btnClearSearchDb')) {
+  $('btnClearSearchDb').addEventListener('click', () => {
+    if ($('inputSearchDb')) $('inputSearchDb').value = '';
+    if ($('searchDbWrap')) $('searchDbWrap').classList.add('hidden');
+    if ($('searchDbTableBody')) $('searchDbTableBody').textContent = '';
+    setBanner('searchDbBanner', '');
   });
 }
 
@@ -856,28 +1416,200 @@ if ($('btnCheckAllS4')) {
   $('btnCheckAllS4').addEventListener('click', async () => {
     if (!state.s4List.length) {
       state.s4List = await api('fetchS4Invoices', null, 'GET');
-    }
-    setBanner('s4Banner', `Running active rules across ${state.s4List.length} invoices...`, 'info');
-    try {
-      state.s4Results = await api('checkBatch', { invoices: JSON.stringify(state.s4List) });
       renderS4Table();
-      if (state.s4Results.length > 0) {
-        renderResultCard($('resultCardS4'), state.s4Results[0], `S/4HANA Invoice ${state.s4Results[0].id}`);
+    }
+    setBanner('s4Banner', 'Processing started', 'info');
+    try {
+      const job = await api('checkBatch', { invoices: JSON.stringify(state.s4List) });
+      if (job && (job.jobId || job.id)) {
+        pollBatchJob(job.jobId || job.id, job.total || state.s4List.length);
+      } else if (Array.isArray(job)) {
+        state.s4Results = job;
+        renderS4Table();
+        if (state.s4Results.length > 0) {
+          renderResultCard($('resultCardS4'), state.s4Results[0], `S/4HANA Invoice ${state.s4Results[0].id}`);
+        }
+        setBanner('s4Banner', `Checked ${state.s4Results.length} S/4HANA invoices.`, 'success');
+        showToast(`Checked ${state.s4Results.length} invoices.`, 'success');
       }
-      setBanner('s4Banner', `Checked ${state.s4Results.length} S/4HANA invoices.`, 'success');
     } catch (err) {
       setBanner('s4Banner', err.message, 'error');
+      showToast(err.message, 'error');
     }
+  });
+}
+
+if ($('btnCancelS4')) {
+  $('btnCancelS4').addEventListener('click', async () => {
+    if (!state.currentJobId) return;
+    try {
+      $('btnCancelS4').disabled = true;
+      const res = await fetch('/jobs/' + state.currentJobId + '/cancel', {
+        method: 'POST',
+        headers: getHeaders(),
+      });
+      const data = await res.json();
+      if (!res.ok) {
+        throw new Error((data && data.error && data.error.message) || 'Failed to cancel job');
+      }
+      stopJobPolling();
+      const job = await fetchJobStatus(state.currentJobId);
+      if (job) {
+        updateS4ProgressUI(job);
+        const processed = job.processed || 0;
+        const total = job.total || (state.s4List ? state.s4List.length : 0);
+        setBanner('s4Banner', `Job cancelled. ${processed} of ${total} invoices were processed.`, 'info');
+        showToast(`Job cancelled. ${processed} invoices were processed.`, 'info');
+      }
+    } catch (err) {
+      showToast(err.message, 'error');
+      setBanner('s4Banner', err.message, 'error');
+      $('btnCancelS4').disabled = false;
+    }
+  });
+}
+
+if ($('btnResumeS4')) {
+  $('btnResumeS4').addEventListener('click', async () => {
+    if (!state.currentJobId) return;
+    try {
+      $('btnResumeS4').disabled = true;
+      const res = await fetch('/jobs/' + state.currentJobId + '/resume', {
+        method: 'POST',
+        headers: getHeaders(),
+      });
+      const data = await res.json();
+      if (!res.ok) {
+        throw new Error((data && data.error && data.error.message) || 'Failed to resume job');
+      }
+      showToast('Processing resumed', 'info');
+      setBanner('s4Banner', 'Processing resumed', 'info');
+      pollBatchJob(state.currentJobId, data.total);
+    } catch (err) {
+      $('btnResumeS4').disabled = false;
+      showToast(err.message, 'error');
+      setBanner('s4Banner', err.message, 'error');
+    }
+  });
+}
+
+if ($('btnViewS4Errors')) {
+  $('btnViewS4Errors').addEventListener('click', (e) => {
+    e.preventDefault();
+    const modal = $('s4ErrorsModal');
+    if (modal) modal.classList.toggle('hidden');
+  });
+}
+
+if ($('btnCloseS4Errors')) {
+  $('btnCloseS4Errors').addEventListener('click', () => {
+    const modal = $('s4ErrorsModal');
+    if (modal) modal.classList.add('hidden');
+  });
+}
+
+// S/4 Filter & Export Handlers
+let s4SearchTimeout = null;
+if ($('s4FilterSearch')) {
+  $('s4FilterSearch').addEventListener('input', () => {
+    clearTimeout(s4SearchTimeout);
+    s4SearchTimeout = setTimeout(() => {
+      loadS4Results(1);
+    }, 300);
+  });
+}
+
+if ($('s4FilterStatus')) {
+  $('s4FilterStatus').addEventListener('change', () => {
+    loadS4Results(1);
+  });
+}
+
+async function downloadS4Csv() {
+  const status = $('s4FilterStatus') ? $('s4FilterStatus').value : 'ALL';
+  const search = $('s4FilterSearch') ? $('s4FilterSearch').value.trim() : '';
+  const r = await fetch('/fraud/exportS4Csv', {
+    method: 'POST',
+    headers: getHeaders(),
+    body: JSON.stringify({ jobId: state.currentJobId, status, search }),
+  });
+  if (!r.ok) {
+    throw new Error(`CSV download failed (${r.status})`);
+  }
+  const rawText = await r.text();
+  const csvWithBom = rawText.startsWith('\uFEFF') ? rawText : '\uFEFF' + rawText;
+  triggerDownload(csvWithBom, 's4-extract-check-results.csv', 'text/csv;charset=utf-8');
+}
+
+async function downloadS4Excel() {
+  const status = $('s4FilterStatus') ? $('s4FilterStatus').value : 'ALL';
+  const search = $('s4FilterSearch') ? $('s4FilterSearch').value.trim() : '';
+  const r = await fetch('/fraud/exportS4Excel', {
+    method: 'POST',
+    headers: getHeaders(),
+    body: JSON.stringify({ jobId: state.currentJobId, status, search }),
+  });
+  if (!r.ok) {
+    throw new Error(`Excel download failed (${r.status})`);
+  }
+  const xlsxArrayBuffer = await r.arrayBuffer();
+  const xlsxBlob = new Blob([xlsxArrayBuffer], {
+    type: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+  });
+  triggerDownload(
+    xlsxBlob,
+    's4-extract-check-results.xlsx',
+    'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet'
+  );
+}
+
+if ($('btnExportS4Csv')) {
+  $('btnExportS4Csv').addEventListener('click', () => {
+    downloadS4Csv().catch(err => {
+      console.error(err);
+      showToast(err.message, 'error');
+    });
+  });
+}
+
+if ($('btnExportS4Excel')) {
+  $('btnExportS4Excel').addEventListener('click', () => {
+    downloadS4Excel().catch(err => {
+      console.error(err);
+      showToast(err.message, 'error');
+    });
   });
 }
 
 // ============================================================================
 // REVIEW QUEUE PAGE
 // ============================================================================
-async function loadAlertsQueue() {
+async function loadAlertsQueue(page = 1) {
+  state.alertsPage = page;
+  const status = $('filterAlertsStatus') ? $('filterAlertsStatus').value : 'ALL';
   try {
-    state.alertsList = await odataGet('Alerts?$orderby=createdAt desc');
+    const params = new URLSearchParams({
+      page: String(page),
+      limit: '50',
+      status,
+    });
+    const res = await fetch(`/fraud/reviewQueue?${params.toString()}`, {
+      method: 'GET',
+      headers: getHeaders(),
+    });
+    if (!res.ok) throw new Error('Failed to load review queue');
+    const data = await res.json();
+    state.alertsList = data.rows || [];
+    state.alertsTotal = data.total || 0;
+    state.alertsTotalPages = data.totalPages || 1;
     renderAlertsTable();
+    renderPagination('alerts', {
+      page: state.alertsPage,
+      totalPages: state.alertsTotalPages,
+      total: state.alertsTotal,
+      limit: 50,
+      onPageChange: (p) => loadAlertsQueue(p),
+    });
   } catch (err) {
     setBanner('alertsBanner', err.message, 'error');
   }
@@ -891,8 +1623,8 @@ function renderAlertsTable() {
 
   if (!state.alertsList.length) {
     const tr = document.createElement('tr');
-    const td = el('td', 'No alerts in the review queue yet.');
-    td.colSpan = canDecide ? 6 : 5;
+    const td = el('td', 'No alerts match the selected status in the review queue.');
+    td.colSpan = canDecide ? 8 : 7;
     tr.append(td);
     tbody.append(tr);
     return;
@@ -900,10 +1632,13 @@ function renderAlertsTable() {
 
   for (const alert of state.alertsList) {
     const tr = document.createElement('tr');
+    const issueLabel = alert.ruleName || alert.title || 'Check exception';
     tr.append(
-      el('td', alert.ruleId),
+      el('td', alert.invoiceNo || '-', 'mono-cell'),
+      el('td', alert.supplierName || '-'),
+      el('td', issueLabel),
       el('td', alert.title || '-'),
-      el('td', alert.text || '-')
+      el('td', alert.reason || alert.text || '-')
     );
     const tdStatus = document.createElement('td');
     tdStatus.append(el('span', alert.tier, `badge ${alert.tier}`));
@@ -923,7 +1658,7 @@ function renderAlertsTable() {
         const input = document.createElement('input');
         input.type = 'text';
         input.placeholder = 'Comment (required)';
-        input.setAttribute('aria-label', `Comment for alert ${alert.ruleId}`);
+        input.setAttribute('aria-label', `Comment for ${issueLabel}`);
 
         const makeBtn = (label, decision) => {
           const b = el('button', label, decision === 'CONFIRM' ? 'primary' : '');
@@ -937,8 +1672,8 @@ function renderAlertsTable() {
             }
             try {
               await api('decideAlert', { alertId: alert.ID, decision, comment });
-              setBanner('alertsBanner', `Alert ${alert.ruleId} marked as ${decision}.`, 'success');
-              await loadAlertsQueue();
+              setBanner('alertsBanner', `Alert marked as ${decision}.`, 'success');
+              await loadAlertsQueue(state.alertsPage);
             } catch (err) {
               setBanner('alertsBanner', err.message, 'error');
             }
@@ -961,48 +1696,75 @@ function renderAlertsTable() {
   }
 }
 
+if ($('filterAlertsStatus')) {
+  $('filterAlertsStatus').addEventListener('change', () => {
+    loadAlertsQueue(1);
+  });
+}
+
 if ($('btnRefreshAlerts')) {
-  $('btnRefreshAlerts').addEventListener('click', loadAlertsQueue);
+  $('btnRefreshAlerts').addEventListener('click', () => {
+    loadAlertsQueue(state.alertsPage);
+  });
 }
 
 // ============================================================================
 // CHECK HISTORY PAGE
 // ============================================================================
-async function loadCheckHistory() {
-  try {
-    state.historyList = await odataGet('Checks?$orderby=createdAt desc');
-    renderHistoryTable();
-  } catch (err) {
-    console.error(err);
-  }
+function getHistoryFilterParams() {
+  return {
+    status: $('filterHistoryStatus') ? $('filterHistoryStatus').value : 'ALL',
+    fromDate: $('filterHistoryFrom') ? $('filterHistoryFrom').value : '',
+    toDate: $('filterHistoryTo') ? $('filterHistoryTo').value : '',
+    supplier: $('filterHistorySupplier') ? $('filterHistorySupplier').value.trim() : '',
+  };
 }
 
-function getFilteredHistory() {
-  const statusFilter = $('filterHistoryStatus') ? $('filterHistoryStatus').value : 'ALL';
-  const fromDate = $('filterHistoryFrom') ? $('filterHistoryFrom').value : '';
-  const toDate = $('filterHistoryTo') ? $('filterHistoryTo').value : '';
-  const supplierQuery = $('filterHistorySupplier') ? $('filterHistorySupplier').value.trim().toLowerCase() : '';
+async function loadCheckHistory(page = 1) {
+  state.historyPage = page;
+  const limitEl = $('filterHistoryLimit');
+  const limit = limitEl ? Number(limitEl.value) || 50 : 50;
+  state.historyLimit = limit;
 
-  return state.historyList.filter(row => {
-    if (statusFilter !== 'ALL' && row.status !== statusFilter) return false;
-    const rowDate = row.invoiceDate || (row.createdAt ? row.createdAt.slice(0, 10) : '');
-    if (fromDate && rowDate && rowDate < fromDate) return false;
-    if (toDate && rowDate && rowDate > toDate) return false;
-    if (supplierQuery) {
-      const hay = `${row.supplierName || ''} ${row.supplierGstin || ''} ${row.invoiceNo || ''}`.toLowerCase();
-      if (!hay.includes(supplierQuery)) return false;
-    }
-    return true;
+  const filters = getHistoryFilterParams();
+  const params = new URLSearchParams({
+    page: String(page),
+    limit: String(limit),
+    status: filters.status || 'ALL',
+    fromDate: filters.fromDate || '',
+    toDate: filters.toDate || '',
+    supplier: filters.supplier || '',
   });
+
+  try {
+    const res = await fetch(`/fraud/checkHistory?${params.toString()}`, {
+      method: 'GET',
+      headers: getHeaders(),
+    });
+    if (!res.ok) throw new Error('Failed to load check history');
+    const data = await res.json();
+    state.historyList = data.rows || [];
+    state.historyTotal = data.total || 0;
+    state.historyTotalPages = data.totalPages || 1;
+    renderHistoryTable();
+    renderPagination('history', {
+      page: state.historyPage,
+      totalPages: state.historyTotalPages,
+      total: state.historyTotal,
+      limit: state.historyLimit,
+      onPageChange: (p) => loadCheckHistory(p),
+    });
+  } catch (err) {
+    console.error('Failed to load check history:', err);
+  }
 }
 
 function renderHistoryTable() {
   const tbody = $('historyTableBody');
   if (!tbody) return;
   tbody.textContent = '';
-  const rows = getFilteredHistory();
 
-  if (!rows.length) {
+  if (!state.historyList.length) {
     const tr = document.createElement('tr');
     const td = el('td', 'No check records match the current filter.');
     td.colSpan = 7;
@@ -1011,7 +1773,7 @@ function renderHistoryTable() {
     return;
   }
 
-  for (const r of rows) {
+  for (const r of state.historyList) {
     const tr = document.createElement('tr');
     const timeStr = r.createdAt ? new Date(r.createdAt).toLocaleString() : '-';
     tr.append(
@@ -1028,68 +1790,20 @@ function renderHistoryTable() {
   }
 }
 
-if ($('btnApplyHistoryFilter')) {
-  $('btnApplyHistoryFilter').addEventListener('click', renderHistoryTable);
+if ($('filterHistoryLimit')) {
+  $('filterHistoryLimit').addEventListener('change', () => {
+    loadCheckHistory(1);
+  });
 }
 
-function buildHistoryActiveRulesCsv(rows) {
-  const headers = [
-    'Time',
-    'Source',
-    'File',
-    'Invoice Number',
-    'Supplier',
-    'Supplier GSTIN',
-    'Total (INR)',
-    'Status',
-    'Reviewer',
-    'AP-02 (Exact duplicate)',
-    'AP-03 (GSTIN reuse)',
-    'AP-09 (Same vendor/amount/services)',
-    'AP-11 (Split invoices)',
-  ];
-
-  const escapeCsv = (val) => {
-    const s = String(val === undefined || val === null ? '' : val);
-    if (s.includes(',') || s.includes('"') || s.includes('\n')) {
-      return `"${s.replace(/"/g, '""')}"`;
-    }
-    return s;
-  };
-
-  const lines = [headers.map(escapeCsv).join(',')];
-  for (const r of rows) {
-    let parsed = {};
-    try { parsed = JSON.parse(r.resultJson || '{}'); } catch {}
-    const results = parsed.results || [];
-    const getRuleTier = (id) => {
-      const hit = results.find(x => x.id === id);
-      return hit ? `${hit.tier}: ${hit.text}` : 'PASS';
-    };
-
-    const rowCells = [
-      r.createdAt || '',
-      r.source || 'CHAT',
-      r.fileName || r.source || '',
-      r.invoiceNo || '',
-      r.supplierName || '',
-      r.supplierGstin || '',
-      r.total ?? '',
-      r.status || '',
-      r.createdBy || 'reviewer',
-      getRuleTier('AP-02'),
-      getRuleTier('AP-03'),
-      getRuleTier('AP-09'),
-      getRuleTier('AP-11'),
-    ];
-    lines.push(rowCells.map(escapeCsv).join(','));
-  }
-
-  return '\uFEFF' + lines.join('\r\n');
+if ($('btnApplyHistoryFilter')) {
+  $('btnApplyHistoryFilter').addEventListener('click', () => {
+    loadCheckHistory(1);
+  });
 }
 
 function triggerDownload(content, filename, mimeType) {
-  const blob = new Blob([content], { type: mimeType });
+  const blob = content instanceof Blob ? content : new Blob([content], { type: mimeType });
   const url = URL.createObjectURL(blob);
   const a = document.createElement('a');
   a.href = url;
@@ -1100,58 +1814,126 @@ function triggerDownload(content, filename, mimeType) {
   URL.revokeObjectURL(url);
 }
 
+async function downloadHistoryCsv() {
+  const filters = getHistoryFilterParams();
+  const r = await fetch('/fraud/exportHistoryCsv', {
+    method: 'POST',
+    headers: getHeaders(),
+    body: JSON.stringify(filters),
+  });
+  if (!r.ok) {
+    throw new Error(`CSV download failed (${r.status})`);
+  }
+  const rawText = await r.text();
+  const csvWithBom = rawText.startsWith('\uFEFF') ? rawText : '\uFEFF' + rawText;
+  state.lastExportCsv = csvWithBom;
+  window.__lastHistoryExportCsv = csvWithBom;
+  triggerDownload(csvWithBom, 'blus-invoice-agent-check-history.csv', 'text/csv;charset=utf-8');
+}
+
+async function downloadHistoryExcel() {
+  const filters = getHistoryFilterParams();
+  const r = await fetch('/fraud/exportHistoryExcel', {
+    method: 'POST',
+    headers: getHeaders(),
+    body: JSON.stringify(filters),
+  });
+  if (!r.ok) {
+    throw new Error(`Excel download failed (${r.status})`);
+  }
+  const xlsxArrayBuffer = await r.arrayBuffer();
+  const xlsxBlob = new Blob([xlsxArrayBuffer], {
+    type: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+  });
+  triggerDownload(
+    xlsxBlob,
+    'blus-invoice-agent-check-history.xlsx',
+    'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet'
+  );
+}
+
 if ($('btnExportHistoryCsv')) {
   $('btnExportHistoryCsv').addEventListener('click', () => {
-    const csv = buildHistoryActiveRulesCsv(getFilteredHistory());
-    state.lastExportCsv = csv;
-    window.__lastHistoryExportCsv = csv;
-    triggerDownload(csv, 'ap-sentinel-check-history.csv', 'text/csv;charset=utf-8');
+    downloadHistoryCsv().catch(err => {
+      console.error(err);
+      showToast(err.message, 'error');
+    });
   });
 }
 
 if ($('btnExportHistoryExcel')) {
   $('btnExportHistoryExcel').addEventListener('click', () => {
-    const csv = buildHistoryActiveRulesCsv(getFilteredHistory());
-    state.lastExportCsv = csv;
-    window.__lastHistoryExportCsv = csv;
-    triggerDownload(csv, 'ap-sentinel-check-history-excel.csv', 'application/vnd.ms-excel;charset=utf-8');
+    downloadHistoryExcel().catch(err => {
+      console.error(err);
+      showToast(err.message, 'error');
+    });
   });
 }
 
 // ============================================================================
 // ACTIVITY LOG PAGE
 // ============================================================================
-function parseAuditDetail(detailStr) {
+function parseAuditDetail(detailStr, action = '') {
   const s = String(detailStr || '');
   const uMatch = s.match(/\[user=([^\]]*)\]/);
   const fMatch = s.match(/\[file=([^\]]*)\]/);
   const rMatch = s.match(/\[result=([^\]]*)\]/);
   const clean = s.replace(/\[(?:user|file|result)=[^\]]*\]/g, '').trim();
+  let user = uMatch ? uMatch[1] : 'User';
+  if (action === 'BATCH_JOB' || !user || user.toLowerCase() === 'user' || user.toLowerCase() === 'reviewer' || user.toLowerCase() === 'single-user') {
+    user = 'User';
+  }
   return {
-    user: uMatch ? uMatch[1] : 'reviewer',
+    user,
     file: fMatch ? fMatch[1] : '-',
     result: rMatch ? rMatch[1] : clean,
     clean,
   };
 }
 
-async function loadActivityLog() {
+async function loadActivityLog(page = 1) {
+  state.activityPage = page;
+  const action = $('filterActivityAction') ? $('filterActivityAction').value : 'ALL';
+
   try {
-    state.activityList = await odataGet('AuditLog?$orderby=idx desc');
-    const chain = await api('verifyAuditChain', null, 'GET');
+    const params = new URLSearchParams({
+      page: String(page),
+      limit: '50',
+      action: action || 'ALL',
+    });
+    const [logRes, chain] = await Promise.all([
+      fetch(`/fraud/activityLogs?${params.toString()}`, { method: 'GET', headers: getHeaders() }),
+      api('verifyAuditChain', null, 'GET'),
+    ]);
+
+    if (logRes.ok) {
+      const data = await logRes.json();
+      state.activityList = data.rows || [];
+      state.activityTotal = data.total || 0;
+      state.activityTotalPages = data.totalPages || 1;
+      renderActivityTable();
+      renderPagination('activity', {
+        page: state.activityPage,
+        totalPages: state.activityTotalPages,
+        total: state.activityTotal,
+        limit: 50,
+        onPageChange: (p) => loadActivityLog(p),
+      });
+    }
+
     const badge = $('auditChainBadge');
-    if (badge) {
+    if (badge && chain) {
       if (chain.ok) {
         badge.className = 'status-banner success';
-        badge.textContent = `Audit Hash Chain: Verified (${chain.entries} entries intact)`;
+        const countStr = chain.entries === 1 ? '1 entry intact' : `${chain.entries} entries intact`;
+        badge.textContent = `Audit Hash Chain: Verified (${countStr})`;
       } else {
         badge.className = 'status-banner error';
         badge.textContent = `Audit Hash Chain: Broken at entry #${chain.brokenAt}`;
       }
     }
-    renderActivityTable();
   } catch (err) {
-    console.error(err);
+    console.error('Failed to load activity log:', err);
   }
 }
 
@@ -1170,7 +1952,7 @@ function renderActivityTable() {
   }
 
   for (const row of state.activityList) {
-    const parsed = parseAuditDetail(row.detail);
+    const parsed = parseAuditDetail(row.detail, row.action);
     const tr = document.createElement('tr');
     tr.append(
       el('td', row.ts ? new Date(row.ts).toLocaleString() : '-', 'mono-cell'),
@@ -1183,8 +1965,16 @@ function renderActivityTable() {
   }
 }
 
+if ($('filterActivityAction')) {
+  $('filterActivityAction').addEventListener('change', () => {
+    loadActivityLog(1);
+  });
+}
+
 if ($('btnRefreshActivity')) {
-  $('btnRefreshActivity').addEventListener('click', loadActivityLog);
+  $('btnRefreshActivity').addEventListener('click', () => {
+    loadActivityLog(state.activityPage);
+  });
 }
 
 if ($('btnExportActivityCsv')) {
@@ -1193,10 +1983,10 @@ if ($('btnExportActivityCsv')) {
     const escapeCsv = (v) => `"${String(v || '').replace(/"/g, '""')}"`;
     const lines = [headers.join(',')];
     for (const row of state.activityList) {
-      const parsed = parseAuditDetail(row.detail);
+      const parsed = parseAuditDetail(row.detail, row.action);
       lines.push([row.ts, parsed.user, parsed.file, row.action, parsed.clean || parsed.result].map(escapeCsv).join(','));
     }
-    triggerDownload('\uFEFF' + lines.join('\r\n'), 'ap-sentinel-activity-log.csv', 'text/csv;charset=utf-8');
+    triggerDownload('\uFEFF' + lines.join('\r\n'), 'blus-invoice-agent-activity-log.csv', 'text/csv;charset=utf-8');
   });
 }
 
@@ -1213,15 +2003,9 @@ async function initApp() {
     state.roles = roleParam.split(',').map(s => s.trim()).filter(Boolean);
     state.user = state.roles[0].toLowerCase();
   } else {
-    try {
-      const who = await api('whoami', null, 'GET');
-      if (who && Array.isArray(who.roles) && who.roles.length) {
-        state.roles = who.roles;
-        state.user = who.id || 'controller';
-      }
-    } catch {
-      // Keep default controller/clerk role
-    }
+    // Single user mode: all roles granted, full access to all 5 tabs and actions
+    state.roles = ['APClerk', 'APController', 'Auditor'];
+    state.user = 'user';
   }
 
   applyRolePermissions();

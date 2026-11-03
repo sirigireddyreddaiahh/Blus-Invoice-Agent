@@ -30,6 +30,51 @@ function hasTessdataLanguageFile(lang = 'eng') {
   return false;
 }
 
+const MAX_OCR_CONCURRENCY = 2;
+let activeOcrCount = 0;
+let peakOcrConcurrency = 0;
+const ocrWaitQueue = [];
+
+function acquireOcrSlot() {
+  if (activeOcrCount < MAX_OCR_CONCURRENCY) {
+    activeOcrCount++;
+    if (activeOcrCount > peakOcrConcurrency) {
+      peakOcrConcurrency = activeOcrCount;
+    }
+    return Promise.resolve();
+  }
+  return new Promise((resolve) => {
+    ocrWaitQueue.push(() => {
+      activeOcrCount++;
+      if (activeOcrCount > peakOcrConcurrency) {
+        peakOcrConcurrency = activeOcrCount;
+      }
+      resolve();
+    });
+  });
+}
+
+function releaseOcrSlot() {
+  activeOcrCount = Math.max(0, activeOcrCount - 1);
+  if (ocrWaitQueue.length > 0) {
+    const next = ocrWaitQueue.shift();
+    next();
+  }
+}
+
+function getOcrMetrics() {
+  return {
+    active: activeOcrCount,
+    peak: peakOcrConcurrency,
+    queued: ocrWaitQueue.length,
+    maxConcurrency: MAX_OCR_CONCURRENCY,
+  };
+}
+
+function resetOcrMetrics() {
+  peakOcrConcurrency = activeOcrCount;
+}
+
 async function runOcr(imageBuffer, options = {}) {
   if (!hasTessdataLanguageFile('eng')) {
     return {
@@ -42,6 +87,7 @@ async function runOcr(imageBuffer, options = {}) {
     };
   }
 
+  await acquireOcrSlot();
   const langPath = getTessdataPath();
   const hasGz = fs.existsSync(path.join(langPath, 'eng.traineddata.gz'));
 
@@ -99,6 +145,8 @@ async function runOcr(imageBuffer, options = {}) {
       error: MISSING_OCR_MSG,
       warning: MISSING_OCR_MSG,
     };
+  } finally {
+    releaseOcrSlot();
   }
 }
 
@@ -108,4 +156,7 @@ module.exports = {
   getTessdataPath,
   MISSING_OCR_MSG,
   OCR_WARNING_MSG,
+  MAX_OCR_CONCURRENCY,
+  getOcrMetrics,
+  resetOcrMetrics,
 };

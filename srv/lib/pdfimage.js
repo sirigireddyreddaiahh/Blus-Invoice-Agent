@@ -42,26 +42,33 @@ async function renderPages(pdfBuffer, options = {}) {
     const maxPages = Math.min(doc.numPages, options.maxPages || 2);
     const pages = [];
 
-    for (let i = 1; i <= maxPages; i++) {
-      const page = await doc.getPage(i);
-      const viewport = page.getViewport({ scale: options.scale || 2.0 });
-      try {
-        const { createCanvas } = require('@napi-rs/canvas');
-        const w = Math.max(1, Math.floor(viewport.width));
-        const h = Math.max(1, Math.floor(viewport.height));
-        const canvas = createCanvas(w, h);
-        const ctx = canvas.getContext('2d');
-        await page.render({ canvasContext: ctx, viewport }).promise;
-        const imgData = ctx.getImageData(0, 0, w, h);
-        pages.push({
-          width: imgData.width || w,
-          height: imgData.height || h,
-          data: new Uint8ClampedArray(imgData.data),
-          png: canvas.toBuffer('image/png'),
-        });
-      } catch {
-        // Fallback when canvas render fails
+    try {
+      for (let i = 1; i <= maxPages; i++) {
+        const page = await doc.getPage(i);
+        try {
+          const viewport = page.getViewport({ scale: options.scale || 2.0 });
+          const { createCanvas } = require('@napi-rs/canvas');
+          const w = Math.max(1, Math.floor(viewport.width));
+          const h = Math.max(1, Math.floor(viewport.height));
+          const canvas = createCanvas(w, h);
+          const ctx = canvas.getContext('2d');
+          await page.render({ canvasContext: ctx, viewport }).promise;
+          const imgData = ctx.getImageData(0, 0, w, h);
+          pages.push({
+            width: imgData.width || w,
+            height: imgData.height || h,
+            data: new Uint8ClampedArray(imgData.data),
+            png: canvas.toBuffer('image/png'),
+          });
+        } catch {
+          // Fallback when canvas render fails
+        } finally {
+          try { if (page.cleanup) page.cleanup(); } catch {}
+        }
       }
+    } finally {
+      try { if (doc.cleanup) doc.cleanup(); } catch {}
+      try { if (doc.destroy) await doc.destroy(); } catch {}
     }
     return pages;
   } catch {

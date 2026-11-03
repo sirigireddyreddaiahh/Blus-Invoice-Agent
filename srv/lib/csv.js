@@ -41,24 +41,32 @@ const isoDate = (v) => {
 
 function s4RowToInvoice(r, index) {
   const category = (r.category || 'services').toLowerCase();
-  const received = flag(r.receiptdone);
+  const received = flag(r.receiptdone || r['receipt done']);
+
+  const invoiceNo = r.invoiceno || r['invoice no'] || r['invoice_no'] || r['invoice number'] || r.invoicenumber || r['inv no'] || r.invno;
+  const supplierName = r.suppliername || r['supplier name'] || r.supplier || r.vendor || r['supplier/vendor'] || r['vendor name'];
+  const supplierGstin = r.suppliergstin || r['supplier gstin'] || r.gstin || r['gst no'] || r['gstin no'] || r['gst number'];
+  const invoiceDate = r.invoicedate || r['invoice date'] || r.date || r['date of invoice'] || r['invoice_date'];
+  const totalVal = r.total || r.amount || r['total (inr)'] || r['total amount'] || r.sum || r.gross;
+  const description = r.description || r['item description'] || r.item || r.desc || r.particulars || r.service;
+
   const inv = {
     id: r.id || `IMP-${String(index + 1).padStart(3, '0')}`,
     source: 'S4',
-    supplierId: r.supplierid,
-    supplierName: r.suppliername,
-    supplierGstin: r.suppliergstin ? r.suppliergstin.toUpperCase() : undefined,
-    buyerGstin: r.buyergstin ? r.buyergstin.toUpperCase() : undefined,
-    invoiceNo: r.invoiceno,
-    invoiceDate: r.invoicedate ? isoDate(r.invoicedate) : undefined,
-    poNumber: r.ponumber || undefined,
+    supplierId: r.supplierid || r['supplier id'] || r.vendorid || r['vendor id'],
+    supplierName: supplierName ? String(supplierName).trim() : undefined,
+    supplierGstin: supplierGstin ? String(supplierGstin).trim().toUpperCase() : undefined,
+    buyerGstin: (r.buyergstin || r['buyer gstin'] || '') ? String(r.buyergstin || r['buyer gstin']).toUpperCase() : undefined,
+    invoiceNo: invoiceNo ? String(invoiceNo).trim() : undefined,
+    invoiceDate: invoiceDate ? isoDate(invoiceDate) : undefined,
+    poNumber: r.ponumber || r['po number'] || undefined,
     category,
-    description: r.description,
+    description: description ? String(description).trim() : undefined,
     hsn: r.hsn || undefined,
     taxable: amount(r.taxable), cgst: amount(r.cgst), sgst: amount(r.sgst),
-    igst: amount(r.igst), cess: amount(r.cess), total: amount(r.total),
-    ifsc: r.ifsc ? r.ifsc.toUpperCase() : undefined,
-    accountNo: r.accountno || undefined,
+    igst: amount(r.igst), cess: amount(r.cess), total: amount(totalVal),
+    ifsc: (r.ifsc || r['ifsc code']) ? String(r.ifsc || r['ifsc code']).toUpperCase() : undefined,
+    accountNo: r.accountno || r['account no'] || r['account number'] || undefined,
   };
   if (received !== undefined) {
     if (category === 'goods') inv.grDone = received; else inv.sesDone = received;

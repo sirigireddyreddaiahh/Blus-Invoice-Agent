@@ -62,15 +62,15 @@
             <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><rect x="8" y="8" width="12" height="12" rx="2"/><path d="M16 8V6a2 2 0 0 0-2-2H6a2 2 0 0 0-2 2v8a2 2 0 0 0 2 2h2"/></svg>
           </span>
           <span class="welcome-card-title">Check duplicates</span>
-          <span class="welcome-card-desc">Verify batch S/4HANA extracts against active rules AP-02, AP-03, AP-09, and AP-11.</span>
+          <span class="welcome-card-desc">Verify batch S/4HANA extracts against the reference invoice ledger.</span>
         </button>
 
-        <button type="button" class="welcome-option-card card-stagger-3" id="welcomeCardQueue" data-welcome-action="queue" role="listitem">
+        <button type="button" class="welcome-option-card card-stagger-3" id="welcomeCardActivity" data-welcome-action="activity" role="listitem">
           <span class="welcome-card-icon" aria-hidden="true">
-            <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"/><line x1="12" y1="8" x2="12" y2="12"/><line x1="12" y1="16" x2="12.01" y2="16"/></svg>
+            <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><polyline points="22 12 18 12 15 21 9 3 6 12 2 12"/></svg>
           </span>
-          <span class="welcome-card-title">Review queue</span>
-          <span class="welcome-card-desc">Inspect held and blocked invoices and record controller governance decisions.</span>
+          <span class="welcome-card-title">Activity log</span>
+          <span class="welcome-card-desc">See every check and decision</span>
         </button>
       </div>
 
@@ -185,10 +185,11 @@
               type="file"
               id="chatFileInput"
               class="hidden"
-              accept=".pdf,.png,.jpg,.jpeg,application/pdf,image/png,image/jpeg"
-              aria-label="Attach invoice file"
+              multiple
+              accept=".pdf,.png,.jpg,.jpeg,.csv,.json,application/pdf,image/png,image/jpeg,text/csv,application/json"
+              aria-label="Attach invoice files"
             >
-            <button type="button" id="btnAttachPlus" class="btn-attach-plus" title="Attach PDF, PNG or JPG (max 10 MB)" aria-label="Attach file">+</button>
+            <button type="button" id="btnAttachPlus" class="btn-attach-plus" title="Attach PDF, PNG, JPG, CSV, or JSON (max 10 MB)" aria-label="Attach file">+</button>
 
             <!-- File chip inside composer bar, left of the text input -->
             <div id="composerFileChip" class="composer-file-chip hidden" aria-live="polite">
@@ -226,14 +227,76 @@
         <div class="card">
           <div class="btn-row" id="s4ActionRow">
             <label for="s4FileInput" class="inline-select-label">
-              Import file (CSV or JSON)
-              <input type="file" id="s4FileInput" accept=".csv,.json,text/csv,application/json" aria-label="Import CSV or JSON file">
+              Import file(s) (CSV, JSON, PDF, Images)
+              <input type="file" id="s4FileInput" multiple accept=".csv,.json,.pdf,.png,.jpg,.jpeg,text/csv,application/json,application/pdf,image/*" aria-label="Import files">
             </label>
             <button type="button" id="btnImportS4">Import</button>
+            <button type="button" id="btnImportToLedger">Import to ledger</button>
             <button type="button" id="btnUseSampleS4">Use sample extract</button>
             <button type="button" id="btnCheckAllS4" class="primary">Check all</button>
+            <button type="button" id="btnCancelS4" class="btn-cancel-job hidden">Cancel</button>
+            <button type="button" id="btnResumeS4" class="primary hidden">Resume</button>
+          </div>
+
+          <!-- Slim Blue-to-Green Progress Bar between Toolbar and Results Table -->
+          <div id="s4ProgressWrap" class="s4-progress-wrap hidden" aria-live="polite">
+            <div class="s4-progress-bar-track">
+              <div id="s4ProgressBar" class="s4-progress-bar-fill" style="width: 0%;"></div>
+            </div>
+            <div class="s4-progress-meta">
+              <span id="s4ProgressText" class="s4-progress-text">0 of 0 processed (0%)</span>
+              <button type="button" id="btnViewS4Errors" class="s4-errors-link hidden">View errors (0)</button>
+            </div>
+            <div id="s4ErrorsModal" class="s4-errors-modal hidden">
+              <div class="s4-errors-modal-header">
+                <span class="s4-errors-modal-title">Failed Invoices</span>
+                <button type="button" id="btnCloseS4Errors" class="s4-errors-modal-close" aria-label="Close error list">&times;</button>
+              </div>
+              <div id="s4ErrorsList" class="s4-errors-list"></div>
+            </div>
           </div>
           <div id="s4Banner" class="status-banner hidden" role="status"></div>
+
+          <!-- Summary counts strip above the table -->
+          <div class="summary-stats-strip" id="s4SummaryCounts">
+            <div class="stat-pill total">
+              <span class="stat-pill-label">Total</span>
+              <span class="stat-pill-val" id="s4CountTotal">0</span>
+            </div>
+            <div class="stat-pill pass">
+              <span class="stat-pill-label">PASS</span>
+              <span class="stat-pill-val" id="s4CountPass">0</span>
+            </div>
+            <div class="stat-pill hold">
+              <span class="stat-pill-label">HOLD</span>
+              <span class="stat-pill-val" id="s4CountHold">0</span>
+            </div>
+            <div class="stat-pill reject">
+              <span class="stat-pill-label">REJECT</span>
+              <span class="stat-pill-val" id="s4CountReject">0</span>
+            </div>
+          </div>
+
+          <!-- Status filter, search box, and download buttons -->
+          <div class="filter-bar s4-filter-bar">
+            <label for="s4FilterStatus">
+              Status
+              <select id="s4FilterStatus" aria-label="Filter S/4 results by status">
+                <option value="ALL">All statuses</option>
+                <option value="PASS">PASS</option>
+                <option value="HOLD">HOLD</option>
+                <option value="REJECT">REJECT</option>
+              </select>
+            </label>
+            <label for="s4FilterSearch" style="flex: 1;">
+              Search
+              <input type="text" id="s4FilterSearch" placeholder="Search invoice number or supplier..." aria-label="Search invoice number or supplier">
+            </label>
+            <div class="btn-row filter-actions">
+              <button type="button" id="btnExportS4Csv" class="primary">Download CSV</button>
+              <button type="button" id="btnExportS4Excel">Download Excel</button>
+            </div>
+          </div>
 
           <div class="table-wrap">
             <table id="s4Table" aria-label="S/4HANA extract invoices">
@@ -245,11 +308,59 @@
                   <th>Invoice No</th>
                   <th>Date</th>
                   <th class="num-col">Total (INR)</th>
+                  <th>Database match</th>
                   <th>Status</th>
                   <th>Reason</th>
                 </tr>
               </thead>
               <tbody id="s4TableBody"></tbody>
+            </table>
+          </div>
+
+          <!-- S/4 Pagination Bar -->
+          <div class="pagination-bar" id="s4Pagination">
+            <span class="pagination-info" id="s4PaginationInfo">Showing 0-0 of 0</span>
+            <div class="pagination-controls">
+              <button type="button" id="s4PrevPage" class="btn-page" disabled>&larr; Previous</button>
+              <div id="s4PageNumbers" class="pagination-pages"></div>
+              <button type="button" id="s4NextPage" class="btn-page" disabled>Next &rarr;</button>
+            </div>
+          </div>
+        </div>
+
+        <!-- Search database box -->
+        <div class="card">
+          <div class="page-header" style="margin-bottom: 12px; padding-bottom: 8px;">
+            <p class="section-kicker">HANA Invoice Ledger</p>
+            <h3 style="font-size: 16px; font-weight: 600; color: var(--text-primary); margin-bottom: 2px;">Search database</h3>
+            <p style="font-size: 13px; color: var(--text-muted);">Enter an invoice number, supplier name, or GSTIN to inspect booked records in the reference ledger.</p>
+          </div>
+          <div class="filter-bar" style="margin-bottom: 0;">
+            <label for="inputSearchDb" style="flex: 1;">
+              Search query
+              <input type="text" id="inputSearchDb" placeholder="Enter invoice number, supplier or GSTIN..." aria-label="Search database query">
+            </label>
+            <div class="btn-row filter-actions">
+              <button type="button" id="btnSearchDb" class="primary">Search database</button>
+              <button type="button" id="btnClearSearchDb">Clear</button>
+            </div>
+          </div>
+          <div id="searchDbBanner" class="status-banner hidden" style="margin-top: 10px;"></div>
+          <div id="searchDbWrap" class="table-wrap hidden">
+            <table id="searchDbTable" aria-label="Search database results">
+              <thead>
+                <tr>
+                  <th>Invoice No</th>
+                  <th>Supplier</th>
+                  <th>GSTIN</th>
+                  <th>Date</th>
+                  <th class="num-col">Total (INR)</th>
+                  <th>Description</th>
+                  <th>Status</th>
+                  <th>Posted At</th>
+                </tr>
+              </thead>
+              <tbody id="searchDbTableBody"></tbody>
             </table>
           </div>
         </div>
@@ -268,8 +379,18 @@
         </div>
 
         <div class="card">
-          <div class="toolbar-row">
-            <button type="button" id="btnRefreshAlerts">Refresh queue</button>
+          <div class="filter-bar">
+            <label for="filterAlertsStatus">
+              Status
+              <select id="filterAlertsStatus" aria-label="Filter review queue by status">
+                <option value="ALL">All statuses</option>
+                <option value="HOLD">HOLD</option>
+                <option value="REJECT">REJECT</option>
+              </select>
+            </label>
+            <div class="btn-row filter-actions">
+              <button type="button" id="btnRefreshAlerts">Refresh queue</button>
+            </div>
             <span id="alertsRoleHint" class="meta-inline"></span>
           </div>
           <div id="alertsBanner" class="status-banner hidden"></div>
@@ -278,7 +399,9 @@
             <table id="alertsTable" aria-label="Review queue alerts">
               <thead>
                 <tr>
-                  <th>Rule</th>
+                  <th>Invoice number</th>
+                  <th>Supplier</th>
+                  <th>Issue</th>
                   <th>Title</th>
                   <th>Reason</th>
                   <th>Status</th>
@@ -288,6 +411,16 @@
               </thead>
               <tbody id="alertsTableBody"></tbody>
             </table>
+          </div>
+
+          <!-- Review Queue Pagination Bar -->
+          <div class="pagination-bar" id="alertsPagination">
+            <span class="pagination-info" id="alertsPaginationInfo">Showing 0-0 of 0</span>
+            <div class="pagination-controls">
+              <button type="button" id="alertsPrevPage" class="btn-page" disabled>&larr; Previous</button>
+              <div id="alertsPageNumbers" class="pagination-pages"></div>
+              <button type="button" id="alertsNextPage" class="btn-page" disabled>Next &rarr;</button>
+            </div>
           </div>
         </div>
       </section>
@@ -325,10 +458,18 @@
               Supplier
               <input type="text" id="filterHistorySupplier" placeholder="Search supplier or GSTIN..." aria-label="Filter by supplier">
             </label>
+            <label for="filterHistoryLimit">
+              Rows
+              <select id="filterHistoryLimit" aria-label="Rows per page">
+                <option value="25">25</option>
+                <option value="50" selected>50</option>
+                <option value="100">100</option>
+              </select>
+            </label>
             <div class="btn-row filter-actions">
               <button type="button" id="btnApplyHistoryFilter">Apply filters</button>
-              <button type="button" id="btnExportHistoryCsv" class="primary">Export CSV</button>
-              <button type="button" id="btnExportHistoryExcel">Export Excel</button>
+              <button type="button" id="btnExportHistoryCsv" class="primary">Download CSV</button>
+              <button type="button" id="btnExportHistoryExcel">Download Excel</button>
             </div>
           </div>
 
@@ -347,6 +488,16 @@
               </thead>
               <tbody id="historyTableBody"></tbody>
             </table>
+          </div>
+
+          <!-- History Pagination Bar -->
+          <div class="pagination-bar" id="historyPagination">
+            <span class="pagination-info" id="historyPaginationInfo">Showing 0-0 of 0</span>
+            <div class="pagination-controls">
+              <button type="button" id="historyPrevPage" class="btn-page" disabled>&larr; Previous</button>
+              <div id="historyPageNumbers" class="pagination-pages"></div>
+              <button type="button" id="historyNextPage" class="btn-page" disabled>Next &rarr;</button>
+            </div>
           </div>
         </div>
       </section>
@@ -370,6 +521,24 @@
             </div>
           </div>
 
+          <!-- Activity Log Action Filter -->
+          <div class="filter-bar" style="margin-top: 12px; margin-bottom: 12px;">
+            <label for="filterActivityAction">
+              Action
+              <select id="filterActivityAction" aria-label="Filter activity log by action">
+                <option value="ALL">All actions</option>
+                <option value="CHAT_CHECK">CHAT_CHECK</option>
+                <option value="IMPORT">IMPORT</option>
+                <option value="DECISION">DECISION</option>
+                <option value="BATCH_JOB">BATCH_JOB</option>
+                <option value="DATABASE_CHECK">DATABASE_CHECK</option>
+                <option value="LEDGER_INSERT">LEDGER_INSERT</option>
+                <option value="LEDGER_IMPORT">LEDGER_IMPORT</option>
+                <option value="DATABASE_SEARCH">DATABASE_SEARCH</option>
+              </select>
+            </label>
+          </div>
+
           <div class="table-wrap">
             <table id="activityTable" aria-label="Activity log table">
               <thead>
@@ -383,6 +552,16 @@
               </thead>
               <tbody id="activityTableBody"></tbody>
             </table>
+          </div>
+
+          <!-- Activity Log Pagination Bar -->
+          <div class="pagination-bar" id="activityPagination">
+            <span class="pagination-info" id="activityPaginationInfo">Showing 0-0 of 0</span>
+            <div class="pagination-controls">
+              <button type="button" id="activityPrevPage" class="btn-page" disabled>&larr; Previous</button>
+              <div id="activityPageNumbers" class="pagination-pages"></div>
+              <button type="button" id="activityNextPage" class="btn-page" disabled>Next &rarr;</button>
+            </div>
           </div>
         </div>
       </section>

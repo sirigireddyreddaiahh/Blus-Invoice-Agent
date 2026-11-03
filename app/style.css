@@ -648,13 +648,18 @@ body {
 .page-section {
   display: none;
   width: 100%;
-  max-width: 1120px;
-  margin: 0 auto;
+  max-width: none;
+  margin: 0;
   padding: 24px 28px;
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+  overflow-x: hidden;
 }
 
 .page-section.active {
-  display: block;
+  display: flex;
+  flex-direction: column;
 }
 
 #page-upload.page-section.active {
@@ -1339,3 +1344,323 @@ td.mono-cell {
     stroke-dashoffset: 0 !important;
   }
 }
+
+/* ==========================================================================
+   Toast Notifications for Background Jobs
+   ========================================================================== */
+.app-toast-container {
+  position: fixed;
+  bottom: 24px;
+  right: 24px;
+  z-index: 9999;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  pointer-events: none;
+}
+
+.app-toast {
+  pointer-events: auto;
+  min-width: 280px;
+  max-width: 440px;
+  padding: 12px 18px;
+  border-radius: 10px;
+  background: #001428;
+  color: #FFFFFF;
+  font-family: var(--font-sans);
+  font-size: 13.5px;
+  font-weight: 500;
+  line-height: 1.4;
+  box-shadow: 0 10px 25px -5px rgba(0, 0, 0, 0.35), 0 8px 10px -6px rgba(0, 0, 0, 0.25);
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  border-left: 4px solid #00D93A;
+  animation: toastSlideUp 0.25s ease-out;
+  transition: opacity 0.3s ease, transform 0.3s ease;
+}
+
+.app-toast.error {
+  border-left-color: #EF4444;
+}
+
+.app-toast.info {
+  border-left-color: #0A1CFF;
+}
+
+@keyframes toastSlideUp {
+  from {
+    opacity: 0;
+    transform: translateY(14px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+/* ==========================================================================
+   S/4HANA Extract: Slim Blue-to-Green Progress Bar & Job Controls
+   ========================================================================== */
+.s4-progress-wrap {
+  margin-top: 14px;
+  margin-bottom: 12px;
+  width: 100%;
+}
+
+.s4-progress-bar-track {
+  width: 100%;
+  height: 6px;
+  background: #E2E8F0;
+  border-radius: 9999px;
+  overflow: hidden;
+}
+
+.s4-progress-bar-fill {
+  height: 100%;
+  background: linear-gradient(90deg, #0A1CFF 0%, #00D93A 100%);
+  border-radius: 9999px;
+  transition: width 0.3s ease;
+}
+
+.s4-progress-meta {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-top: 6px;
+  font-size: 13px;
+}
+
+.s4-progress-text {
+  font-weight: 500;
+  color: var(--text-secondary);
+  font-family: var(--font-sans);
+}
+
+.s4-errors-link {
+  background: none;
+  border: none;
+  color: #DC2626;
+  font-size: 12.5px;
+  font-weight: 600;
+  cursor: pointer;
+  text-decoration: underline;
+  padding: 2px 4px;
+}
+
+.s4-errors-link:hover {
+  color: #991B1B;
+}
+
+.s4-errors-modal {
+  background: #FEF2F2;
+  border: 1px solid #FECACA;
+  border-radius: 8px;
+  padding: 10px 14px;
+  margin-top: 8px;
+  max-height: 180px;
+  overflow-y: auto;
+}
+
+.s4-errors-modal-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  margin-bottom: 6px;
+  color: #991B1B;
+  font-weight: 700;
+  font-size: 13px;
+}
+
+.s4-errors-modal-close {
+  background: none;
+  border: none;
+  font-size: 18px;
+  line-height: 1;
+  color: #991B1B;
+  cursor: pointer;
+  padding: 0;
+}
+
+.s4-errors-list {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  font-size: 12.5px;
+  color: #7F1D1D;
+}
+
+.s4-error-item {
+  display: flex;
+  gap: 8px;
+  align-items: baseline;
+}
+
+.s4-error-inv {
+  font-family: var(--font-mono);
+  font-weight: 700;
+  flex-shrink: 0;
+}
+
+.btn-cancel-job {
+  background: #FFFFFF;
+  color: #DC2626;
+  border-color: #F87171;
+}
+
+.btn-cancel-job:hover:not(:disabled) {
+  background: #FEF2F2;
+  border-color: #EF4444;
+}
+
+/* ==========================================================================
+   Summary Stats Strip & Pagination Controls
+   ========================================================================== */
+.summary-stats-strip {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 12px;
+  margin-top: 14px;
+  margin-bottom: 14px;
+}
+
+.stat-pill {
+  flex: 1;
+  min-width: 110px;
+  max-width: 220px;
+  padding: 10px 14px;
+  border-radius: 8px;
+  border: 1px solid var(--border-subtle);
+  background: var(--bg-shell);
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.stat-pill.total {
+  background: #F8FAFC;
+  border-color: #E2E8F0;
+}
+.stat-pill.total .stat-pill-val {
+  color: #0F172A;
+}
+
+.stat-pill.pass {
+  background: #F0FDF4;
+  border-color: #BBF7D0;
+}
+.stat-pill.pass .stat-pill-label {
+  color: #166534;
+}
+.stat-pill.pass .stat-pill-val {
+  color: #15803D;
+}
+
+.stat-pill.hold {
+  background: #FFFBEB;
+  border-color: #FDE68A;
+}
+.stat-pill.hold .stat-pill-label {
+  color: #92400E;
+}
+.stat-pill.hold .stat-pill-val {
+  color: #B45309;
+}
+
+.stat-pill.reject {
+  background: #FEF2F2;
+  border-color: #FECACA;
+}
+.stat-pill.reject .stat-pill-label {
+  color: #991B1B;
+}
+.stat-pill.reject .stat-pill-val {
+  color: #B91C1C;
+}
+
+.stat-pill-label {
+  font-size: 11px;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  color: var(--text-muted);
+}
+
+.stat-pill-val {
+  font-size: 20px;
+  font-weight: 700;
+  font-family: var(--font-mono);
+  line-height: 1.2;
+}
+
+.pagination-bar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-top: 14px;
+  padding-top: 10px;
+  border-top: 1px solid var(--border-subtle);
+  flex-wrap: wrap;
+  gap: 10px;
+}
+
+.pagination-info {
+  font-size: 13px;
+  color: var(--text-secondary);
+  font-family: var(--font-sans);
+  font-weight: 500;
+}
+
+.pagination-controls {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.btn-page {
+  padding: 5px 12px;
+  font-size: 12.5px;
+  font-weight: 600;
+  border-radius: 6px;
+}
+
+.pagination-pages {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+}
+
+.page-num-btn {
+  min-width: 32px;
+  height: 32px;
+  padding: 0 6px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  border: 1px solid var(--border-control);
+  border-radius: 6px;
+  background: var(--bg-canvas);
+  font-size: 12.5px;
+  font-weight: 600;
+  color: var(--text-primary);
+  cursor: pointer;
+  transition: all 0.15s ease;
+}
+
+.page-num-btn:hover:not(.active):not(:disabled) {
+  background: var(--bg-shell);
+}
+
+.page-num-btn.active {
+  background: var(--accent-blue);
+  color: #FFFFFF;
+  border-color: var(--accent-blue);
+}
+
+.page-num-btn:disabled {
+  opacity: 0.4;
+  cursor: not-allowed;
+}
+
+

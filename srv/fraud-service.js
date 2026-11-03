@@ -18,6 +18,14 @@ const { renderPages, findQrJwt, findQrInImage } = require('./lib/pdfimage');
 const { runOcr, MISSING_OCR_MSG, OCR_WARNING_MSG } = require('./lib/ocr');
 const { parseCsv, s4RowToInvoice } = require('./lib/csv');
 const lookup = require('./lib/lookup');
+const {
+  loadLedgerForInvoices,
+  findDatabaseMatch,
+  insertInvoiceIntoLedger,
+} = require('./lib/ledger');
+const { createBatchJob, getJob, cancelJob, resumeJob } = require('./lib/queue');
+const { getS4ResultsQuery, getReviewQueueQuery, getCheckHistoryQuery, getActivityLogsQuery } = require('./lib/pagination');
+const { processDocumentBatch } = require('./lib/document-processor');
 
 const s4Invoices = require('../data/s4-invoices.json');
 
@@ -629,6 +637,8 @@ class FraudService extends cds.ApplicationService {
           tier: r.tier,
           text: r.text,
           decision: 'OPEN',
+          invoiceNo: inv.invoiceNo || null,
+          supplierName: inv.supplierName || null,
         }));
       }
 
@@ -674,6 +684,41 @@ class FraudService extends cds.ApplicationService {
         fileName: alert.ruleId,
         result: decision,
       });
+
+      // After an invoice gets cleared in the Review queue, insert it into the ledger so future uploads are compared against it
+      if (decision === 'CLEAR') {
+        const remaining = await cds.run(
+          SELECT.from(E.Alerts).where({ check_ID: alert.check_ID, decision: { '!=': 'CLEAR' } })
+        );
+        const stillPending = remaining.filter(a => a.ID !== alertId);
+        if (stillPending.length === 0) {
+          const check = await cds.run(SELECT.one.from(E.Checks).where({ ID: alert.check_ID }));
+          if (check) {
+            let invObj = {
+              invoiceNo: check.invoiceNo,
+              supplierGstin: check.supplierGstin,
+              invoiceDate: check.invoiceDate,
+              total: check.total,
+              supplierName: check.supplierName,
+              fileName: check.fileName,
+            };
+            if (check.resultJson) {
+              try {
+                const pj = JSON.parse(check.resultJson);
+                if (pj.fields) invObj = { ...invObj, ...pj.fields };
+              } catch {}
+            }
+            const masters = loadMasters();
+            await insertInvoiceIntoLedger(parseInvoice(invObj), { blocked: false, user: who, masters });
+            await audit('LEDGER_INSERT', alert.check_ID, `Cleared in review queue: posted ${invObj.invoiceNo} into ledger`, {
+              user: who,
+              fileName: invObj.invoiceNo || 'cleared-invoice',
+              result: 'CLEARED_INSERTED',
+            });
+          }
+        }
+      }
+
       return JSON.stringify({ alertId, decision, decidedBy: who });
     };
 
@@ -698,6 +743,9 @@ class FraudService extends cds.ApplicationService {
         list = text.startsWith('[') ? JSON.parse(text) : parseCsv(text).map(s4RowToInvoice);
       } catch (e) { return req.reject(400, 'The file could not be read: ' + e.message); }
       if (!Array.isArray(list) || !list.length) return req.reject(400, 'The file has no invoice rows');
+      if (list.length > 2000) {
+        return req.reject(400, `This batch has ${list.length} invoices. The maximum per job is 2000. Please split the file.`);
+      }
       const user = getUserId(req);
       await audit('IMPORT', null, `${fileName || 'extract'}: ${list.length} rows`, {
         user,
@@ -851,7 +899,7 @@ class FraudService extends cds.ApplicationService {
         source: effectiveSource,
       });
 
-      const posted = await cds.run(SELECT.from(E.Posted));
+      const posted = await loadLedgerForInvoices([inv]);
       let lookupInfo;
       try {
         lookupInfo = await performLookupForInvoice(inv, posted, user, masters);
@@ -868,6 +916,7 @@ class FraudService extends cds.ApplicationService {
         irpPublicKeyPem: process.env.IRP_PUBLIC_KEY_PEM || undefined,
       });
       const enriched = enrichRuleResult(rawResult);
+      const databaseMatch = findDatabaseMatch(inv, { posted });
       const preCheckId = runCheck ? crypto.randomUUID() : null;
 
       const steps = buildTenSteps({
@@ -894,6 +943,26 @@ class FraudService extends cds.ApplicationService {
           })
         : null;
 
+      // After an invoice gets PASS, insert it into the ledger so future uploads are compared against it
+      if (runCheck && enriched.status === 'PASS') {
+        await insertInvoiceIntoLedger(inv, { blocked: false, user, masters });
+        await audit(
+          'LEDGER_INSERT',
+          checkId,
+          `Auto-inserted passed invoice ${inv.invoiceNo || ''} into database ledger`,
+          { user, fileName: inv.fileName || inv.invoiceNo, result: 'PASS_INSERTED' }
+        );
+      }
+
+      if (runCheck) {
+        await audit(
+          'DATABASE_CHECK',
+          checkId,
+          `Checked against database ledger: ${databaseMatch.status} (${databaseMatch.reason})`,
+          { user, fileName: inv.fileName || inv.invoiceNo, result: databaseMatch.status }
+        );
+      }
+
       return JSON.stringify({
         ok: true,
         checkId,
@@ -906,6 +975,7 @@ class FraudService extends cds.ApplicationService {
         dataQuality,
         lookupSource: lookupInfo.source,
         similarInvoices: lookupInfo.pastPosted,
+        databaseMatch,
         pdfText: text,
         pdfMeta: inv.pdfMeta,
         qrFound: Boolean(qrJwt),
@@ -967,7 +1037,7 @@ class FraudService extends cds.ApplicationService {
       const user = getUserId(req);
       const masters = loadMasters();
       const inv = parseInvoice(req.data.invoice);
-      const posted = await cds.run(SELECT.from(E.Posted));
+      const posted = await loadLedgerForInvoices([inv]);
 
       let lookupInfo;
       try {
@@ -985,6 +1055,7 @@ class FraudService extends cds.ApplicationService {
         irpPublicKeyPem: process.env.IRP_PUBLIC_KEY_PEM || undefined,
       });
       const enriched = enrichRuleResult(result);
+      const databaseMatch = findDatabaseMatch(inv, { posted });
       const effectiveSource = inv.source || 'UPLOAD';
       const preCheckId = crypto.randomUUID();
 
@@ -1010,10 +1081,29 @@ class FraudService extends cds.ApplicationService {
         lookupInfo,
       });
 
+      // After an invoice gets PASS, insert it into the ledger so future uploads are compared against it
+      if (enriched.status === 'PASS') {
+        await insertInvoiceIntoLedger(inv, { blocked: false, user, masters });
+        await audit(
+          'LEDGER_INSERT',
+          checkId,
+          `Auto-inserted passed invoice ${inv.invoiceNo || ''} into database ledger`,
+          { user, fileName: inv.fileName || inv.invoiceNo, result: 'PASS_INSERTED' }
+        );
+      }
+
+      await audit(
+        'DATABASE_CHECK',
+        checkId,
+        `Checked against database ledger: ${databaseMatch.status} (${databaseMatch.reason})`,
+        { user, fileName: inv.fileName || inv.invoiceNo, result: databaseMatch.status }
+      );
+
       return JSON.stringify({
         checkId,
         source: effectiveSource,
         ...enriched,
+        databaseMatch,
         dataQuality,
         lookupSource: lookupInfo.source,
         similarInvoices: lookupInfo.pastPosted,
@@ -1030,32 +1120,231 @@ class FraudService extends cds.ApplicationService {
 
       const user = getUserId(req);
       const masters = loadMasters();
-      const list = JSON.parse(req.data.invoices).map(parseInvoice);
-      const posted = await cds.run(SELECT.from(E.Posted));
+      const rawInvoices = typeof req.data.invoices === 'string' ? JSON.parse(req.data.invoices) : (req.data.invoices || []);
+      const list = rawInvoices.map(parseInvoice);
 
-      if (list.length > 0) {
-        try {
-          await performLookupForInvoice(list[0], posted, user, masters);
-        } catch (err) {
-          return req.reject(400, err.message);
+      if (list.length > 2000) {
+        return req.reject(400, `This batch has ${list.length} invoices. The maximum per job is 2000. Please split the file.`);
+      }
+
+      // If sync mode is explicitly requested, run synchronously
+      if (req.data.sync === true) {
+        const posted = await loadLedgerForInvoices(list);
+        if (list.length > 0) {
+          try {
+            await performLookupForInvoice(list[0], posted, user, masters);
+          } catch (err) {
+            return req.reject(400, err.message);
+          }
         }
+
+        const out = [];
+        for (let i = 0; i < list.length; i++) {
+          const inv = list[i];
+          const result = runRules(inv, {
+            masters,
+            posted,
+            batch: list,
+            earlier: list.slice(0, i),
+            irpPublicKeyPem: process.env.IRP_PUBLIC_KEY_PEM || undefined,
+          });
+          const enriched = enrichRuleResult(result);
+          const databaseMatch = findDatabaseMatch(inv, {
+            posted,
+            batch: list,
+            earlier: list.slice(0, i),
+          });
+          const checkId = await persist(inv, result, inv.source || 'S4', req);
+
+          if (result.status === 'PASS') {
+            await insertInvoiceIntoLedger(inv, { blocked: false, user, masters });
+            posted.push(inv);
+          }
+
+          await audit(
+            'DATABASE_CHECK',
+            checkId,
+            `Checked against database ledger: ${databaseMatch.status} (${databaseMatch.reason})`,
+            { user, fileName: inv.fileName || inv.invoiceNo || 'batch-invoice', result: databaseMatch.status }
+          );
+
+          out.push({ id: inv.id, checkId, ...enriched, databaseMatch, invoice: publicView(inv) });
+        }
+        return JSON.stringify(out);
       }
 
-      const out = [];
-      for (let i = 0; i < list.length; i++) {
-        const inv = list[i];
-        const result = runRules(inv, {
-          masters,
-          posted,
-          batch: list,
-          earlier: list.slice(0, i),
-          irpPublicKeyPem: process.env.IRP_PUBLIC_KEY_PEM || undefined,
-        });
-        const enriched = enrichRuleResult(result);
-        const checkId = await persist(inv, result, inv.source || 'S4', req);
-        out.push({ id: inv.id, checkId, ...enriched, invoice: publicView(inv) });
+      // Default: Async chunked background job returning immediately
+      const jobInfo = await createBatchJob({
+        invoices: list,
+        user: 'User',
+        source: 'S4',
+        fileName: 's4-extract.csv',
+        masters,
+        audit,
+      });
+      return JSON.stringify(jobInfo);
+    });
+
+    this.on('createBatchJob', async req => {
+      const roles = getUserRoles(req);
+      if (roles.includes('Auditor') && !roles.includes('APClerk') && !roles.includes('APController')) {
+        return req.reject(403, 'An auditor cannot check invoices.');
       }
-      return JSON.stringify(out);
+      const user = getUserId(req);
+      const masters = loadMasters();
+      const rawInvoices = typeof req.data.invoices === 'string' ? JSON.parse(req.data.invoices) : (req.data.invoices || []);
+      const list = rawInvoices.map(parseInvoice);
+
+      if (list.length > 2000) {
+        return req.reject(400, `This batch has ${list.length} invoices. The maximum per job is 2000. Please split the file.`);
+      }
+
+      const jobInfo = await createBatchJob({
+        invoices: list,
+        user: 'User',
+        source: 'S4',
+        fileName: 's4-extract.csv',
+        masters,
+        audit,
+      });
+      return JSON.stringify(jobInfo);
+    });
+
+    this.on('uploadBatchDocuments', async req => {
+      const roles = getUserRoles(req);
+      if (roles.includes('Auditor') && !roles.includes('APClerk') && !roles.includes('APController')) {
+        return req.reject(403, 'An auditor cannot check invoices.');
+      }
+      const rawFiles = typeof req.data.files === 'string' ? JSON.parse(req.data.files) : (req.data.files || []);
+      if (!Array.isArray(rawFiles) || !rawFiles.length) {
+        return req.reject(400, 'No files provided');
+      }
+
+      const { invoices, errors } = await processDocumentBatch(rawFiles);
+      if (invoices.length > 2000) {
+        return req.reject(400, `This batch has ${invoices.length} invoices. The maximum per job is 2000. Please split the file.`);
+      }
+      if (!invoices.length && errors.length) {
+        return req.reject(400, `Could not extract invoices from provided files: ${errors.map(e => e.fileName + ' (' + e.reason + ')').join('; ')}`);
+      }
+
+      const masters = loadMasters();
+      const jobInfo = await createBatchJob({
+        invoices,
+        user: 'User',
+        source: 'S4',
+        fileName: rawFiles.length === 1 ? rawFiles[0].fileName : `${rawFiles.length}-documents-batch`,
+        masters,
+        audit,
+        initialErrors: errors,
+      });
+
+      return JSON.stringify({
+        ...jobInfo,
+        invoicesCount: invoices.length,
+        errors,
+      });
+    });
+
+    this.on('getJob', async req => {
+      const id = req.data.jobId;
+      const job = await getJob(id);
+      if (!job) return req.reject(404, `Job ${id} not found`);
+      return JSON.stringify(job);
+    });
+
+    this.on('cancelJob', async req => {
+      const id = req.data.jobId;
+      const user = getUserId(req);
+      try {
+        const out = await cancelJob(id, audit, user);
+        return JSON.stringify(out);
+      } catch (err) {
+        return req.reject(400, err.message);
+      }
+    });
+
+    this.on('resumeJob', async req => {
+      const id = req.data.jobId;
+      const user = getUserId(req);
+      const masters = loadMasters();
+      try {
+        const out = await resumeJob(id, { masters, audit, user });
+        return JSON.stringify(out);
+      } catch (err) {
+        return req.reject(400, err.message);
+      }
+    });
+
+    this.on('getS4Results', async req => {
+      const data = await getS4ResultsQuery(req.data);
+      return JSON.stringify(data);
+    });
+
+    this.on('getReviewQueue', async req => {
+      const data = await getReviewQueueQuery(req.data);
+      return JSON.stringify(data);
+    });
+
+    this.on('getCheckHistory', async req => {
+      const data = await getCheckHistoryQuery(req.data);
+      return JSON.stringify(data);
+    });
+
+    this.on('getActivityLogs', async req => {
+      const data = await getActivityLogsQuery(req.data);
+      return JSON.stringify(data);
+    });
+
+    this.on('searchDatabase', async req => {
+      const q = String(req.data.query || '').trim();
+      let records;
+      if (!q) {
+        records = await cds.run(SELECT.from(E.Posted).orderBy('postedAt desc').limit(50));
+      } else {
+        const term = `%${q}%`;
+        records = await cds.run(
+          SELECT.from(E.Posted).where`invoiceNo like ${term} or supplierGstin like ${term} or supplierName like ${term} or description like ${term}`
+        );
+      }
+      const user = getUserId(req);
+      await audit('DATABASE_SEARCH', null, `Searched database ledger for "${q || '*'}" (${records.length} matches)`, {
+        user,
+        fileName: 'ledger',
+        result: `${records.length} matches`,
+      });
+      return JSON.stringify(records);
+    });
+
+    this.on('importToLedger', async req => {
+      const roles = getUserRoles(req);
+      if (roles.includes('Auditor') && !roles.includes('APClerk') && !roles.includes('APController')) {
+        return req.reject(403, 'An auditor cannot import to ledger.');
+      }
+      const { fileName, content } = req.data;
+      const text = String(content || '').replace(/^\uFEFF/, '').trim();
+      if (!text) return req.reject(400, 'The file is empty');
+      let list;
+      try {
+        list = text.startsWith('[') ? JSON.parse(text) : parseCsv(text).map(s4RowToInvoice);
+      } catch (e) {
+        return req.reject(400, 'The file could not be read: ' + e.message);
+      }
+      if (!Array.isArray(list) || !list.length) return req.reject(400, 'The file has no invoice rows');
+      const user = getUserId(req);
+      const masters = loadMasters();
+      let count = 0;
+      for (const raw of list) {
+        const inv = parseInvoice(raw);
+        await insertInvoiceIntoLedger(inv, { blocked: false, user, masters });
+        count++;
+      }
+      await audit('LEDGER_IMPORT', null, `Imported ${count} invoices into database ledger from ${fileName || 'file'}`, {
+        user,
+        fileName: fileName || 'extract.csv',
+        result: `${count} loaded`,
+      });
+      return JSON.stringify({ fileName, count, ok: true });
     });
 
     this.on('postInvoice', async req => {
@@ -1074,7 +1363,7 @@ class FraudService extends cds.ApplicationService {
 
       const masters = loadMasters();
       const inv = parseInvoice(rawPayload);
-      const posted = await cds.run(SELECT.from(E.Posted));
+      const posted = await loadLedgerForInvoices([inv]);
       const result = runRules(inv, {
         masters,
         posted,
@@ -1096,17 +1385,7 @@ class FraudService extends cds.ApplicationService {
         return JSON.stringify({ posted: false, blocked: false, checkId, ...enriched });
       }
       const blocked = result.status === 'HOLD';
-      await cds.run(INSERT.into(E.Posted).entries({
-        invoiceNo: inv.invoiceNo,
-        supplierGstin: inv.supplierGstin,
-        invoiceDate: inv.invoiceDate,
-        total: inv.total,
-        description: inv.description || '',
-        irn: inv.irn || null,
-        blocked,
-        recurringPo: isRecurring(inv, masters),
-        postedAt: new Date().toISOString(),
-      }));
+      await insertInvoiceIntoLedger(inv, { blocked, user, masters });
       await audit('POST', checkId, `Posted ${inv.invoiceNo}${blocked ? ' (payment blocked)' : ''}`, {
         user,
         fileName: inv.fileName || inv.invoiceNo,
