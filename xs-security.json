@@ -1,41 +1,7 @@
 {
   "xsappname": "blus-invoice-agent",
-  "scopes": [
-    {
-      "name": "$XSAPPNAME.APClerk",
-      "description": "AP Clerk: upload invoices, review fields, post clean invoices to ledger"
-    },
-    {
-      "name": "$XSAPPNAME.APController",
-      "description": "AP Controller: review alerts, decide on holds, release payment blocks"
-    },
-    {
-      "name": "$XSAPPNAME.Auditor",
-      "description": "Auditor: read-only access to checks, alerts, audit log, and AI Assistant"
-    }
-  ],
+  "tenant-mode": "dedicated",
+  "scopes": [],
   "attributes": [],
-  "role-templates": [
-    {
-      "name": "APClerk",
-      "description": "AP Clerk: upload and post invoices",
-      "scope-references": [
-        "$XSAPPNAME.APClerk"
-      ]
-    },
-    {
-      "name": "APController",
-      "description": "AP Controller: review alerts, decide and override",
-      "scope-references": [
-        "$XSAPPNAME.APController"
-      ]
-    },
-    {
-      "name": "Auditor",
-      "description": "Auditor: read-only auditing and AI inquiry",
-      "scope-references": [
-        "$XSAPPNAME.Auditor"
-      ]
-    }
-  ]
+  "role-templates": []
 }
