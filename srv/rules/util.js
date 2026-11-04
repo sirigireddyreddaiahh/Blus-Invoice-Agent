@@ -67,7 +67,10 @@ const stateOf = (gstin) => (gstin && gstin.length >= 2 ? gstin.slice(0, 2) : nul
 const num = (v) => (v === undefined || v === null || v === '' ? 0 : Number(v));
 
 function dupKeyOf(inv) {
-  return `${norm(inv.supplierGstin) || norm(inv.supplierId)}|${fiscalYear(inv.invoiceDate)}|${normInvoiceNo(inv.invoiceNo)}`;
+  const supp = norm(inv.supplierGstin || inv.SupplierGSTIN) || norm(inv.supplierId) || norm(inv.InvoicingParty || inv.supplierName);
+  const dateStr = inv.invoiceDate || inv.InvoiceDate || inv.PostingDate || inv.postingDate;
+  const fy = dateStr ? fiscalYear(dateStr) : (inv.FiscalYear || inv.fiscalYear || 'UNKNOWN');
+  return `${supp}|${fy}|${normInvoiceNo(inv.invoiceNo || inv.SupplierInvoice)}`;
 }
 
 function auditHash(idx, ts, checkId, action, detail, prevHash) {

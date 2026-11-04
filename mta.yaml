@@ -36,6 +36,8 @@ modules:
       ALLOW_INVOICE_DATA_TO_LLM: "false"
       CLIENT_DB_LOOKUP_ENABLED: "false"
       TESSDATA_PATH: "/home/vcap/app"
+      SAP_MODE: "live"
+      SAP_API_URL: "https://sandbox.api.sap.com/s4hanacloud/sap/opu/odata/sap/API_SUPPLIERINVOICE_PROCESS_SRV"
     requires:
       - name: blus-invoice-agent-db-hdi
       - name: blus-invoice-agent-auth

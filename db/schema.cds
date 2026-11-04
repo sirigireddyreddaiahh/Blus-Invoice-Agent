@@ -58,6 +58,7 @@ entity Posted : cuid {
   blocked       : Boolean;
   recurringPo   : Boolean;
   postedAt      : String(30);
+  source        : String(20);
 }
 
 // Hash-chained audit trail. ts and hashes are strings so the chain can be re-verified exactly.

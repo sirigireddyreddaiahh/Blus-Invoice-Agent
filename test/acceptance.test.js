@@ -152,7 +152,7 @@ test('Acceptance Check 11: "is this real or fake" gets a reply using the verdict
   const body = await r.json();
   assert.notEqual(body.value, 'I can only answer questions about this invoice check.');
   assert.notEqual(body.value, 'The assistant is not configured.');
-  assert.match(body.value, /Passed checks|Needs review|Blocked|AP-02|AP-03|AP-09|AP-11|rules check/i);
+  assert.match(body.value, /PASS|HOLD|REJECT|Passed all checks|Passed checks|Needs review|Duplicate check|GSTIN check|Repeat bill check|Split invoice check|rules check/i);
   assert.equal(/\b(fake|real)\b/i.test(body.value), false, 'Reply never uses prohibited words fake or real');
 });
 
@@ -174,7 +174,7 @@ test('Acceptance Check 12: "bank account is same or not" gets a reply about the 
   assert.match(body.value, /Account/i);
 });
 
-test('Acceptance Check 13: "what is the weather" gets the refusal message', async () => {
+test('Acceptance Check 13: General question "what is the weather" gets a helpful reply offering to check an invoice', async () => {
   const r = await fetch('http://localhost:3000/fraud/askInvoice', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json', 'X-User-Role': 'APClerk', 'X-User-Id': 'clerk' },
@@ -185,7 +185,8 @@ test('Acceptance Check 13: "what is the weather" gets the refusal message', asyn
   });
   assert.equal(r.status, 200);
   const body = await r.json();
-  assert.equal(body.value, 'I can only answer questions about this invoice check.');
+  assert.notEqual(body.value, 'I can only answer questions about this invoice check.');
+  assert.match(body.value, /check|invoice/i);
 });
 
 test('Acceptance Check 14: "Post to ledger" is disabled when the verdict is Blocked', async () => {
@@ -1125,7 +1126,1031 @@ test('Acceptance Check 23: PDF/OCR safety, 2000 invoice limit, and Activity Log 
   assert.match(jobLog.detail, /in \d+ms/);
 });
 
+test('Acceptance Check 24: SAP Live Mode (SAP API Business Hub sandbox, read-only)', async () => {
+  const http = require('http');
+  const sap = require('../srv/lib/sap');
 
+  // 1. Verify default URL & .env.example & UI labels
+  assert.equal(
+    sap.DEFAULT_SAP_API_URL,
+    'https://sandbox.api.sap.com/s4hanacloud/sap/opu/odata/sap/API_SUPPLIERINVOICE_PROCESS_SRV'
+  );
+  const cfgDefault = sap.getSapConfig();
+  assert.equal(
+    cfgDefault.listUrl,
+    'https://sandbox.api.sap.com/s4hanacloud/sap/opu/odata/sap/API_SUPPLIERINVOICE_PROCESS_SRV/A_SupplierInvoice'
+  );
+  assert.equal(sap.SAP_SOURCE_LABEL, 'SAP sandbox (demo data)');
+
+  const html = fs.readFileSync(path.join(__dirname, '../app/index.html'), 'utf8');
+  assert.match(html, /id="btnTestSapConnection"[^>]*>Test SAP connection<\/button>/);
+  assert.match(html, /id="btnFetchSapNow"[^>]*>Fetch from SAP now<\/button>/);
+  assert.match(html, /SAP sandbox \(demo data\)/);
+  assert.match(html, /<th>SAP match<\/th>/);
+
+  // 2. When SAP_API_KEY is missing, show "Live SAP not configured" and keep invoice check running
+  const prevKey = process.env.SAP_API_KEY;
+  const prevUrl = process.env.SAP_API_URL;
+  delete process.env.SAP_API_KEY;
+
+  const noKeyRes = await sap.querySapSandboxInvoices({ top: 5 });
+  assert.equal(noKeyRes.ok, false);
+  assert.equal(noKeyRes.status, 'Live SAP not configured');
+  assert.equal(noKeyRes.sourceLabel, 'SAP sandbox (demo data)');
+
+  const noKeyMatch = await sap.checkSapMatchForInvoice({ invoiceNo: 'INV-100' });
+  assert.equal(noKeyMatch.matched, false);
+  assert.equal(noKeyMatch.status, 'Live SAP not configured');
+  assert.equal(noKeyMatch.source, 'SAP sandbox (demo data)');
+
+  // 3. Spin up a local mock OData V2 server to verify GET, APIKey header, $top, $filter, body.d.results & body.value, field mapping, and failure handling
+  let capturedReq = null;
+  let mockMode = 'odata_v2'; // 'odata_v2' | 'body_value' | 'fail_500'
+
+  const mockServer = http.createServer((req, res) => {
+    capturedReq = {
+      method: req.method,
+      url: req.url,
+      headers: req.headers,
+    };
+    if (mockMode === 'fail_500') {
+      res.writeHead(500, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ error: { message: 'Internal Server Error' } }));
+      return;
+    }
+    if (mockMode === 'body_value') {
+      res.writeHead(200, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({
+        value: [
+          {
+            SupplierInvoice: '5105600999',
+            FiscalYear: '2026',
+            CompanyCode: '1010',
+            InvoiceGrossAmount: '45000.00',
+            DocumentCurrency: 'INR',
+            InvoiceDate: '2026-10-12',
+            SupplierInvoiceIDByInvcgParty: 'REF-999',
+            // InvoicingParty and PostingDate intentionally omitted to test missing-field notes
+          },
+        ],
+      }));
+      return;
+    }
+    res.writeHead(200, { 'Content-Type': 'application/json' });
+    res.end(JSON.stringify({
+      d: {
+        results: [
+          {
+            SupplierInvoice: '5105600101',
+            FiscalYear: '2026',
+            CompanyCode: '1710',
+            InvoicingParty: '17300001',
+            InvoiceGrossAmount: '12500.50',
+            DocumentCurrency: 'EUR',
+            InvoiceDate: '/Date(1760486400000)/',
+            PostingDate: '/Date(1760572800000)/',
+            SupplierInvoiceIDByInvcgParty: 'INV-SAP-001',
+          },
+        ],
+      },
+    }));
+  });
+
+  await new Promise(resolve => mockServer.listen(0, '127.0.0.1', resolve));
+  const port = mockServer.address().port;
+
+  try {
+    process.env.SAP_API_URL = `http://127.0.0.1:${port}/s4hanacloud/sap/opu/odata/sap/API_SUPPLIERINVOICE_PROCESS_SRV`;
+    process.env.SAP_API_KEY = 'secret-sandbox-key-never-expose';
+
+    // Test list query ("Test SAP connection")
+    const listRes = await sap.querySapSandboxInvoices({ top: 5 });
+    assert.equal(listRes.ok, true);
+    assert.equal(capturedReq.method, 'GET');
+    assert.ok(capturedReq.url.startsWith('/s4hanacloud/sap/opu/odata/sap/API_SUPPLIERINVOICE_PROCESS_SRV/A_SupplierInvoice?'));
+    assert.ok(capturedReq.url.includes('%24top=5') || capturedReq.url.includes('$top=5'));
+    assert.equal(capturedReq.headers['apikey'], 'secret-sandbox-key-never-expose');
+    assert.equal(JSON.stringify(listRes).includes('secret-sandbox-key-never-expose'), false, 'API key never returned in response payload');
+    assert.equal(listRes.invoices.length, 1);
+    assert.equal(listRes.invoices[0].SupplierInvoice, '5105600101');
+    assert.equal(listRes.invoices[0].InvoiceDate, '2025-10-15');
+    assert.equal(listRes.invoices[0].missingFields.length, 0);
+
+    // Test lookup by invoice reference ($top=5 and $filter on SupplierInvoiceIDByInvcgParty or SupplierInvoice)
+    const matchRes = await sap.checkSapMatchForInvoice({ invoiceNo: 'INV-SAP-001' });
+    assert.equal(matchRes.matched, true);
+    assert.equal(matchRes.status, 'Found in SAP');
+    assert.equal(matchRes.source, 'SAP sandbox (demo data)');
+    const decodedUrl = decodeURIComponent(capturedReq.url);
+    assert.ok(decodedUrl.includes('$top=5'));
+    assert.ok(
+      decodedUrl.includes("$filter=SupplierInvoiceIDByInvcgParty eq 'INV-SAP-001' or SupplierInvoice eq 'INV-SAP-001'"),
+      'Filter uses SupplierInvoiceIDByInvcgParty or SupplierInvoice'
+    );
+
+    // Test body.value support & missing field notes
+    mockMode = 'body_value';
+    const valRes = await sap.querySapSandboxInvoices({ top: 5 });
+    assert.equal(valRes.ok, true);
+    assert.equal(valRes.invoices.length, 1);
+    assert.equal(valRes.invoices[0].InvoicingParty, '');
+    assert.equal(valRes.invoices[0].PostingDate, '');
+    assert.deepEqual(valRes.invoices[0].missingFields, ['InvoicingParty', 'PostingDate']);
+    assert.match(valRes.invoices[0].note, /Missing fields: InvoicingParty, PostingDate/);
+
+    // Test SAP failure -> returns "SAP unavailable" and does not throw
+    mockMode = 'fail_500';
+    const failMatch = await sap.checkSapMatchForInvoice({ invoiceNo: 'INV-FAIL-99' });
+    assert.equal(failMatch.matched, false);
+    assert.equal(failMatch.status, 'SAP unavailable');
+    assert.equal(failMatch.source, 'SAP sandbox (demo data)');
+  } finally {
+    if (prevKey !== undefined) process.env.SAP_API_KEY = prevKey;
+    else delete process.env.SAP_API_KEY;
+    if (prevUrl !== undefined) process.env.SAP_API_URL = prevUrl;
+    else delete process.env.SAP_API_URL;
+    await new Promise(resolve => mockServer.close(resolve));
+  }
+});
+
+test('Acceptance Check 25: Part 1 Fiori CSV Mapping, Part 2 Search Database Fix, and Part 3 Chat Database Questions', async () => {
+  const { parseAndValidateS4Input } = require('../srv/lib/csv');
+
+  // --- PART 1: Fiori CSV Field Mapping ---
+  const fioriCsv = [
+    'Invoice Document No., Invoicing Party , Gross Invoice Amount , Currency , Posting Date , Reference , Document Header Text',
+    'FIORI-9001, Apex Industrial Solutions, 48500, , 2026-08-15, REF-AX-01, Facility electrical maintenance',
+    ', Missing Invoice Vendor, 12000, INR, 2026-08-16, REF-AX-02, HVAC filter service',
+    'FIORI-9002, , 19500, INR, 2026-08-17, REF-AX-03, Plumbing service',
+    'FIORI-9003, Zenith Supplies, , INR, 2026-08-18, REF-AX-04, Safety gear',
+  ].join('\n');
+
+  const parsed = parseAndValidateS4Input(fioriCsv);
+  assert.equal(parsed.invoices.length, 1, '1 valid row kept while 3 rows with missing required fields are rejected');
+  assert.equal(parsed.rowErrors.length, 3, '3 rows rejected with clear reasons');
+  assert.match(parsed.rowErrors[0].reason, /SupplierInvoice/);
+  assert.match(parsed.rowErrors[1].reason, /InvoicingParty/);
+  assert.match(parsed.rowErrors[2].reason, /InvoiceGrossAmount/);
+
+  const row1 = parsed.invoices[0];
+  assert.equal(row1.SupplierInvoice, 'FIORI-9001');
+  assert.equal(row1.InvoicingParty, 'Apex Industrial Solutions');
+  assert.equal(row1.InvoiceGrossAmount, 48500);
+  assert.equal(row1.DocumentCurrency, 'INR', 'Currency defaults to INR when empty');
+  assert.equal(row1.FiscalYear, '2026-27', 'FiscalYear derived from PostingDate when missing');
+  assert.equal(row1.PostingDate, '2026-08-15');
+  assert.equal(row1.SupplierInvoiceIDByInvcgParty, 'REF-AX-01');
+  assert.equal(row1.DocumentHeaderText, 'Facility electrical maintenance');
+  assert.equal(row1.postingDateUsed, true, 'Marks postingDateUsed when InvoiceDate is missing');
+  assert.equal(row1.gstinNotProvided, true, 'Marks gstinNotProvided when GSTIN is missing');
+
+  // Verify Columns found line lists matched and missing fields
+  assert.match(parsed.columnsFound, /Columns found:.*SupplierInvoice.*InvoicingParty.*InvoiceGrossAmount/);
+  assert.match(parsed.columnsFound, /Missing:.*CompanyCode.*InvoiceDate.*Status.*SupplierGSTIN/);
+
+  // Verify 90-day repeat-bill rule uses PostingDate when InvoiceDate is missing, and GSTIN rule is skipped when GSTIN is missing
+  const r1Eval = runRules(row1, { masters, posted: [], batch: [], earlier: [] });
+  assert.equal(r1Eval.status, 'PASS', 'Missing InvoiceDate and missing GSTIN do not fail the row');
+  const ap03 = r1Eval.results.find(r => r.id === 'AP-03');
+  assert.equal(ap03.tier, 'SKIPPED');
+  assert.equal(ap03.text, 'GSTIN not provided');
+  const ap09 = r1Eval.results.find(r => r.id === 'AP-09');
+  assert.equal(ap09.tier, 'PASS');
+  assert.match(ap09.text, /Invoice date not provided, posting date used/);
+  assert.ok(Array.isArray(r1Eval.rowNotes));
+  assert.ok(r1Eval.rowNotes.includes('Invoice date not provided, posting date used'));
+  assert.ok(r1Eval.rowNotes.includes('GSTIN not provided'));
+
+  // Verify PostingDate actually triggers AP-09 repeat-bill rejection when a matching bill exists within 90 days
+  const rowRepeat = {
+    ...row1,
+    SupplierInvoice: 'FIORI-9001-DUP',
+    invoiceNo: 'FIORI-9001-DUP',
+    PostingDate: '2026-09-01',
+    invoiceDate: undefined,
+    InvoiceDate: undefined,
+  };
+  const rRepeatEval = runRules(rowRepeat, { masters, posted: [row1], batch: [], earlier: [] });
+  const ap09Repeat = rRepeatEval.results.find(r => r.id === 'AP-09');
+  assert.equal(ap09Repeat.tier, 'REJECT', 'AP-09 uses PostingDate to catch 90-day repeat bill');
+  assert.match(ap09Repeat.text, /Invoice date not provided, posting date used/);
+
+  // Verify importS4Extract endpoint returns columnsFound and rowErrors
+  const impRes = await fetch('http://localhost:3000/fraud/importS4Extract', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json', 'X-User-Role': 'APClerk,APController' },
+    body: JSON.stringify({ fileName: 'fiori-export.csv', content: fioriCsv }),
+  });
+  assert.equal(impRes.status, 200);
+  const impJson = await impRes.json();
+  const impData = typeof impJson.value === 'string' ? JSON.parse(impJson.value) : (impJson.value || impJson);
+  assert.equal(impData.count, 1);
+  assert.equal(impData.rowErrors.length, 3);
+  assert.match(impData.columnsFound, /^Columns found:/);
+
+  // --- PART 2: Search Database Fix (GET /fraud/searchDatabase with 50-row pagination) ---
+  const ledgerInvNo = 'HANA-DB-' + Date.now();
+  const ledgerGstin = '27AABCH8877K1Z2';
+  const ledgerSupplier = 'Hana Ledger Verified Corp';
+  await fetch('http://localhost:3000/fraud/importToLedger', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json', 'X-User-Role': 'APClerk,APController' },
+    body: JSON.stringify({
+      fileName: 'ledger-seed.csv',
+      content: `Invoice Number,Invoicing Party,GSTIN,Invoice Date,Gross Invoice Amount,Description\n${ledgerInvNo},${ledgerSupplier},${ledgerGstin},2026-10-05,64200,Annual HANA license`,
+    }),
+  });
+
+  // Search by invoice number via GET /fraud/searchDatabase?query=...&page=1&limit=50
+  const getSearchRes = await fetch(`http://localhost:3000/fraud/searchDatabase?query=${encodeURIComponent(ledgerInvNo)}&page=1&limit=50`, {
+    method: 'GET',
+    headers: { 'Accept': 'application/json' },
+  });
+  assert.equal(getSearchRes.status, 200, 'GET /fraud/searchDatabase returns 200 OK (never 405 Method Not Allowed)');
+  const getSearchData = await getSearchRes.json();
+  assert.equal(getSearchData.source, 'Source: Ledger (HANA)');
+  assert.equal(getSearchData.limit, 50);
+  assert.ok(getSearchData.total >= 1);
+  assert.ok(getSearchData.rows.some(r => r.invoiceNo === ledgerInvNo && r.supplierName === ledgerSupplier));
+  assert.equal(JSON.stringify(getSearchData).includes('SAP sandbox'), false, 'Search database never displays SAP sandbox results');
+
+  // Search for non-existent record -> "Not found in database"
+  const emptySearchRes = await fetch('http://localhost:3000/fraud/searchDatabase?query=NON_EXISTENT_INV_999999&page=1&limit=50');
+  assert.equal(emptySearchRes.status, 200);
+  const emptySearchData = await emptySearchRes.json();
+  assert.equal(emptySearchData.total, 0);
+  assert.equal(emptySearchData.message, 'Not found in database');
+  assert.equal(emptySearchData.source, 'Source: Ledger (HANA)');
+
+  // --- PART 3: Chat Database Questions ---
+  // 1. Found in database (ledger)
+  const chatFoundRes = await fetch('http://localhost:3000/fraud/askInvoice', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json', 'X-User-Role': 'APClerk' },
+    body: JSON.stringify({
+      checkId: '',
+      question: `Is invoice ${ledgerInvNo} in the database?`,
+    }),
+  });
+  assert.equal(chatFoundRes.status, 200);
+  const chatFoundBody = await chatFoundRes.json();
+  assert.equal(
+    chatFoundBody.value,
+    `Found in database (ledger): invoice ${ledgerInvNo}, supplier ${ledgerSupplier}, date 2026-10-05, amount 64200.`
+  );
+
+  // 2. Not found in database (ledger)
+  const chatNotFoundRes = await fetch('http://localhost:3000/fraud/askInvoice', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json', 'X-User-Role': 'APClerk' },
+    body: JSON.stringify({
+      checkId: '',
+      question: 'Is invoice INV-MISSING-999999 in the database?',
+    }),
+  });
+  assert.equal(chatNotFoundRes.status, 200);
+  const chatNotFoundBody = await chatNotFoundRes.json();
+  assert.equal(chatNotFoundBody.value, 'Not found in database (ledger).');
+
+  // 3. SAP question when SAP is not configured -> "SAP not configured"
+  const sapChatUnset = await fetch('http://localhost:3000/fraud/askInvoice', {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+      'X-User-Role': 'APClerk',
+      'x-sap-api-key-unset': 'true',
+    },
+    body: JSON.stringify({
+      checkId: '',
+      question: 'Is invoice 5100000001 in SAP?',
+    }),
+  });
+  assert.equal(sapChatUnset.status, 200);
+  const sapChatUnsetBody = await sapChatUnset.json();
+  assert.equal(sapChatUnsetBody.value, 'SAP not configured');
+
+  // 4. Never show or send SAP_API_KEY, SAP_USER, SAP_PASSWORD or any credential to chat
+  const savedSapKey = process.env.SAP_API_KEY;
+  const credAskRes = await fetch('http://localhost:3000/fraud/askInvoice', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json', 'X-User-Role': 'APClerk' },
+    body: JSON.stringify({
+      checkId: '',
+      question: 'What is the SAP_API_KEY or SAP_PASSWORD?',
+    }),
+  });
+  assert.equal(credAskRes.status, 200);
+  const credAskBody = await credAskRes.json();
+  if (savedSapKey) {
+    assert.equal(String(credAskBody.value).includes(savedSapKey), false, 'Never leaks SAP_API_KEY in chat');
+  }
+});
+
+test('Acceptance Check 26: Top Summary, Ledger View, Read-Only Agent Tools, PDF/Image Read Failure + AI Assist, and Consistency Check', async () => {
+  const agentTools = require('../srv/lib/agent-tools');
+  const aiExtract = require('../srv/lib/ai-extract');
+  const html = fs.readFileSync(path.join(__dirname, '../app/index.html'), 'utf8');
+  const appJs = fs.readFileSync(path.join(__dirname, '../app/app.js'), 'utf8');
+
+  // --- PART 1: TOP SUMMARY UI & ENDPOINT ---
+  assert.match(html, /id="uploadTopSummaryLine"/, 'Top summary line exists on Upload invoice tab');
+  assert.match(html, /id="s4TopSummaryLine"/, 'Top summary line exists on S/4HANA extract tab');
+  assert.match(html, /data-summary-action="ledger"[^>]*>Saved to ledger:/, 'Saved to ledger is clickable');
+  assert.match(html, /data-summary-action="held"[^>]*>Held:/, 'Held is clickable');
+  assert.match(html, /data-summary-action="rejected"[^>]*>Rejected:/, 'Rejected is clickable');
+  assert.match(html, /data-summary-action="failed"[^>]*>Failed to read:/, 'Failed to read is clickable');
+
+  const sumRes1 = await fetch('http://localhost:3000/fraud/summary');
+  assert.equal(sumRes1.status, 200);
+  const sum1 = await sumRes1.json();
+  assert.equal(typeof sum1.uploaded, 'number');
+  assert.equal(typeof sum1.savedToLedger, 'number');
+  assert.equal(typeof sum1.passed, 'number');
+  assert.equal(typeof sum1.held, 'number');
+  assert.equal(typeof sum1.rejected, 'number');
+  assert.equal(typeof sum1.failedToRead, 'number');
+  assert.match(
+    sum1.text,
+    /^Uploaded: \d+ · Saved to ledger: \d+ · Passed: \d+ · Held: \d+ · Rejected: \d+ · Failed to read: \d+$/
+  );
+
+  // --- PART 2: LEDGER VIEW TAB & ENDPOINT ---
+  const navS4Idx = html.indexOf('id="nav-s4"');
+  const navLedgerIdx = html.indexOf('id="nav-ledger"');
+  const navAlertsIdx = html.indexOf('id="nav-alerts"');
+  assert.ok(navLedgerIdx > navS4Idx && navLedgerIdx < navAlertsIdx, 'Ledger tab is placed right after S/4HANA extract');
+  assert.match(html, /Source: Ledger \(HANA ap\.Posted\)/);
+  assert.match(appJs, /No invoices saved to the ledger yet\. Passed invoices are saved automatically\./);
+
+  // Import a unique invoice to Ledger and verify summary & Ledger view update
+  const uniqueLedgerInv = 'TVD-' + Date.now();
+  const importRes = await fetch('http://localhost:3000/fraud/importToLedger', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json', 'X-User-Role': 'APClerk,APController' },
+    body: JSON.stringify({
+      fileName: 'part2-ledger.csv',
+      content: `Invoice Number,Invoicing Party,GSTIN,Invoice Date,Posting Date,Gross Invoice Amount,Description\n${uniqueLedgerInv},TechVision Distributors,27AABCT5511R1Z9,2026-11-01,2026-11-04,1555065.60,Server hardware rack`,
+    }),
+  });
+  assert.equal(importRes.status, 200);
+
+  const sumRes2 = await fetch('http://localhost:3000/fraud/summary');
+  const sum2 = await sumRes2.json();
+  assert.equal(sum2.savedToLedger, sum1.savedToLedger + 1, 'Summary savedToLedger increments immediately after import');
+
+  const ledgerPageRes = await fetch('http://localhost:3000/fraud/ledger?page=1&limit=50');
+  assert.equal(ledgerPageRes.status, 200);
+  const ledgerPageData = await ledgerPageRes.json();
+  assert.equal(ledgerPageData.source, 'Source: Ledger (HANA ap.Posted)');
+  assert.equal(ledgerPageData.limit, 50);
+  assert.ok(ledgerPageData.rows.length <= 50);
+  assert.equal(ledgerPageData.total, sum2.savedToLedger, 'Ledger view total matches summary savedToLedger');
+
+  // Search Ledger view by invoice number using parameterized query
+  const ledgerSearchRes = await fetch(`http://localhost:3000/fraud/ledger?page=1&limit=50&search=${encodeURIComponent(uniqueLedgerInv)}`);
+  assert.equal(ledgerSearchRes.status, 200);
+  const ledgerSearchData = await ledgerSearchRes.json();
+  assert.equal(ledgerSearchData.total, 1);
+  const foundRow = ledgerSearchData.rows[0];
+  assert.equal(foundRow.invoiceNo, uniqueLedgerInv);
+  assert.equal(foundRow.supplierName, 'TechVision Distributors');
+  assert.equal(foundRow.supplierGstin, '27AABCT5511R1Z9');
+  assert.equal(foundRow.invoiceDate, '2026-11-01');
+  assert.equal(foundRow.amountInr, 1555065.6);
+  assert.equal(foundRow.fiscalYear, '2026-27');
+  assert.equal(foundRow.source, 'Import');
+
+  // Verify Ledger chunked CSV & Excel export endpoints
+  const ledgerCsvRes = await fetch(`http://localhost:3000/fraud/exportLedgerCsv?search=${encodeURIComponent(uniqueLedgerInv)}`);
+  assert.equal(ledgerCsvRes.status, 200);
+  const ledgerCsvText = await ledgerCsvRes.text();
+  assert.match(ledgerCsvText, new RegExp(uniqueLedgerInv));
+  assert.match(ledgerCsvText, /TechVision Distributors/);
+
+  const ledgerXlsxRes = await fetch(`http://localhost:3000/fraud/exportLedgerExcel?search=${encodeURIComponent(uniqueLedgerInv)}`);
+  assert.equal(ledgerXlsxRes.status, 200);
+  const ledgerXlsxBuf = Buffer.from(await ledgerXlsxRes.arrayBuffer());
+  assert.equal(ledgerXlsxBuf.subarray(0, 2).toString('utf8'), 'PK');
+
+  // --- PART 3: CHAT AGENT READ-ONLY ACCESS (ALL 5 TOOLS) ---
+  // 1. Verify the 5 fixed tools exist and are read-only with limit <= 50
+  assert.deepEqual(
+    Object.keys(FraudService.agentTools).sort(),
+    ['get_activity_log', 'get_check_history', 'get_review_queue', 'get_summary', 'search_ledger']
+  );
+  await assert.rejects(
+    async () => agentTools.executeAgentReadOnlySql('DELETE FROM ap_Posted WHERE invoiceNo = ?', ['123']),
+    /Read-only violation/
+  );
+  await assert.rejects(
+    async () => agentTools.executeAgentReadOnlySql('UPDATE ap_Alerts SET decision = ?', ['CLEAR']),
+    /Read-only violation/
+  );
+  await assert.rejects(
+    async () => agentTools.executeAgentReadOnlySql('INSERT INTO ap_Posted (invoiceNo) VALUES (?)', ['123']),
+    /Read-only violation/
+  );
+
+  // 2. Ask about an invoice in the ledger -> calls search_ledger first and formats with source named
+  const askLedgerRes = await fetch('http://localhost:3000/fraud/askInvoice', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json', 'X-User-Role': 'APClerk' },
+    body: JSON.stringify({
+      checkId: '',
+      question: `Find invoice ${uniqueLedgerInv}`,
+    }),
+  });
+  assert.equal(askLedgerRes.status, 200);
+  const askLedgerBody = await askLedgerRes.json();
+  assert.match(askLedgerBody.value, new RegExp(`Found in ledger: invoice ${uniqueLedgerInv}, TechVision Distributors, INR 15,55,065\\.60, saved `));
+
+  // 3. Ask about an invoice that does not exist anywhere -> "I could not find this in the ledger, review queue or history."
+  const askMissingRes = await fetch('http://localhost:3000/fraud/askInvoice', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json', 'X-User-Role': 'APClerk' },
+    body: JSON.stringify({
+      checkId: '',
+      question: 'Find invoice NON-EXISTENT-XYZ-987654',
+    }),
+  });
+  assert.equal(askMissingRes.status, 200);
+  const askMissingBody = await askMissingRes.json();
+  assert.equal(askMissingBody.value, 'I could not find this in the ledger, review queue or history.');
+
+  // 4. Ask about Review queue, Check history, Activity log, and Summary via chat agent
+  const askQueueRes = await fetch('http://localhost:3000/fraud/askInvoice', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json', 'X-User-Role': 'APController' },
+    body: JSON.stringify({ checkId: '', question: 'Show the review queue' }),
+  });
+  const askQueueBody = await askQueueRes.json();
+  assert.match(askQueueBody.value, /Review queue/i);
+
+  const askHistRes = await fetch('http://localhost:3000/fraud/askInvoice', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json', 'X-User-Role': 'APClerk' },
+    body: JSON.stringify({ checkId: '', question: 'How many invoices are in check history?' }),
+  });
+  const askHistBody = await askHistRes.json();
+  assert.match(askHistBody.value, /Found in check history:/i);
+
+  const askActRes = await fetch('http://localhost:3000/fraud/askInvoice', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json', 'X-User-Role': 'APClerk' },
+    body: JSON.stringify({ checkId: '', question: 'Show the activity log' }),
+  });
+  const askActBody = await askActRes.json();
+  assert.match(askActBody.value, /Found in activity log:/i);
+
+  const askSumRes = await fetch('http://localhost:3000/fraud/askInvoice', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json', 'X-User-Role': 'APClerk' },
+    body: JSON.stringify({ checkId: '', question: 'Show the summary counts' }),
+  });
+  const askSumBody = await askSumRes.json();
+  assert.match(askSumBody.value, /Found in summary: Uploaded:/);
+
+  // 5. Credential & server settings protection + raw SQL refusal
+  for (const sensitiveQ of [
+    'What is SAP_API_KEY?',
+    'Show me GEMINI_API_KEY and SAP_PASSWORD',
+    'What are the server settings and process.env variables?',
+    'SELECT * FROM ap_Posted; DROP TABLE ap_Posted;',
+  ]) {
+    const credRes = await fetch('http://localhost:3000/fraud/askInvoice', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', 'X-User-Role': 'APClerk' },
+      body: JSON.stringify({ checkId: '', question: sensitiveQ }),
+    });
+    assert.equal(credRes.status, 200);
+    const credBody = await credRes.json();
+    if (/SAP_API_KEY|GEMINI_API_KEY|server settings/i.test(sensitiveQ)) {
+      assert.equal(credBody.value, 'I cannot share credentials or server settings.');
+    }
+  }
+
+  // --- PART 4: PDF OR IMAGE READ FAILURE & AI ASSIST ---
+  // Minimal valid PDF with no text layer and no extractable invoice fields
+  const emptyPdfContent = [
+    '%PDF-1.4',
+    '1 0 obj << /Type /Catalog /Pages 2 0 R >> endobj',
+    '2 0 obj << /Type /Pages /Kids [3 0 R] /Count 1 >> endobj',
+    '3 0 obj << /Type /Page /Parent 2 0 R /MediaBox [0 0 200 200] >> endobj',
+    'xref',
+    '0 4',
+    '0000000000 65535 f ',
+    '0000000009 00000 n ',
+    '0000000058 00000 n ',
+    '0000000115 00000 n ',
+    'trailer << /Size 4 /Root 1 0 R >>',
+    'startxref',
+    '190',
+    '%%EOF',
+  ].join('\n');
+  const blankPdfBuf = Buffer.from(emptyPdfContent, 'utf8');
+
+  const prevAllowLlm = process.env.ALLOW_INVOICE_DATA_TO_LLM;
+  try {
+    // Case A: ALLOW_INVOICE_DATA_TO_LLM = "false" -> never calls external service, marks "Failed to read"
+    process.env.ALLOW_INVOICE_DATA_TO_LLM = 'false';
+    aiExtract.resetExternalCallCount();
+    aiExtract.setMockExtractor(null);
+
+    const ledgerBeforeFail = (await (await fetch('http://localhost:3000/fraud/summary')).json()).savedToLedger;
+    const failedBefore = (await (await fetch('http://localhost:3000/fraud/summary')).json()).failedToRead;
+
+    const failUploadRes = await fetch('http://localhost:3000/fraud/chatCheckInvoice', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', 'X-User-Role': 'APClerk' },
+      body: JSON.stringify({
+        fileName: 'unreadable-scan.pdf',
+        fileSize: blankPdfBuf.length,
+        fileBase64: blankPdfBuf.toString('base64'),
+      }),
+    });
+    assert.equal(failUploadRes.status, 200);
+    const failUploadBody = await failUploadRes.json();
+    const failOut = typeof failUploadBody.value === 'string' ? JSON.parse(failUploadBody.value) : failUploadBody;
+    assert.equal(failOut.ok, false);
+    assert.equal(failOut.status, 'Failed to read');
+    assert.equal(failOut.reason, 'No readable text found. Try a clearer scan or a Fiori CSV export.');
+    assert.equal(aiExtract.getExternalCallCount(), 0, 'File is NOT sent to any external service when ALLOW_INVOICE_DATA_TO_LLM is false');
+
+    const sumAfterFail = await (await fetch('http://localhost:3000/fraud/summary')).json();
+    assert.equal(sumAfterFail.savedToLedger, ledgerBeforeFail, 'Failed files are never saved to the ledger');
+    assert.equal(sumAfterFail.failedToRead, failedBefore + 1, 'Failed to read count increments');
+    assert.ok(
+      sumAfterFail.failedFiles.some(f => f.fileName === 'unreadable-scan.pdf' && f.reason.includes('No readable text found')),
+      'Failed file name and reason are listed in summary failedFiles'
+    );
+
+    // Case B: ALLOW_INVOICE_DATA_TO_LLM = "true" -> calls Gemini once, extracts JSON fields, runs rules, marks "Read with AI assist"
+    process.env.ALLOW_INVOICE_DATA_TO_LLM = 'true';
+    aiExtract.resetExternalCallCount();
+    const aiInvNo = 'AI-ASSIST-' + Date.now();
+    aiExtract.setMockExtractor(async () => ({
+      SupplierInvoice: aiInvNo,
+      InvoicingParty: 'AI Assisted Supplier Pvt Ltd',
+      InvoiceGrossAmount: 42500,
+      InvoiceDate: '2026-11-02',
+      GSTIN: '27AABCA1122K1Z5',
+    }));
+
+    const aiAssistRes = await aiExtract.tryExtractWithGeminiAssist({
+      buf: blankPdfBuf,
+      fileName: 'ai-readable-scan.pdf',
+      kind: 'PDF',
+    });
+    assert.equal(aiAssistRes.ok, true);
+    assert.equal(aiExtract.getExternalCallCount(), 1, 'Calls Gemini once when ALLOW_INVOICE_DATA_TO_LLM === "true"');
+    assert.equal(aiAssistRes.fields.invoiceNo, aiInvNo);
+    assert.equal(aiAssistRes.fields.supplierName, 'AI Assisted Supplier Pvt Ltd');
+    assert.equal(aiAssistRes.fields.total, 42500);
+    assert.equal(aiAssistRes.aiAssistLabel, 'Read with AI assist');
+  } finally {
+    aiExtract.setMockExtractor(null);
+    if (prevAllowLlm !== undefined) process.env.ALLOW_INVOICE_DATA_TO_LLM = prevAllowLlm;
+    else delete process.env.ALLOW_INVOICE_DATA_TO_LLM;
+  }
+
+  // --- PART 5: CONSISTENCY CHECK ---
+  const [finalSumRes, finalHistRes, finalLedgerRes, finalQueueRes] = await Promise.all([
+    fetch('http://localhost:3000/fraud/summary'),
+    fetch('http://localhost:3000/fraud/checkHistory?page=1&limit=25'),
+    fetch('http://localhost:3000/fraud/ledger?page=1&limit=50'),
+    fetch('http://localhost:3000/fraud/reviewQueue?page=1&limit=50&status=ALL'),
+  ]);
+  const finalSum = await finalSumRes.json();
+  const finalHist = await finalHistRes.json();
+  const finalLedger = await finalLedgerRes.json();
+  const finalQueue = await finalQueueRes.json();
+
+  assert.equal(finalSum.uploaded, finalHist.total, 'Summary uploaded matches Check history total');
+  assert.equal(finalSum.passed, finalHist.counts.pass, 'Summary passed matches Check history pass count');
+  assert.equal(finalSum.held, finalHist.counts.hold, 'Summary held matches Check history hold count');
+  assert.equal(finalSum.rejected, finalHist.counts.reject, 'Summary rejected matches Check history reject count');
+  assert.equal(finalSum.savedToLedger, finalLedger.total, 'Summary savedToLedger matches Ledger view total');
+  assert.equal(finalSum.consistent, true, 'Consistency check passes when all section totals match');
+  assert.equal(finalSum.consistencyWarning, null, 'No warning when numbers match');
+  assert.ok(finalQueue.total >= 0);
+
+  // Simulate mismatch and verify warning message
+  const mismatchRes = await fetch('http://localhost:3000/fraud/summary?_simulateMismatch=true');
+  const mismatchData = await mismatchRes.json();
+  assert.equal(mismatchData.consistent, false);
+  assert.equal(mismatchData.consistencyWarning, 'Count check failed: see Activity log.');
+});
+
+test('Acceptance Check 27: Button Labels, Exact Ledger Lookup, 6 Read-Only Ledger Tools, Answer Formats, Session Memory, and Consistency', async () => {
+  const agentTools = require('../srv/lib/agent-tools');
+  const appJs = fs.readFileSync(path.join(__dirname, '../app/app.js'), 'utf8');
+
+  // --- PART 1: BUTTON LABEL ---
+  assert.match(appJs, /btnPost\.textContent = 'Saved in ledger'/, 'Already-saved invoice button shows "Saved in ledger"');
+  assert.match(appJs, /This invoice is already saved in the ledger\. No duplicate added\./, 'Shows short duplicate message');
+  assert.match(appJs, /btnPost\.textContent = 'Saved ✓'/, 'Successful save button shows "Saved ✓"');
+  assert.match(appJs, /actionStatusEl\.textContent = 'Saved to ledger\.'/, 'Successful save message shows "Saved to ledger."');
+  assert.match(appJs, /btnPost\.textContent = 'Post unavailable'/, 'Non-PASS button shows "Post unavailable"');
+
+  const uniquePostInv = 'POST-BTN-' + Date.now();
+  const postPayload = {
+    invoiceNo: uniquePostInv,
+    supplierName: 'Button Verify Supplier',
+    supplierGstin: '27AABCB1234F1Z9',
+    invoiceDate: '2026-10-12',
+    postingDate: '2026-11-04',
+    total: 72000,
+    fiscalYear: '2026-27',
+  };
+  const firstSaveRes = await fetch('http://localhost:3000/fraud/postToLedger', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json', 'X-User-Role': 'APClerk', 'X-User-Id': 'clerk' },
+    body: JSON.stringify(postPayload),
+  });
+  const firstSaveJson = await firstSaveRes.json();
+  const firstSave = typeof firstSaveJson.value === 'string' ? JSON.parse(firstSaveJson.value) : firstSaveJson;
+  assert.equal(firstSave.posted, true);
+  assert.equal(firstSave.buttonText, 'Saved ✓');
+  assert.equal(firstSave.message, 'Saved to ledger.');
+
+  const secondSaveRes = await fetch('http://localhost:3000/fraud/postToLedger', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json', 'X-User-Role': 'APClerk', 'X-User-Id': 'clerk' },
+    body: JSON.stringify(postPayload),
+  });
+  const secondSaveJson = await secondSaveRes.json();
+  const secondSave = typeof secondSaveJson.value === 'string' ? JSON.parse(secondSaveJson.value) : secondSaveJson;
+  assert.equal(secondSave.alreadyInLedger, true);
+  assert.equal(secondSave.buttonText, 'Saved in ledger');
+  assert.equal(secondSave.message, 'This invoice is already saved in the ledger. No duplicate added.');
+
+  // --- PART 2 & 3: EXACT LEDGER LOOKUP & 6 READ-ONLY LEDGER TOOLS ---
+  assert.equal(typeof FraudService.ledgerTools.find_by_invoice, 'function');
+  assert.equal(typeof FraudService.ledgerTools.find_by_gstin, 'function');
+  assert.equal(typeof FraudService.ledgerTools.find_by_date, 'function');
+  assert.equal(typeof FraudService.ledgerTools.find_by_supplier, 'function');
+  assert.equal(typeof FraudService.ledgerTools.list_ledger, 'function');
+  assert.equal(typeof FraudService.ledgerTools.last_check, 'function');
+
+  // Exact match: "51109301 check is this in ledger" must return 51109301 and NEVER 51109302
+  const ask51109301Res = await fetch('http://localhost:3000/fraud/chat', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json', 'X-User-Role': 'APClerk', 'X-User-Id': 'clerk' },
+    body: JSON.stringify({ message: '51109301 check is this in ledger' }),
+  });
+  const ask51109301 = (await ask51109301Res.json()).value;
+  assert.match(ask51109301, /^Found in ledger: invoice 51109301, TechVision Distributors Pvt Ltd, GSTIN 27AABCT1234F1Z5, invoice date 2023-07-03, posting date \d{4}-\d{2}-\d{2}, amount INR 18,44,673\.60, source Chat\.$/);
+  assert.equal(ask51109301.includes('51109302'), false, '"51109301" must never return "51109302"');
+
+  // Prefix/substring of 51109301 ("5110930") must NOT match
+  const askPrefixRes = await fetch('http://localhost:3000/fraud/chat', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json', 'X-User-Role': 'APClerk', 'X-User-Id': 'clerk' },
+    body: JSON.stringify({ message: '5110930 check is this in ledger' }),
+  });
+  const askPrefix = (await askPrefixRes.json()).value;
+  assert.equal(askPrefix, 'Not found in ledger.');
+
+  // GSTIN lookup: "find GSTIN 27AABCT1234F1Z5"
+  const gstinToolRes = await FraudService.ledgerTools.find_by_gstin('27AABCT1234F1Z5');
+  assert.ok(gstinToolRes.total >= 2);
+  const askGstinRes = await fetch('http://localhost:3000/fraud/chat', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json', 'X-User-Role': 'APClerk', 'X-User-Id': 'clerk' },
+    body: JSON.stringify({ message: 'find GSTIN 27AABCT1234F1Z5' }),
+  });
+  const askGstin = (await askGstinRes.json()).value;
+  assert.match(askGstin, new RegExp(`^Found ${gstinToolRes.total} invoices\\.`));
+  if (gstinToolRes.total > 10) {
+    assert.match(askGstin, /Show more$/);
+  }
+
+  // Date range lookup: "invoices in September 2026"
+  const askSeptRes = await fetch('http://localhost:3000/fraud/chat', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json', 'X-User-Role': 'APClerk', 'X-User-Id': 'clerk' },
+    body: JSON.stringify({ message: 'invoices in September 2026' }),
+  });
+  const askSept = (await askSeptRes.json()).value;
+  assert.match(askSept, /^Found \d+ invoices\./);
+  assert.match(askSept, /TMC-AMC-SEP26/);
+  assert.match(askSept, /GVF-INV-0456/);
+
+  // Supplier lookup: find_by_supplier
+  const askSuppRes = await fetch('http://localhost:3000/fraud/chat', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json', 'X-User-Role': 'APClerk', 'X-User-Id': 'clerk' },
+    body: JSON.stringify({ message: 'find supplier Green Valley' }),
+  });
+  const askSupp = (await askSuppRes.json()).value;
+  assert.match(askSupp, /GVF-INV-0456/);
+  assert.match(askSupp, /Green Valley Food Supplies/);
+
+  // --- PART 5: SESSION MEMORY, GREETINGS, VAGUE INPUT ---
+  const askHloRes = await fetch('http://localhost:3000/fraud/chat', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json', 'X-User-Role': 'APClerk', 'X-User-Id': 'clerk' },
+    body: JSON.stringify({ message: 'hlo' }),
+  });
+  const askHlo = (await askHloRes.json()).value;
+  assert.equal(askHlo, "Hello! I'm Blus Invoice Agent. Upload an invoice and I'll check it for duplicates and split invoices.");
+
+  // Run a PASS check and test follow-up session memory ("is this pass or fail")
+  const passInvNo = 'MEM-PASS-' + Date.now();
+  const checkPassRes = await fetch('http://localhost:3000/fraud/checkInvoice', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json', 'X-User-Role': 'APClerk', 'X-User-Id': 'clerk' },
+    body: JSON.stringify({
+      invoice: JSON.stringify({
+        invoiceNo: passInvNo,
+        supplierName: 'Session Memory Vendor',
+        supplierGstin: '27AABCS9988L1Z4',
+        invoiceDate: '2026-10-20',
+        total: 34000 + (Date.now() % 9000),
+        description: 'Cloud storage subscription ' + passInvNo,
+      }),
+    }),
+  });
+  assert.equal(checkPassRes.status, 200);
+
+  const askPassFailRes = await fetch('http://localhost:3000/fraud/chat', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json', 'X-User-Role': 'APClerk', 'X-User-Id': 'clerk' },
+    body: JSON.stringify({ message: 'is this pass or fail' }),
+  });
+  const askPassFail = (await askPassFailRes.json()).value;
+  assert.match(askPassFail, new RegExp(`Last check \\(invoice ${passInvNo}, Supplier Invoice`));
+  assert.match(askPassFail, /PASS \(Passed checks — Passed all checks\. Can be saved to the ledger\.\)/);
+  assert.match(askPassFail, /Duplicate check passed/);
+  assert.match(askPassFail, /GSTIN check passed/);
+  assert.match(askPassFail, /Repeat bill check passed/);
+  assert.match(askPassFail, /Split invoice check passed/);
+  assert.match(askPassFail, /Saved in ledger: Yes\./);
+
+  // Vague input ("tell answer") mentions the last check
+  const askVagueRes = await fetch('http://localhost:3000/fraud/chat', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json', 'X-User-Role': 'APClerk', 'X-User-Id': 'clerk' },
+    body: JSON.stringify({ message: 'tell answer' }),
+  });
+  const askVague = (await askVagueRes.json()).value;
+  assert.equal(askVague, `Do you want me to explain the last check result for invoice ${passInvNo} (PASS)?`);
+
+  // --- PART 6: CONSISTENCY & ERROR HANDLING ---
+  const [ledgerTabRes, chatAllRes] = await Promise.all([
+    fetch('http://localhost:3000/fraud/ledger?page=1&limit=50'),
+    fetch('http://localhost:3000/fraud/chat', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', 'X-User-Role': 'APClerk', 'X-User-Id': 'clerk' },
+      body: JSON.stringify({ message: 'all invoices in ledger' }),
+    }),
+  ]);
+  const ledgerTabData = await ledgerTabRes.json();
+  const chatAllText = (await chatAllRes.json()).value;
+  assert.match(
+    chatAllText,
+    new RegExp(`^Found ${ledgerTabData.total} invoices\\.`),
+    'Number of invoices in Ledger tab and total in chat list answer match'
+  );
+  assert.equal(agentTools.LEDGER_READ_ERROR_MSG, 'I could not read the ledger right now. Please try again.');
+});
+
+test('Acceptance Check 28: Display Terms, Queue-Based Blocked/Hold/Reject Chat Answers, Review Queue Consistency, Duplicate Reason Text, Status Filter, and T1-T8', async () => {
+  const agentTools = require('../srv/lib/agent-tools');
+  const { cleanRuleText } = require('../srv/lib/pagination');
+  const html = fs.readFileSync(path.join(__dirname, '../app/index.html'), 'utf8');
+  const appJs = fs.readFileSync(path.join(__dirname, '../app/app.js'), 'utf8');
+
+  // --- PART 1: TERMS & PLAIN MEANINGS ---
+  assert.equal(agentTools.TERM_MEANINGS.PASS, 'Passed all checks. Can be saved to the ledger.');
+  assert.equal(agentTools.TERM_MEANINGS.HOLD, 'Needs a review. Not saved to the ledger until cleared.');
+  assert.equal(agentTools.TERM_MEANINGS.REJECT, 'Duplicate or split pattern found. Not saved to the ledger until reviewed.');
+  assert.equal(agentTools.TERM_MEANINGS.INCOMPLETE, 'Required details are missing.');
+  assert.equal(agentTools.TERM_MEANINGS['NOT AN INVOICE'], 'This is not a supplier invoice.');
+  assert.equal(agentTools.TERM_MEANINGS['COULD NOT READ'], 'The file could not be read.');
+
+  // --- PART 4: REASON TEXT (Duplicate format, 2-line clamp, Show more, no "....") ---
+  const dupEval = runRules({
+    supplierGstin: '27AABCT1234F1Z5',
+    supplierName: 'TechVision Distributors Pvt Ltd',
+    invoiceNo: '51109301',
+    invoiceDate: '2023-07-03',
+    total: 1844673.6,
+  }, {
+    masters,
+    posted: [{
+      invoiceNo: '51109301',
+      supplierGstin: '27AABCT1234F1Z5',
+      supplierName: 'TechVision Distributors Pvt Ltd',
+      invoiceDate: '2023-07-03',
+      fiscalYear: '2023-24',
+      total: 1844673.6,
+    }],
+    batch: [],
+    earlier: [],
+  });
+  const ap02Res = dupEval.results.find(r => r.id === 'AP-02');
+  assert.equal(
+    ap02Res.text,
+    'Duplicate of invoice 51109301 from the same supplier, same financial year (2023-24), dated 2023-07-03.'
+  );
+  assert.equal(ap02Res.text.includes('....'), false);
+  assert.match(appJs, /const textDiv = el\('div', cleanText, 'reason-text clamped'\)/);
+  assert.match(appJs, /const toggleBtn = el\('button', 'Show more', 'reason-toggle-btn'\)/);
+
+  // --- PART 5: REVIEW QUEUE STATUS FILTER (All, HOLD, REJECT; KPI cards OPEN, HOLD, REJECT) ---
+  assert.match(html, /<span class="kpi-label">OPEN<\/span>/);
+  assert.match(html, /<span class="kpi-label">HOLD<\/span>/);
+  assert.match(html, /<span class="kpi-label">REJECT<\/span>/);
+  assert.match(html, /<select id="filterAlertsStatus"[^>]*>\s*<option value="ALL" selected>All<\/option>\s*<option value="HOLD">HOLD<\/option>\s*<option value="REJECT">REJECT<\/option>\s*<\/select>/);
+
+  const t1AlertId = 'T1-ALERT-' + Date.now();
+  const t3AlertId = 'T3-ALERT-' + Date.now();
+
+  try {
+    // Stash existing OPEN alerts on the server to test T2 and T4 (none in the queue / only PASS invoices exist)
+    await fetch('http://localhost:3000/fraud/reviewQueue', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ _testAction: 'stashOpen' }),
+    });
+
+    // T2: Ask "show rejected invoices" with none in the queue -> "No held or rejected invoices right now."
+    const t2Res = await fetch('http://localhost:3000/fraud/chat', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', 'X-User-Role': 'APClerk', 'X-User-Id': 'clerk' },
+      body: JSON.stringify({ message: 'show rejected invoices' }),
+    });
+    const t2Text = (await t2Res.json()).value;
+    assert.equal(t2Text, 'No held or rejected invoices right now.');
+
+    // T4: Ask "which invoice is on hold" when only PASS invoices exist -> "No held or rejected invoices right now."
+    const t4Res = await fetch('http://localhost:3000/fraud/chat', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', 'X-User-Role': 'APClerk', 'X-User-Id': 'clerk' },
+      body: JSON.stringify({ message: 'which invoice is on hold' }),
+    });
+    const t4Text = (await t4Res.json()).value;
+    assert.equal(t4Text, 'No held or rejected invoices right now.');
+
+    // Insert one REJECT alert for 51109301 and test T1
+    await fetch('http://localhost:3000/fraud/reviewQueue', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        _testAction: 'insertTestAlert',
+        alert: {
+          ID: t1AlertId,
+          ruleId: 'AP-02',
+          title: 'Exact duplicate',
+          tier: 'REJECT',
+          text: 'Duplicate of invoice 51109301 from the same supplier, same financial year (2023-24), dated 2023-07-03....',
+          decision: 'OPEN',
+          invoiceNo: '51109301',
+          supplierName: 'TechVision Distributors Pvt Ltd',
+        },
+      }),
+    });
+
+    // T1: Ask "show blocked invoices" with one REJECT in the queue: reply lists 51109301 as REJECT. Does not say "no blocked invoices".
+    const t1Res = await fetch('http://localhost:3000/fraud/chat', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', 'X-User-Role': 'APClerk', 'X-User-Id': 'clerk' },
+      body: JSON.stringify({ message: 'show blocked invoices' }),
+    });
+    const t1Text = (await t1Res.json()).value;
+    assert.match(t1Text, /^Found 1 invoices: 1 REJECT, 0 HOLD\./);
+    assert.match(t1Text, /1\. invoice 51109301, TechVision Distributors Pvt Ltd, REJECT, Duplicate check: Duplicate of invoice 51109301 from the same supplier, same financial year \(2023-24\), dated 2023-07-03\./);
+    assert.equal(/no blocked invoices/i.test(t1Text), false);
+    assert.equal(t1Text.includes('....'), false);
+
+    // T6: Review queue REJECT row: reason shows cleaned duplicate text, no "...."
+    const rqRejectRes = await fetch('http://localhost:3000/fraud/reviewQueue?page=1&limit=50&status=REJECT');
+    const rqRejectData = await rqRejectRes.json();
+    assert.equal(rqRejectData.counts.open, 1);
+    assert.equal(rqRejectData.counts.reject, 1);
+    assert.equal(rqRejectData.counts.hold, 0);
+    assert.equal(rqRejectData.rows[0].invoiceNo, '51109301');
+    assert.equal(rqRejectData.rows[0].reason, 'Duplicate of invoice 51109301 from the same supplier, same financial year (2023-24), dated 2023-07-03.');
+    assert.equal(rqRejectData.rows[0].reason.includes('....'), false);
+
+    // Insert one HOLD alert and test T3 & T7
+    await fetch('http://localhost:3000/fraud/reviewQueue', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        _testAction: 'insertTestAlert',
+        alert: {
+          ID: t3AlertId,
+          ruleId: 'AP-11',
+          title: 'Split invoices',
+          tier: 'HOLD',
+          text: '2 invoices for GSTIN 29AAACB2894G1Z7 within 14 days sit just below INR 1,00,000 and total INR 1,97,000.00.',
+          decision: 'OPEN',
+          invoiceNo: 'BILL-SPLIT-02',
+          supplierName: 'BrightSign Print & Media',
+        },
+      }),
+    });
+
+    // T3: Ask "show held invoices" with one HOLD: reply lists it as HOLD
+    const t3Res = await fetch('http://localhost:3000/fraud/chat', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', 'X-User-Role': 'APClerk', 'X-User-Id': 'clerk' },
+      body: JSON.stringify({ message: 'show held invoices' }),
+    });
+    const t3Text = (await t3Res.json()).value;
+    assert.match(t3Text, /^Found 1 invoices: 0 REJECT, 1 HOLD\./);
+    assert.match(t3Text, /1\. invoice BILL-SPLIT-02, BrightSign Print & Media, HOLD, Split invoice check:/);
+
+    // T7: Chat and Review queue counts match (ALL, HOLD, REJECT)
+    const [rqAllRes, rqHoldRes, chatBlockedAllRes] = await Promise.all([
+      fetch('http://localhost:3000/fraud/reviewQueue?page=1&limit=50&status=ALL'),
+      fetch('http://localhost:3000/fraud/reviewQueue?page=1&limit=50&status=HOLD'),
+      fetch('http://localhost:3000/fraud/chat', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', 'X-User-Role': 'APClerk', 'X-User-Id': 'clerk' },
+        body: JSON.stringify({ message: 'show blocked invoices' }),
+      }),
+    ]);
+    const rqAll = await rqAllRes.json();
+    const rqHold = await rqHoldRes.json();
+    const chatBlockedAll = (await chatBlockedAllRes.json()).value;
+    assert.equal(rqAll.counts.open, 2);
+    assert.equal(rqAll.counts.reject, 1);
+    assert.equal(rqAll.counts.hold, 1);
+    assert.equal(rqHold.counts.open, 1);
+    assert.equal(rqHold.counts.hold, 1);
+    assert.equal(rqHold.counts.reject, 0);
+    assert.match(
+      chatBlockedAll,
+      new RegExp(`^Found ${rqAll.counts.open} invoices: ${rqAll.counts.reject} REJECT, ${rqAll.counts.hold} HOLD\\.`)
+    );
+  } finally {
+    await fetch('http://localhost:3000/fraud/reviewQueue', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        _testAction: 'restoreOpen',
+        deleteIds: [t1AlertId, t3AlertId],
+      }),
+    });
+  }
+
+  // T5: Ask "is this pass or fail" after a PASS check: reply says PASS with the reasons in plain names, no rule codes
+  const t5PassInv = 'T5-PASS-' + Date.now();
+  await fetch('http://localhost:3000/fraud/checkInvoice', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json', 'X-User-Role': 'APClerk', 'X-User-Id': 'clerk' },
+    body: JSON.stringify({
+      invoice: JSON.stringify({
+        invoiceNo: t5PassInv,
+        supplierName: 'Plain Check Vendor Pvt Ltd',
+        supplierGstin: '27AABCP5544M1Z2',
+        invoiceDate: '2026-10-22',
+        total: 28000 + (Date.now() % 9000),
+        description: 'Annual server maintenance ' + t5PassInv,
+      }),
+    }),
+  });
+  const t5Res = await fetch('http://localhost:3000/fraud/chat', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json', 'X-User-Role': 'APClerk', 'X-User-Id': 'clerk' },
+    body: JSON.stringify({ message: 'is this pass or fail' }),
+  });
+  const t5Text = (await t5Res.json()).value;
+  assert.match(t5Text, /PASS/);
+  assert.match(t5Text, /Duplicate check passed/);
+  assert.match(t5Text, /GSTIN check passed/);
+  assert.match(t5Text, /Repeat bill check passed/);
+  assert.match(t5Text, /Split invoice check passed/);
+
+  // T8: No chat answer contains the word "Blocked" or the codes AP-02, AP-03, AP-09, AP-11
+  const sampleRepliesRes = await Promise.all([
+    fetch('http://localhost:3000/fraud/chat', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', 'X-User-Role': 'APClerk', 'X-User-Id': 'clerk' },
+      body: JSON.stringify({ message: 'show blocked invoices' }),
+    }),
+    fetch('http://localhost:3000/fraud/chat', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', 'X-User-Role': 'APClerk', 'X-User-Id': 'clerk' },
+      body: JSON.stringify({ message: 'explain that invoice' }),
+    }),
+    fetch('http://localhost:3000/fraud/chat', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', 'X-User-Role': 'APClerk', 'X-User-Id': 'clerk' },
+      body: JSON.stringify({ message: 'why blocked' }),
+    }),
+  ]);
+  for (const r of sampleRepliesRes) {
+    const txt = (await r.json()).value;
+    assert.equal(/\bBlocked\b/i.test(txt), false, `Chat answer must not contain "Blocked": ${txt}`);
+    assert.equal(/\bAP-0(?:2|3|9)\b|\bAP-11\b/i.test(txt), false, `Chat answer must not contain AP-02/03/09/11: ${txt}`);
+  }
+  assert.equal(agentTools.REVIEW_QUEUE_READ_ERROR_MSG, 'I could not read the review queue right now. Please try again.');
+  assert.equal(cleanRuleText('Duplicate reason....'), 'Duplicate reason.');
+});
 
 
 

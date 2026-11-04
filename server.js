@@ -7,8 +7,10 @@ const path = require('path');
 const {
   HISTORY_EXPORT_HEADERS,
   S4_EXPORT_HEADERS,
+  LEDGER_EXPORT_HEADERS,
   extractHistoryRowCells,
   extractS4RowCells,
+  extractLedgerRowCells,
   streamCsv,
   streamExcel,
   generateHistoryCsv,
@@ -21,26 +23,48 @@ const {
   getReviewQueueQuery,
   getCheckHistoryQuery,
   getActivityLogsQuery,
+  searchLedgerDatabaseQuery,
+  getLedgerQuery,
+  getSummaryQuery,
 } = require('./srv/lib/pagination');
 
 async function seedPostedIfEmpty() {
+  const U = require('./srv/rules/util');
+  const masters = JSON.parse(fs.readFileSync(path.join(__dirname, 'data/masters.json'), 'utf8'));
   const existing = await cds.run(SELECT.from('ap.Posted'));
-  if (existing && existing.length > 0) return;
+  if (existing && existing.length > 0) {
+    for (const r of existing) {
+      const updates = {};
+      if (!r.fiscalYear && r.invoiceDate) {
+        updates.fiscalYear = U.fiscalYear(r.invoiceDate);
+      }
+      if (!r.source) {
+        updates.source = 'Import';
+      }
+      if (!r.supplierName && r.supplierGstin) {
+        const v = (masters.vendors || []).find(x => x.gstin === r.supplierGstin);
+        if (v) updates.supplierName = v.name;
+      }
+      if (Object.keys(updates).length > 0 && r.ID) {
+        await cds.run(UPDATE('ap.Posted').set(updates).where({ ID: r.ID }));
+      }
+    }
+    return;
+  }
 
   const csvPath = path.join(__dirname, 'db/data/ap-Posted.csv');
   if (!fs.existsSync(csvPath)) return;
   const lines = fs.readFileSync(csvPath, 'utf8').trim().split('\n');
   if (lines.length < 2) return;
   const head = lines[0].split(',').map(s => s.trim());
-  const U = require('./srv/rules/util');
-  const masters = JSON.parse(fs.readFileSync(path.join(__dirname, 'data/masters.json'), 'utf8'));
   const entries = lines.slice(1).map(l => {
     const cells = l.split(',');
     const row = Object.fromEntries(head.map((h, i) => [h, cells[i] === '' ? null : cells[i]]));
     row.total = Number(row.total);
     row.blocked = row.blocked === 'true';
     row.recurringPo = row.recurringPo === 'true';
-    row.fiscalYear = U.fiscalYear(row.invoiceDate);
+    row.fiscalYear = row.fiscalYear || U.fiscalYear(row.invoiceDate);
+    row.source = row.source || 'Import';
     if (!row.supplierName && row.supplierGstin) {
       const v = (masters.vendors || []).find(x => x.gstin === row.supplierGstin);
       if (v) row.supplierName = v.name;
@@ -209,6 +233,61 @@ async function handleExportS4Excel(req, res) {
   }
 }
 
+async function fetchLedgerChunk(filters = {}, offset = 0, limit = 500) {
+  if (Array.isArray(filters.rows)) {
+    return filters.rows.slice(offset, offset + limit);
+  }
+  const search = String(filters.search ?? filters.query ?? '').trim();
+  const whereClauses = [];
+  const params = [];
+  if (search) {
+    const likeTerm = `%${search}%`;
+    whereClauses.push('(invoiceNo LIKE ? OR supplierName LIKE ? OR supplierGstin LIKE ?)');
+    params.push(likeTerm, likeTerm, likeTerm);
+  }
+  const whereSql = whereClauses.length ? `WHERE ${whereClauses.join(' AND ')}` : '';
+  return await cds.run(
+    `SELECT * FROM ap_Posted ${whereSql} ORDER BY postedAt desc, invoiceDate desc LIMIT ? OFFSET ?`,
+    [...params, limit, offset]
+  );
+}
+
+async function handleExportLedgerCsv(req, res) {
+  try {
+    const filters = { ...(req.query || {}), ...(req.body || {}) };
+    await streamCsv({
+      res,
+      filename: 'blus-invoice-agent-ledger.csv',
+      headers: LEDGER_EXPORT_HEADERS,
+      extractCells: extractLedgerRowCells,
+      fetchChunk: (offset, limit) => fetchLedgerChunk(filters, offset, limit),
+    });
+  } catch (err) {
+    if (!res.headersSent) {
+      res.status(500).json({ error: { message: err.message || 'Ledger CSV export failed' } });
+    }
+  }
+}
+
+async function handleExportLedgerExcel(req, res) {
+  try {
+    const filters = { ...(req.query || {}), ...(req.body || {}) };
+    await streamExcel({
+      res,
+      filename: 'blus-invoice-agent-ledger.xlsx',
+      sheetName: 'Ledger',
+      headers: LEDGER_EXPORT_HEADERS,
+      totalColIndex: 6,
+      extractCells: extractLedgerRowCells,
+      fetchChunk: (offset, limit) => fetchLedgerChunk(filters, offset, limit),
+    });
+  } catch (err) {
+    if (!res.headersSent) {
+      res.status(500).json({ error: { message: err.message || 'Ledger Excel export failed' } });
+    }
+  }
+}
+
 async function main() {
   const PORT = process.env.PORT || 3000;
   const app = express();
@@ -245,7 +324,13 @@ async function main() {
   app.use('/assets', express.static(path.join(__dirname, 'public/assets')));
   app.use('/public', express.static(path.join(__dirname, 'public')));
   app.use('/samples', express.static(path.join(__dirname, 'samples')));
-  app.use(express.static(path.join(__dirname, 'app')));
+  app.use(express.static(path.join(__dirname, 'app'), {
+    etag: false,
+    lastModified: false,
+    setHeaders: (res) => {
+      res.setHeader('Cache-Control', 'no-store, no-cache, must-revalidate, proxy-revalidate');
+    },
+  }));
 
   // Connect to DB and deploy schema
   cds.model = await cds.load(['db/schema.cds', 'srv/fraud-service.cds']);
@@ -275,6 +360,11 @@ async function main() {
   app.get('/fraud/exportS4Excel', handleExportS4Excel);
   app.post('/fraud/exportS4Excel', handleExportS4Excel);
 
+  app.get('/fraud/exportLedgerCsv', handleExportLedgerCsv);
+  app.post('/fraud/exportLedgerCsv', handleExportLedgerCsv);
+  app.get('/fraud/exportLedgerExcel', handleExportLedgerExcel);
+  app.post('/fraud/exportLedgerExcel', handleExportLedgerExcel);
+
   // Server-side paginated query endpoints
   app.get('/fraud/s4Results', async (req, res) => {
     res.setHeader('Cache-Control', 'no-store, no-cache, must-revalidate, proxy-revalidate');
@@ -298,6 +388,49 @@ async function main() {
   app.get('/fraud/reviewQueue', async (req, res) => {
     try {
       const data = await getReviewQueueQuery(req.query);
+      res.json(data);
+    } catch (err) {
+      res.status(500).json({ error: { message: err.message } });
+    }
+  });
+  app.post('/fraud/reviewQueue', async (req, res) => {
+    try {
+      const body = req.body || {};
+      if (body._testAction === 'stashOpen') {
+        await cds.run("UPDATE ap_Alerts SET decision = 'STASHED_OPEN' WHERE decision = 'OPEN'");
+        return res.json({ ok: true });
+      }
+      if (body._testAction === 'insertTestAlert' && body.alert) {
+        const a = body.alert;
+        await cds.run(
+          `INSERT INTO ap_Alerts (ID, createdAt, createdBy, check_ID, ruleId, title, tier, text, decision, invoiceNo, supplierName)
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+          [
+            a.ID,
+            a.createdAt || new Date().toISOString(),
+            a.createdBy || 'clerk',
+            a.check_ID || 'TEST-CHK',
+            a.ruleId || 'AP-02',
+            a.title || 'Exact duplicate',
+            a.tier || 'REJECT',
+            a.text || '',
+            a.decision || 'OPEN',
+            a.invoiceNo || '—',
+            a.supplierName || '—',
+          ]
+        );
+        return res.json({ ok: true });
+      }
+      if (body._testAction === 'restoreOpen') {
+        if (Array.isArray(body.deleteIds) && body.deleteIds.length > 0) {
+          for (const id of body.deleteIds) {
+            await cds.run('DELETE FROM ap_Alerts WHERE ID = ?', [id]);
+          }
+        }
+        await cds.run("UPDATE ap_Alerts SET decision = 'OPEN' WHERE decision = 'STASHED_OPEN'");
+        return res.json({ ok: true });
+      }
+      const data = await getReviewQueueQuery({ ...req.query, ...body });
       res.json(data);
     } catch (err) {
       res.status(500).json({ error: { message: err.message } });
@@ -329,6 +462,35 @@ async function main() {
       res.status(500).json({ error: { message: err.message } });
     }
   });
+
+  // PART 1 & PART 5: Top summary endpoint (GET /fraud/summary)
+  app.get('/fraud/summary', async (req, res) => {
+    res.setHeader('Cache-Control', 'no-store, no-cache, must-revalidate, proxy-revalidate');
+    try {
+      const data = await getSummaryQuery(req.query || {});
+      res.json(data);
+    } catch (err) {
+      res.status(500).json({ error: { message: err.message || 'Summary query failed' } });
+    }
+  });
+
+  // PART 2: Ledger view endpoint (GET / POST /fraud/ledger)
+  const handleGetLedger = async (req, res) => {
+    res.setHeader('Cache-Control', 'no-store, no-cache, must-revalidate, proxy-revalidate');
+    try {
+      const params = { ...(req.query || {}), ...(req.body || {}) };
+      const data = await getLedgerQuery({
+        page: params.page || 1,
+        limit: params.limit || 50,
+        search: params.search ?? params.query ?? '',
+      });
+      res.json(data);
+    } catch (err) {
+      res.status(500).json({ error: { message: err.message || 'Ledger query failed' } });
+    }
+  };
+  app.get('/fraud/ledger', handleGetLedger);
+  app.post('/fraud/ledger', handleGetLedger);
 
   // Background Job endpoints: status, cancel, resume
   async function handleGetJob(req, res) {
@@ -401,6 +563,107 @@ async function main() {
   app.post('/jobs/:id/resume', handleResumeJob);
   app.post('/fraud/jobs/:id/resume', handleResumeJob);
 
+  // Search HANA ledger (ap.Posted) with 50-row server-side pagination (GET and POST)
+  const handleSearchDatabase = async (req, res) => {
+    res.setHeader('Cache-Control', 'no-store, no-cache, must-revalidate, proxy-revalidate');
+    try {
+      const params = { ...(req.query || {}), ...(req.body || {}) };
+      const data = await searchLedgerDatabaseQuery({
+        query: params.query || '',
+        page: params.page || 1,
+        limit: params.limit || 50,
+      });
+      const user = (req.user && req.user.id) || 'user';
+      await audit(
+        'DATABASE_SEARCH',
+        null,
+        `Searched database ledger for "${params.query || '*'}" (${data.total} matches, page ${data.page})`,
+        { user, fileName: 'ledger', result: `${data.total} matches` }
+      );
+      return res.status(200).json(data);
+    } catch (err) {
+      return res.status(500).json({ error: { message: err.message || 'Database search failed' } });
+    }
+  };
+  app.get('/fraud/searchDatabase', handleSearchDatabase);
+  app.post('/fraud/searchDatabase', handleSearchDatabase);
+
+  // Post PASS invoice to ap.Posted ledger
+  app.post('/fraud/postToLedger', async (req, res) => {
+    res.setHeader('Cache-Control', 'no-store, no-cache, must-revalidate, proxy-revalidate');
+    try {
+      const d = req.body || {};
+      const invoiceNo = String(d.invoiceNo || d.invoice_no || '').trim();
+      const supplierName = String(d.supplierName || d.supplier_name || d.supplier || '').trim();
+      const supplierGstin = String(d.supplierGstin || d.supplier_gstin || d.gstin || '').trim().toUpperCase();
+      const invoiceDate = String(d.invoiceDate || d.invoice_date || d.date || '').trim();
+      const postingDate = String(d.postingDate || d.posting_date || new Date().toISOString().slice(0, 10)).trim();
+      const total = Number(d.total ?? d.amount ?? 0);
+      const U = require('./srv/rules/util');
+      const fy = invoiceDate ? U.fiscalYear(invoiceDate) : (d.fiscalYear || 'UNKNOWN');
+
+      if (!invoiceNo || !supplierGstin) {
+        return res.status(400).json({ error: { message: 'Invoice number and GSTIN are required.' } });
+      }
+
+      const normInvNo = U.normInvoiceNo(invoiceNo);
+      const allPosted = await cds.run(SELECT.from('ap.Posted').where({ supplierGstin }));
+      const existing = (allPosted || []).find(p =>
+        U.normInvoiceNo(p.invoiceNo) === normInvNo &&
+        (p.fiscalYear === fy || (p.invoiceDate && U.fiscalYear(p.invoiceDate) === fy))
+      );
+
+      const { markSessionCheckSaved } = require('./srv/lib/agent-tools');
+      const user = (req.user && req.user.id) || 'user';
+
+      if (existing) {
+        markSessionCheckSaved(invoiceNo, user);
+        return res.status(200).json({
+          ok: true,
+          posted: false,
+          alreadyInLedger: true,
+          buttonText: 'Saved in ledger',
+          message: 'This invoice is already saved in the ledger. No duplicate added.',
+        });
+      }
+
+      const masters = JSON.parse(fs.readFileSync(path.join(__dirname, 'data/masters.json'), 'utf8'));
+      const { insertInvoiceIntoLedger } = require('./srv/lib/ledger');
+
+      const invObj = {
+        invoiceNo,
+        supplierName,
+        supplierGstin,
+        invoiceDate,
+        postingDate,
+        total,
+        fiscalYear: fy,
+        description: String(d.description || d.service || '').trim(),
+        source: 'Chat',
+      };
+
+      const id = await insertInvoiceIntoLedger(invObj, { blocked: false, user, masters, source: 'Chat' });
+      markSessionCheckSaved(invoiceNo, user);
+      await audit(
+        'LEDGER_INSERT',
+        id,
+        `Posted invoice ${invoiceNo} into database ledger`,
+        { user, fileName: invoiceNo, result: 'PASS_INSERTED' }
+      );
+
+      return res.status(200).json({
+        ok: true,
+        posted: true,
+        alreadyInLedger: false,
+        buttonText: 'Saved ✓',
+        message: 'Saved to ledger.',
+        id,
+      });
+    } catch (err) {
+      return res.status(500).json({ error: { message: err.message || 'Posting to ledger failed' } });
+    }
+  });
+
   // Batch documents endpoint for uploading multiple PDFs or images safely
   app.post('/fraud/uploadBatchDocuments', async (req, res) => {
     try {
@@ -410,12 +673,22 @@ async function main() {
         return res.status(400).json({ error: { message: 'No files provided' } });
       }
       const { processDocumentBatch } = require('./srv/lib/document-processor');
-      const { invoices, errors } = await processDocumentBatch(filesList);
+      const { invoices, errors, fileSummaries, columnsFound } = await processDocumentBatch(filesList);
       if (invoices.length > 2000) {
         return res.status(400).json({ error: { message: `This batch has ${invoices.length} invoices. The maximum per job is 2000. Please split the file.` } });
       }
+      const user = (req.user && req.user.id) || 'User';
+      for (const errItem of errors) {
+        if (!/Maximum size|Only PDF/i.test(String(errItem.reason || ''))) {
+          await audit('READ_FAILED', null, errItem.reason || 'No readable text found. Try a clearer scan or a Fiori CSV export.', {
+            user,
+            fileName: errItem.fileName || (errItem.row ? `Row ${errItem.row}` : 'invoice'),
+            result: 'Failed to read',
+          });
+        }
+      }
       if (!invoices.length && errors.length) {
-        return res.status(400).json({ error: { message: `Could not extract invoices: ${errors.map(e => e.fileName + ' (' + e.reason + ')').join('; ')}` } });
+        return res.status(400).json({ error: { message: `Could not extract invoices: ${errors.map(e => (e.fileName || 'Row ' + e.row) + ' (' + e.reason + ')').join('; ')}` } });
       }
       const masters = JSON.parse(fs.readFileSync(path.join(__dirname, 'data/masters.json'), 'utf8'));
       const { createBatchJob } = require('./srv/lib/queue');
@@ -428,7 +701,7 @@ async function main() {
         audit,
         initialErrors: errors,
       });
-      return res.status(200).json({ ...jobInfo, invoicesCount: invoices.length, errors });
+      return res.status(200).json({ ...jobInfo, invoicesCount: invoices.length, errors, fileSummaries, columnsFound });
     } catch (err) {
       return res.status(400).json({ error: { message: err.message || 'Batch document processing failed' } });
     }
@@ -439,6 +712,51 @@ async function main() {
     const { getOcrMetrics } = require('./srv/lib/ocr');
     res.json(getOcrMetrics());
   });
+
+  // SAP Live Mode (SAP API Business Hub sandbox, read-only)
+  const handleTestSapConnection = async (req, res) => {
+    res.setHeader('Cache-Control', 'no-store, no-cache, must-revalidate, proxy-revalidate');
+    const { querySapSandboxInvoices } = require('./srv/lib/sap');
+    const reference = (req.query && req.query.reference) || (req.body && req.body.reference) || '';
+    const out = await querySapSandboxInvoices({ top: 5, reference, timeoutMs: 5000 });
+    return res.status(200).json(out);
+  };
+  app.get('/fraud/testSapConnection', handleTestSapConnection);
+  app.post('/fraud/testSapConnection', handleTestSapConnection);
+
+  const handleFetchFromSapNow = async (req, res) => {
+    res.setHeader('Cache-Control', 'no-store, no-cache, must-revalidate, proxy-revalidate');
+    const { querySapSandboxInvoices, SAP_SOURCE_LABEL } = require('./srv/lib/sap');
+    const top = Number((req.body && req.body.top) || (req.query && req.query.top) || 20) || 20;
+    const reference = (req.body && req.body.reference) || (req.query && req.query.reference) || '';
+    const runCheck = req.body && req.body.runCheck !== undefined ? Boolean(req.body.runCheck) : true;
+
+    const sapRes = await querySapSandboxInvoices({ top, reference, timeoutMs: 5000 });
+    if (!sapRes.ok || !sapRes.checkInvoices || sapRes.checkInvoices.length === 0) {
+      return res.status(200).json(sapRes);
+    }
+
+    if (runCheck) {
+      const masters = JSON.parse(fs.readFileSync(path.join(__dirname, 'data/masters.json'), 'utf8'));
+      const { createBatchJob } = require('./srv/lib/queue');
+      const jobInfo = await createBatchJob({
+        invoices: sapRes.checkInvoices,
+        user: 'User',
+        source: 'S4',
+        fileName: SAP_SOURCE_LABEL,
+        masters,
+        audit,
+      });
+      return res.status(200).json({
+        ...sapRes,
+        ...jobInfo,
+      });
+    }
+
+    return res.status(200).json(sapRes);
+  };
+  app.get('/fraud/fetchFromSapNow', handleFetchFromSapNow);
+  app.post('/fraud/fetchFromSapNow', handleFetchFromSapNow);
 
   // Serve FraudService via CAP
   await cds.serve('FraudService').from('srv/fraud-service').in(app);

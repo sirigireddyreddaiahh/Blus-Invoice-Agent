@@ -16,7 +16,7 @@ const {
 const { extractPdfText } = require('./lib/pdftext');
 const { renderPages, findQrJwt, findQrInImage } = require('./lib/pdfimage');
 const { runOcr, MISSING_OCR_MSG, OCR_WARNING_MSG } = require('./lib/ocr');
-const { parseCsv, s4RowToInvoice } = require('./lib/csv');
+const { parseCsv, s4RowToInvoice, parseAndValidateS4Input } = require('./lib/csv');
 const lookup = require('./lib/lookup');
 const {
   loadLedgerForInvoices,
@@ -24,8 +24,11 @@ const {
   insertInvoiceIntoLedger,
 } = require('./lib/ledger');
 const { createBatchJob, getJob, cancelJob, resumeJob } = require('./lib/queue');
-const { getS4ResultsQuery, getReviewQueueQuery, getCheckHistoryQuery, getActivityLogsQuery } = require('./lib/pagination');
+const { getUnifiedChecksTotal, getS4ResultsQuery, getReviewQueueQuery, getCheckHistoryQuery, getActivityLogsQuery, searchLedgerDatabaseQuery, getLedgerQuery, getSummaryQuery, cleanRuleText, getRuleName } = require('./lib/pagination');
 const { processDocumentBatch } = require('./lib/document-processor');
+const { checkSapMatchForInvoice, querySapSandboxInvoices, getSapConfig, SAP_SOURCE_LABEL } = require('./lib/sap');
+const { AGENT_TOOLS, LEDGER_TOOLS, CREDENTIAL_REFUSAL_MSG, TERM_MEANINGS, toDisplayStatusTerm, sanitizeChatOutput, isCredentialOrServerSettingQuestion, runReadOnlyAgentQuery, setSessionLastCheck, markSessionCheckSaved, last_check } = require('./lib/agent-tools');
+const { FAILED_TO_READ_REASON, AI_ASSIST_LABEL, hasReadableFields, tryExtractWithGeminiAssist } = require('./lib/ai-extract');
 
 const s4Invoices = require('../data/s4-invoices.json');
 
@@ -97,7 +100,12 @@ function getUserId(req) {
  * - "Needs review": at least one HOLD, and no REJECT
  * - "Blocked": at least one REJECT
  */
-function toVerdictLabel(status, activeResults = []) {
+function toVerdictLabel(status, activeResults = [], extra = {}) {
+  if (extra.docType === 'UNREADABLE' || status === 'COULD_NOT_READ' || status === 'Failed to read') return 'Could not read';
+  if (['PURCHASE_ORDER', 'QUOTATION', 'PROFORMA', 'DELIVERY_CHALLAN', 'RECEIPT', 'STATEMENT', 'OTHER'].includes(extra.docType) || status === 'NOT_AN_INVOICE') return 'Not an invoice';
+  if (status === 'INCOMPLETE' || extra.isIncomplete) return 'Incomplete fields';
+  if (extra.docType === 'CREDIT_NOTE' || extra.docType === 'DEBIT_NOTE') return 'Needs review';
+
   const hasReject = status === 'REJECT' || activeResults.some(r => r.tier === 'REJECT');
   if (hasReject) return 'Blocked';
   const hasHold = status === 'HOLD' || activeResults.some(r => r.tier === 'HOLD');
@@ -105,24 +113,35 @@ function toVerdictLabel(status, activeResults = []) {
   return 'Passed checks';
 }
 
-/**
- * Strips any occurrence of prohibited words ("fake" or "real") so neither verdict nor explanation ever uses them.
- */
 function stripProhibitedWords(str) {
   return String(str || '')
     .replace(/\bfake\b/gi, 'non-compliant')
     .replace(/\breal\b/gi, 'verified');
 }
 
-/**
- * Builds the short plain-language explanation strictly from the four active rule results.
- * Never uses the words "fake" or "real".
- */
-function buildVerdictExplanation(verdict, activeResults = []) {
+function buildVerdictExplanation(verdict, activeResults = [], extra = {}) {
+  if (verdict === 'Could not read' || extra.docType === 'UNREADABLE') {
+    return 'No readable text found. Upload a clearer file.';
+  }
+  if (verdict === 'Not an invoice' || extra.docType) {
+    if (extra.docType === 'PURCHASE_ORDER') return 'This is a purchase order, not a supplier invoice.';
+    if (extra.docType === 'QUOTATION') return 'This is a quotation, not a supplier invoice.';
+    if (extra.docType === 'PROFORMA') return 'This is a proforma invoice, not a supplier invoice.';
+    if (extra.docType === 'DELIVERY_CHALLAN') return 'This is a delivery challan, not a supplier invoice.';
+    if (extra.docType === 'RECEIPT') return 'This is a receipt, not a supplier invoice.';
+    if (extra.docType === 'STATEMENT') return 'This is a statement, not a supplier invoice.';
+    if (extra.docType === 'OTHER') return 'This document is not a supplier invoice.';
+  }
+  if (verdict === 'Incomplete fields' || extra.isIncomplete) {
+    return extra.missingText || 'Missing required invoice fields.';
+  }
+  if (extra.docType === 'CREDIT_NOTE' || extra.docType === 'DEBIT_NOTE') {
+    return 'Credit note, review needed';
+  }
   if (verdict === 'Passed checks') {
     return 'No invoice with the same number was found for this supplier this financial year. No similar bill was found within 90 days. The GSTIN is unique to this supplier. The amount is not part of a split pattern.';
   }
-  const triggered = activeResults.filter(r => r.tier !== 'PASS');
+  const triggered = activeResults.filter(r => r.tier !== 'PASS' && r.tier !== 'SKIPPED');
   if (!triggered.length) {
     return 'Stopped by active rule evaluation.';
   }
@@ -131,20 +150,25 @@ function buildVerdictExplanation(verdict, activeResults = []) {
   return stripProhibitedWords(prefix + parts.join(' | '));
 }
 
+
 /**
- * Checks whether a user question is scoped to this invoice check, the extracted fields
- * (including bank IFSC and account number), the rule results, vendor, amounts, or rules used.
- * Refuses ONLY questions clearly unrelated to the current invoice (e.g. weather, another vendor).
+ * Helper to identify greeting messages like "hi", "helo", "hello", "good morning", "hey", etc.
  */
-function isInvoiceRelatedQuestion(question) {
+function isGreetingMessage(question) {
   const q = String(question || '').trim().toLowerCase();
   if (!q) return false;
+  if (/^(hi|hlo|helo|hello|hey|good\s*(morning|afternoon|evening)|howdy|greetings|hi\s+there|hello\s+there)([\s!.,?]*)$/i.test(q)) {
+    return true;
+  }
+  if (/^(hi|hlo|helo|hello|hey|good\s*(morning|afternoon|evening))\b/i.test(q) && q.length <= 25 && !/\b(invoice|bill|check|gstin|vendor|supplier|po|ledger|sap|amount|total|rule|status|paid|pay)\b/i.test(q)) {
+    return true;
+  }
+  return false;
+}
 
-  // Refuse only clearly unrelated trivia like weather or another vendor
-  const unrelatedPattern = /\b(weather|temperature|rain|forecast|another\s+vendor|other\s+vendor|different\s+vendor|another\s+supplier|other\s+supplier)\b/i;
-  if (unrelatedPattern.test(q)) return false;
-
-  return true;
+function isInvoiceRelatedQuestion(question) {
+  const q = String(question || '').trim();
+  return Boolean(q);
 }
 
 /**
@@ -425,15 +449,24 @@ function buildGroundingPayload(dbStats, allowInvoiceData = false) {
   return base;
 }
 
-function enrichRuleResult(res) {
+function enrichRuleResult(res, extra = {}) {
   const results = (res.results || []).map(r => ({
     ...r,
     text: stripProhibitedWords(r.text),
   }));
-  const activeResults = results.filter(r => ACTIVE_RULE_IDS.includes(r.id));
+  let activeResults = results.filter(r => ACTIVE_RULE_IDS.includes(r.id));
+  if (activeResults.length === 0 && Array.isArray(res.activeResults) && res.activeResults.length > 0) {
+    activeResults = res.activeResults.map(r => ({
+      ...r,
+      text: stripProhibitedWords(r.text),
+    }));
+  }
+  if (activeResults.length === 0 && results.length > 0 && res.status !== 'PASS') {
+    activeResults = results;
+  }
   const disabledResults = results.filter(r => r.tier === 'DISABLED');
-  const verdict = toVerdictLabel(res.status, activeResults);
-  const explanation = buildVerdictExplanation(verdict, activeResults);
+  const verdict = res.verdict || toVerdictLabel(res.status, activeResults, extra);
+  const explanation = res.explanation || buildVerdictExplanation(verdict, activeResults, extra);
   return {
     ...res,
     results,
@@ -598,8 +631,15 @@ class FraudService extends cds.ApplicationService {
         steps: extraMeta.steps || undefined,
         dataQuality: extraMeta.dataQuality || undefined,
         fields: extraMeta.fields || publicView(inv),
+        databaseMatch: extraMeta.databaseMatch,
+        sapMatch: extraMeta.sapMatch,
         lookupSource: extraMeta.lookupInfo ? extraMeta.lookupInfo.source : undefined,
         similarInvoices: extraMeta.lookupInfo ? extraMeta.lookupInfo.pastPosted : undefined,
+        aiAssistUsed: Boolean(inv.aiAssistUsed || extraMeta.aiAssistUsed),
+        rowNotes: [
+          ...(Array.isArray(result.rowNotes) ? result.rowNotes : []),
+          ...((inv.aiAssistUsed || extraMeta.aiAssistUsed) ? [AI_ASSIST_LABEL] : []),
+        ],
       };
       const ts = new Date().toISOString();
       await cds.run(INSERT.into(E.Checks).entries({
@@ -642,20 +682,21 @@ class FraudService extends cds.ApplicationService {
         }));
       }
 
+      const aiTag = (inv.aiAssistUsed || extraMeta.aiAssistUsed) ? ` · ${AI_ASSIST_LABEL}` : '';
       if (source === 'CHAT') {
         // Section 6: Log the user, time, file name and verdict. Do not log file contents or any key.
         console.log(`[CHAT_CHECK] User: ${user}, Time: ${ts}, File: ${inv.fileName || 'invoice.pdf'}, Verdict: ${enriched.verdict}`);
         await audit(
           'CHAT_CHECK',
           checkId,
-          `Verdict: ${enriched.verdict} (${result.status})`,
+          `Verdict: ${enriched.verdict} (${result.status})${aiTag}`,
           { user, fileName: inv.fileName || 'invoice.pdf', result: enriched.verdict }
         );
       } else {
         await audit(
           'CHECK',
           checkId,
-          `${result.status} ${inv.invoiceNo || ''}: ${alerts.map(a => a.id).join(', ') || 'no alerts'}`,
+          `${result.status} ${inv.invoiceNo || ''}: ${alerts.map(a => a.id).join(', ') || 'no alerts'}${aiTag}`,
           { user, fileName: inv.fileName || inv.invoiceNo || source, result: result.status }
         );
       }
@@ -738,21 +779,39 @@ class FraudService extends cds.ApplicationService {
       const { fileName, content } = req.data;
       const text = String(content || '').replace(/^\uFEFF/, '').trim();
       if (!text) return req.reject(400, 'The file is empty');
-      let list;
-      try {
-        list = text.startsWith('[') ? JSON.parse(text) : parseCsv(text).map(s4RowToInvoice);
-      } catch (e) { return req.reject(400, 'The file could not be read: ' + e.message); }
-      if (!Array.isArray(list) || !list.length) return req.reject(400, 'The file has no invoice rows');
-      if (list.length > 2000) {
-        return req.reject(400, `This batch has ${list.length} invoices. The maximum per job is 2000. Please split the file.`);
+
+      const parsed = parseAndValidateS4Input(text);
+      if (parsed.parseError) {
+        return req.reject(400, 'The file could not be read: ' + parsed.parseError);
+      }
+      if (!parsed.totalRawRows) {
+        return req.reject(400, 'The file has no invoice rows');
+      }
+      if (parsed.invoices.length > 2000) {
+        return req.reject(400, `This batch has ${parsed.invoices.length} invoices. The maximum per job is 2000. Please split the file.`);
       }
       const user = getUserId(req);
-      await audit('IMPORT', null, `${fileName || 'extract'}: ${list.length} rows`, {
+      await audit('IMPORT', null, `${fileName || 'extract'}: ${parsed.invoices.length} valid rows (${parsed.rowErrors.length} rejected)`, {
         user,
         fileName: fileName || 's4-extract.csv',
-        result: `${list.length} rows`,
+        result: `${parsed.invoices.length} rows`,
       });
-      return JSON.stringify({ fileName, count: list.length, invoices: list.map(i => ({ ...i, source: 'S4' })) });
+      for (const rowErr of parsed.rowErrors) {
+        await audit('READ_FAILED', null, rowErr.reason || FAILED_TO_READ_REASON, {
+          user,
+          fileName: `${fileName || 's4-extract.csv'} (row ${rowErr.row})`,
+          result: 'Failed to read',
+        });
+      }
+      return JSON.stringify({
+        fileName,
+        count: parsed.invoices.length,
+        invoices: parsed.invoices.map(i => ({ ...i, source: 'S4' })),
+        rowErrors: parsed.rowErrors,
+        matchedColumns: parsed.matchedColumns,
+        missingColumns: parsed.missingColumns,
+        columnsFound: parsed.columnsFound,
+      });
     });
 
     // Full upload + extraction + check pipeline supporting PDF, PNG, JPG, CSV, and XLSX
@@ -795,8 +854,8 @@ class FraudService extends cds.ApplicationService {
         } else {
           fileTypeLabel = 'Scanned PDF';
           ocrUsed = true;
-          const pageBuffer = (pages[0] && pages[0].png) ? pages[0].png : buf;
-          const ocrRes = await runOcr(pageBuffer);
+          const pageBuffer = (pages[0] && pages[0].png) ? pages[0].png : null;
+          const ocrRes = pageBuffer ? await runOcr(pageBuffer) : { ok: false, text: '' };
           if (!ocrRes.ok) {
             readStatus = 'failed';
             warning = MISSING_OCR_MSG;
@@ -849,22 +908,75 @@ class FraudService extends cds.ApplicationService {
         readDetail = 'Extracted spreadsheet fields from XLSX';
       }
 
+      let fields = preExtractedFields && Object.keys(preExtractedFields).length > 0
+        ? preExtractedFields
+        : extractFields(text);
+      if (qrJwt) fields.qrJwt = qrJwt;
+
+      let aiAssistUsed = false;
+      const isDocOrImage = detection.kind === 'PDF' || detection.kind === 'PNG' || detection.kind === 'JPG';
+      if (isDocOrImage && (readStatus === 'failed' || !hasReadableFields(text, fields))) {
+        const aiRes = await tryExtractWithGeminiAssist({ buf, fileName, kind: detection.kind });
+        if (aiRes.ok && aiRes.fields) {
+          fields = { ...fields, ...aiRes.fields };
+          aiAssistUsed = true;
+          readStatus = 'done';
+          readDetail = AI_ASSIST_LABEL;
+          warning = AI_ASSIST_LABEL;
+        } else if (!String(text || '').trim()) {
+          readStatus = 'failed';
+        }
+      }
+
       if (readStatus === 'failed') {
+        const failReason = isDocOrImage ? FAILED_TO_READ_REASON : (warning || MISSING_OCR_MSG);
+        const noDataRow = [{ id: 'DATA', title: 'Invoice data check', tier: 'REJECT', text: 'This invoice has no data' }];
+        if (runCheck) {
+          await audit(
+            'READ_FAILED',
+            null,
+            failReason,
+            { user, fileName: fileName || 'invoice', result: 'Failed to read' }
+          );
+          setSessionLastCheck(user, {
+            checkId: null,
+            fileName: fileName || 'invoice',
+            invoiceNo: '—',
+            supplierName: '—',
+            supplierGstin: '—',
+            invoiceDate: '—',
+            postingDate: '—',
+            total: null,
+            docType: 'SUPPLIER_INVOICE',
+            docTypeLabel: 'Supplier Invoice',
+            status: 'Failed to read',
+            verdict: 'Blocked',
+            reasons: ['This invoice has no data', failReason],
+            explanation: 'This invoice has no data',
+            missingFields: ['invoice number', 'date', 'supplier name', 'total amount'],
+            savedToLedger: false,
+          });
+        }
         const failedSteps = buildTenSteps({
           fileName,
           fileSize: actualSize,
           fileTypeLabel,
-          readDetail: MISSING_OCR_MSG,
+          readDetail: failReason,
           readStatus: 'failed',
           fields: {},
           dataQuality: { arithmeticValid: false, arithmeticStatus: 'FAIL', arithmeticText: 'No fields read', gstinValid: false, gstinStatus: 'FAIL', gstinText: 'No fields read' },
-          activeResults: [],
+          activeResults: noDataRow,
           lookupInfo: { source: lookup.isClientDbEnabled() ? 'client database' : 'masters file', pastPosted: [] },
-          finalStatus: 'HOLD',
+          finalStatus: 'REJECT',
           checkId: null,
         });
         return JSON.stringify({
           ok: false,
+          status: 'Failed to read',
+          verdict: 'Blocked',
+          explanation: 'This invoice has no data',
+          results: noDataRow,
+          activeResults: noDataRow,
           fileName,
           fileType: fileTypeLabel,
           fields: {},
@@ -872,16 +984,16 @@ class FraudService extends cds.ApplicationService {
           pdfText: '',
           ocrUsed: true,
           ocrConfidence: 0,
-          warning: MISSING_OCR_MSG,
-          error: MISSING_OCR_MSG,
+          reason: failReason,
+          warning: failReason,
+          error: failReason,
           steps: failedSteps,
         });
       }
 
-      const fields = preExtractedFields && Object.keys(preExtractedFields).length > 0
-        ? preExtractedFields
-        : extractFields(text);
-      if (qrJwt) fields.qrJwt = qrJwt;
+      const { classifyDocumentType } = require('./lib/extract');
+      const docClass = classifyDocumentType({ text, fileName, fields });
+
       const threshold = (masters.config && masters.config.ocrLowConfidenceThreshold) || 70;
       const fieldConfidences = computeFieldConfidences(fields, {
         ocrUsed,
@@ -897,6 +1009,7 @@ class FraudService extends cds.ApplicationService {
         pdfText: text,
         pdfMeta: detection.kind === 'PDF' ? readPdfMeta(buf) : { producer: detection.kind, creator: '' },
         source: effectiveSource,
+        aiAssistUsed,
       });
 
       const posted = await loadLedgerForInvoices([inv]);
@@ -908,15 +1021,95 @@ class FraudService extends cds.ApplicationService {
       }
 
       const dataQuality = checkDataQuality(inv);
-      const rawResult = runRules(inv, {
-        masters,
-        posted,
-        batch: [],
-        earlier: [],
-        irpPublicKeyPem: process.env.IRP_PUBLIC_KEY_PEM || undefined,
-      });
-      const enriched = enrichRuleResult(rawResult);
+
+      // PART 1: DOCUMENT TYPE & DATA COMPLETENESS GATE
+      let rawResult = { status: 'PASS', results: [] };
+      let extraMeta = { docType: docClass.docType };
+      let checkMissingFields = [];
+
+      const hasInvoiceNo = Boolean(inv.invoiceNo || fields.invoiceNo || fields.SupplierInvoice);
+      const hasInvoiceDate = Boolean(inv.invoiceDate || fields.invoiceDate || fields.InvoiceDate || fields.PostingDate || fields.postingDate);
+      const hasSupplierName = Boolean(inv.supplierName || fields.supplierName || fields.InvoicingParty);
+      const hasGstin = Boolean(inv.supplierGstin || fields.supplierGstin || fields.SupplierGSTIN);
+      const hasTotalVal = inv.total !== undefined && inv.total !== null && inv.total !== '' && !Number.isNaN(Number(inv.total));
+      const hasNoInvoiceData = !hasInvoiceNo && !hasSupplierName && !hasGstin && !hasTotalVal;
+
+      if (hasNoInvoiceData) {
+        checkMissingFields = ['invoice number', 'date', 'supplier name', 'total amount'];
+        const noDataRow = [{ id: 'DATA', title: 'Invoice data check', tier: 'REJECT', text: 'This invoice has no data' }];
+        rawResult = {
+          status: 'REJECT',
+          verdict: 'Blocked',
+          explanation: 'This invoice has no data',
+          results: noDataRow,
+          activeResults: noDataRow,
+        };
+        extraMeta.isIncomplete = true;
+        extraMeta.missingText = 'This invoice has no data';
+      } else if (['PURCHASE_ORDER', 'QUOTATION', 'PROFORMA', 'DELIVERY_CHALLAN', 'RECEIPT', 'STATEMENT', 'OTHER'].includes(docClass.docType)) {
+        let nonInvReason = 'This document is not a supplier invoice.';
+        if (docClass.docType === 'PURCHASE_ORDER') nonInvReason = 'This is a purchase order, not a supplier invoice.';
+        else if (docClass.docType === 'QUOTATION') nonInvReason = 'This is a quotation, not a supplier invoice.';
+        else if (docClass.docType === 'PROFORMA') nonInvReason = 'This is a proforma invoice, not a supplier invoice.';
+        else if (docClass.docType === 'DELIVERY_CHALLAN') nonInvReason = 'This is a delivery challan, not a supplier invoice.';
+        else if (docClass.docType === 'RECEIPT') nonInvReason = 'This is a receipt, not a supplier invoice.';
+        else if (docClass.docType === 'STATEMENT') nonInvReason = 'This is a statement, not a supplier invoice.';
+
+        const nonInvRow = [{ id: 'DOC', title: 'Document type check', tier: 'REJECT', text: nonInvReason }];
+        rawResult = {
+          status: 'NOT_AN_INVOICE',
+          verdict: 'Not an invoice',
+          explanation: nonInvReason,
+          results: nonInvRow,
+          activeResults: nonInvRow,
+        };
+      } else if (docClass.docType === 'CREDIT_NOTE' || docClass.docType === 'DEBIT_NOTE') {
+        const creditResult = runRules(inv, { masters, posted, batch: [], earlier: [], irpPublicKeyPem: process.env.IRP_PUBLIC_KEY_PEM || undefined });
+        rawResult = {
+          ...creditResult,
+          status: 'HOLD',
+          verdict: 'Needs review',
+          explanation: 'Credit note, review needed',
+        };
+      } else {
+        // PART 2: REQUIRED FIELDS CHECK FOR INVOICES
+        const missingFields = [];
+        if (!hasInvoiceNo) missingFields.push('invoice number');
+        if (!hasInvoiceDate) missingFields.push('date');
+        if (!hasSupplierName) missingFields.push('supplier name');
+        if (!hasTotalVal) missingFields.push('total amount');
+        checkMissingFields = missingFields;
+
+        if (missingFields.length > 0) {
+          const noDataRow = [{
+            id: 'DATA',
+            title: 'Invoice data check',
+            tier: 'REJECT',
+            text: `This invoice has no data (Missing: ${missingFields.join(', ')})`,
+          }];
+          rawResult = {
+            status: 'REJECT',
+            verdict: 'Blocked',
+            explanation: 'This invoice has no data',
+            results: noDataRow,
+            activeResults: noDataRow,
+          };
+          extraMeta.isIncomplete = true;
+          extraMeta.missingText = 'This invoice has no data';
+        } else {
+          rawResult = runRules(inv, {
+            masters,
+            posted,
+            batch: [],
+            earlier: [],
+            irpPublicKeyPem: process.env.IRP_PUBLIC_KEY_PEM || undefined,
+          });
+        }
+      }
+
+      const enriched = enrichRuleResult(rawResult, extraMeta);
       const databaseMatch = findDatabaseMatch(inv, { posted });
+      const sapMatch = await checkSapMatchForInvoice(inv);
       const preCheckId = runCheck ? crypto.randomUUID() : null;
 
       const steps = buildTenSteps({
@@ -927,7 +1120,7 @@ class FraudService extends cds.ApplicationService {
         readStatus: 'done',
         fields,
         dataQuality,
-        activeResults: enriched.activeResults,
+        activeResults: enriched.activeResults || [],
         lookupInfo,
         finalStatus: enriched.status,
         checkId: preCheckId,
@@ -940,12 +1133,18 @@ class FraudService extends cds.ApplicationService {
             dataQuality,
             fields,
             lookupInfo,
+            databaseMatch,
+            sapMatch,
+            aiAssistUsed,
+            docType: docClass.docType,
           })
         : null;
 
+      let savedToLedger = Boolean(databaseMatch && databaseMatch.matched && databaseMatch.reason === 'Same invoice number');
       // After an invoice gets PASS, insert it into the ledger so future uploads are compared against it
-      if (runCheck && enriched.status === 'PASS') {
-        await insertInvoiceIntoLedger(inv, { blocked: false, user, masters });
+      if (runCheck && enriched.status === 'PASS' && enriched.verdict === 'Passed checks') {
+        await insertInvoiceIntoLedger(inv, { blocked: false, user, masters, source: 'Chat' });
+        savedToLedger = true;
         await audit(
           'LEDGER_INSERT',
           checkId,
@@ -961,6 +1160,24 @@ class FraudService extends cds.ApplicationService {
           `Checked against database ledger: ${databaseMatch.status} (${databaseMatch.reason})`,
           { user, fileName: inv.fileName || inv.invoiceNo, result: databaseMatch.status }
         );
+        setSessionLastCheck(user, {
+          checkId,
+          fileName: fileName || inv.fileName || inv.invoiceNo,
+          invoiceNo: inv.invoiceNo || '—',
+          supplierName: inv.supplierName || '—',
+          supplierGstin: inv.supplierGstin || '—',
+          invoiceDate: inv.invoiceDate || '—',
+          postingDate: inv.postingDate || '—',
+          total: inv.total,
+          docType: docClass.docType || 'SUPPLIER_INVOICE',
+          docTypeLabel: docClass.label || 'Supplier Invoice',
+          status: enriched.status,
+          verdict: enriched.verdict,
+          reasons: (enriched.activeResults || []).filter(r => r.tier !== 'PASS' && r.tier !== 'SKIPPED').map(r => `${getRuleName(r.id)}: ${cleanRuleText(r.text)}`),
+          explanation: cleanRuleText(enriched.explanation),
+          missingFields: checkMissingFields,
+          savedToLedger,
+        });
       }
 
       return JSON.stringify({
@@ -976,11 +1193,14 @@ class FraudService extends cds.ApplicationService {
         lookupSource: lookupInfo.source,
         similarInvoices: lookupInfo.pastPosted,
         databaseMatch,
+        sapMatch,
         pdfText: text,
         pdfMeta: inv.pdfMeta,
         qrFound: Boolean(qrJwt),
         ocrUsed,
         ocrConfidence,
+        aiAssistUsed,
+        aiAssistLabel: aiAssistUsed ? AI_ASSIST_LABEL : null,
         warning,
         status: enriched.status,
         verdict: enriched.verdict,
@@ -1056,6 +1276,7 @@ class FraudService extends cds.ApplicationService {
       });
       const enriched = enrichRuleResult(result);
       const databaseMatch = findDatabaseMatch(inv, { posted });
+      const sapMatch = await checkSapMatchForInvoice(inv);
       const effectiveSource = inv.source || 'UPLOAD';
       const preCheckId = crypto.randomUUID();
 
@@ -1079,11 +1300,15 @@ class FraudService extends cds.ApplicationService {
         dataQuality,
         fields: publicView(inv),
         lookupInfo,
+        databaseMatch,
+        sapMatch,
       });
 
+      let savedToLedger = Boolean(databaseMatch && databaseMatch.matched && databaseMatch.reason === 'Same invoice number');
       // After an invoice gets PASS, insert it into the ledger so future uploads are compared against it
       if (enriched.status === 'PASS') {
-        await insertInvoiceIntoLedger(inv, { blocked: false, user, masters });
+        await insertInvoiceIntoLedger(inv, { blocked: false, user, masters, source: 'Chat' });
+        savedToLedger = true;
         await audit(
           'LEDGER_INSERT',
           checkId,
@@ -1099,11 +1324,31 @@ class FraudService extends cds.ApplicationService {
         { user, fileName: inv.fileName || inv.invoiceNo, result: databaseMatch.status }
       );
 
+      setSessionLastCheck(user, {
+        checkId,
+        fileName: inv.fileName || inv.invoiceNo || 'manual-entry',
+        invoiceNo: inv.invoiceNo || '—',
+        supplierName: inv.supplierName || '—',
+        supplierGstin: inv.supplierGstin || '—',
+        invoiceDate: inv.invoiceDate || '—',
+        postingDate: inv.postingDate || '—',
+        total: inv.total,
+        docType: 'SUPPLIER_INVOICE',
+        docTypeLabel: 'Supplier Invoice',
+        status: enriched.status,
+        verdict: enriched.verdict,
+        reasons: (enriched.activeResults || []).filter(r => r.tier !== 'PASS' && r.tier !== 'SKIPPED').map(r => `${getRuleName(r.id)}: ${cleanRuleText(r.text)}`),
+        explanation: cleanRuleText(enriched.explanation),
+        missingFields: [],
+        savedToLedger,
+      });
+
       return JSON.stringify({
         checkId,
         source: effectiveSource,
         ...enriched,
         databaseMatch,
+        sapMatch,
         dataQuality,
         lookupSource: lookupInfo.source,
         similarInvoices: lookupInfo.pastPosted,
@@ -1157,7 +1402,7 @@ class FraudService extends cds.ApplicationService {
           const checkId = await persist(inv, result, inv.source || 'S4', req);
 
           if (result.status === 'PASS') {
-            await insertInvoiceIntoLedger(inv, { blocked: false, user, masters });
+            await insertInvoiceIntoLedger(inv, { blocked: false, user, masters, source: 'Batch' });
             posted.push(inv);
           }
 
@@ -1174,13 +1419,17 @@ class FraudService extends cds.ApplicationService {
       }
 
       // Default: Async chunked background job returning immediately
+      const rawErrors = req.data.errors
+        ? (typeof req.data.errors === 'string' ? JSON.parse(req.data.errors) : req.data.errors)
+        : [];
       const jobInfo = await createBatchJob({
         invoices: list,
         user: 'User',
         source: 'S4',
-        fileName: 's4-extract.csv',
+        fileName: req.data.fileName || 's4-extract.csv',
         masters,
         audit,
+        initialErrors: Array.isArray(rawErrors) ? rawErrors : [],
       });
       return JSON.stringify(jobInfo);
     });
@@ -1190,7 +1439,6 @@ class FraudService extends cds.ApplicationService {
       if (roles.includes('Auditor') && !roles.includes('APClerk') && !roles.includes('APController')) {
         return req.reject(403, 'An auditor cannot check invoices.');
       }
-      const user = getUserId(req);
       const masters = loadMasters();
       const rawInvoices = typeof req.data.invoices === 'string' ? JSON.parse(req.data.invoices) : (req.data.invoices || []);
       const list = rawInvoices.map(parseInvoice);
@@ -1199,13 +1447,17 @@ class FraudService extends cds.ApplicationService {
         return req.reject(400, `This batch has ${list.length} invoices. The maximum per job is 2000. Please split the file.`);
       }
 
+      const rawErrors = req.data.errors
+        ? (typeof req.data.errors === 'string' ? JSON.parse(req.data.errors) : req.data.errors)
+        : [];
       const jobInfo = await createBatchJob({
         invoices: list,
         user: 'User',
         source: 'S4',
-        fileName: 's4-extract.csv',
+        fileName: req.data.fileName || 's4-extract.csv',
         masters,
         audit,
+        initialErrors: Array.isArray(rawErrors) ? rawErrors : [],
       });
       return JSON.stringify(jobInfo);
     });
@@ -1220,12 +1472,20 @@ class FraudService extends cds.ApplicationService {
         return req.reject(400, 'No files provided');
       }
 
-      const { invoices, errors } = await processDocumentBatch(rawFiles);
+      const { invoices, errors, fileSummaries, columnsFound } = await processDocumentBatch(rawFiles);
       if (invoices.length > 2000) {
         return req.reject(400, `This batch has ${invoices.length} invoices. The maximum per job is 2000. Please split the file.`);
       }
       if (!invoices.length && errors.length) {
-        return req.reject(400, `Could not extract invoices from provided files: ${errors.map(e => e.fileName + ' (' + e.reason + ')').join('; ')}`);
+        const user = getUserId(req);
+        for (const errItem of errors) {
+          await audit('READ_FAILED', null, errItem.reason || FAILED_TO_READ_REASON, {
+            user,
+            fileName: errItem.fileName || 'invoice',
+            result: 'Failed to read',
+          });
+        }
+        return req.reject(400, `Could not extract invoices from provided files: ${errors.map(e => (e.fileName || 'Row ' + e.row) + ' (' + e.reason + ')').join('; ')}`);
       }
 
       const masters = loadMasters();
@@ -1243,6 +1503,8 @@ class FraudService extends cds.ApplicationService {
         ...jobInfo,
         invoicesCount: invoices.length,
         errors,
+        fileSummaries,
+        columnsFound,
       });
     });
 
@@ -1296,17 +1558,50 @@ class FraudService extends cds.ApplicationService {
       return JSON.stringify(data);
     });
 
+    this.on('getSummary', async req => {
+      const data = await getSummaryQuery(req.data || {});
+      return JSON.stringify(data);
+    });
+
+    this.on('getLedger', async req => {
+      const data = await getLedgerQuery(req.data || {});
+      return JSON.stringify(data);
+    });
+
+    this.on('testSapConnection', async req => {
+      const reference = (req.data && req.data.reference) || '';
+      const out = await querySapSandboxInvoices({ top: 5, reference, timeoutMs: 5000 });
+      return JSON.stringify(out);
+    });
+
+    this.on('fetchFromSapNow', async req => {
+      const top = Number((req.data && req.data.top) || 20) || 20;
+      const reference = (req.data && req.data.reference) || '';
+      const runCheck = req.data && req.data.runCheck !== undefined ? Boolean(req.data.runCheck) : true;
+      const sapRes = await querySapSandboxInvoices({ top, reference, timeoutMs: 5000 });
+      if (!sapRes.ok || !sapRes.checkInvoices || sapRes.checkInvoices.length === 0) {
+        return JSON.stringify(sapRes);
+      }
+      if (runCheck) {
+        const masters = loadMasters();
+        const user = getUserId(req);
+        const jobInfo = await createBatchJob({
+          invoices: sapRes.checkInvoices,
+          user,
+          source: 'S4',
+          fileName: SAP_SOURCE_LABEL,
+          masters,
+          audit,
+        });
+        return JSON.stringify({ ...sapRes, ...jobInfo });
+      }
+      return JSON.stringify(sapRes);
+    });
+
     this.on('searchDatabase', async req => {
       const q = String(req.data.query || '').trim();
-      let records;
-      if (!q) {
-        records = await cds.run(SELECT.from(E.Posted).orderBy('postedAt desc').limit(50));
-      } else {
-        const term = `%${q}%`;
-        records = await cds.run(
-          SELECT.from(E.Posted).where`invoiceNo like ${term} or supplierGstin like ${term} or supplierName like ${term} or description like ${term}`
-        );
-      }
+      const searchOut = await searchLedgerDatabaseQuery({ query: q, page: 1, limit: 50 });
+      const records = searchOut.rows || [];
       const user = getUserId(req);
       await audit('DATABASE_SEARCH', null, `Searched database ledger for "${q || '*'}" (${records.length} matches)`, {
         user,
@@ -1336,7 +1631,7 @@ class FraudService extends cds.ApplicationService {
       let count = 0;
       for (const raw of list) {
         const inv = parseInvoice(raw);
-        await insertInvoiceIntoLedger(inv, { blocked: false, user, masters });
+        await insertInvoiceIntoLedger(inv, { blocked: false, user, masters, source: 'Import' });
         count++;
       }
       await audit('LEDGER_IMPORT', null, `Imported ${count} invoices into database ledger from ${fileName || 'file'}`, {
@@ -1385,13 +1680,84 @@ class FraudService extends cds.ApplicationService {
         return JSON.stringify({ posted: false, blocked: false, checkId, ...enriched });
       }
       const blocked = result.status === 'HOLD';
-      await insertInvoiceIntoLedger(inv, { blocked, user, masters });
+      await insertInvoiceIntoLedger(inv, { blocked, user, masters, source: 'Chat' });
       await audit('POST', checkId, `Posted ${inv.invoiceNo}${blocked ? ' (payment blocked)' : ''}`, {
         user,
         fileName: inv.fileName || inv.invoiceNo,
         result: blocked ? 'POSTED_BLOCKED' : 'POSTED',
       });
       return JSON.stringify({ posted: true, blocked, checkId, ...enriched });
+    });
+
+    this.on('postToLedger', async req => {
+      const roles = getUserRoles(req);
+      if (roles.includes('Auditor') && !roles.includes('APClerk') && !roles.includes('APController')) {
+        return req.reject(403, 'An auditor cannot post to ledger.');
+      }
+
+      const d = req.data || {};
+      const invoiceNo = String(d.invoiceNo || d.invoice_no || '').trim();
+      const supplierName = String(d.supplierName || d.supplier_name || d.supplier || '').trim();
+      const supplierGstin = String(d.supplierGstin || d.supplier_gstin || d.gstin || '').trim().toUpperCase();
+      const invoiceDate = String(d.invoiceDate || d.invoice_date || d.date || '').trim();
+      const postingDate = String(d.postingDate || d.posting_date || new Date().toISOString().slice(0, 10)).trim();
+      const total = Number(d.total ?? d.amount ?? 0);
+      const fy = invoiceDate ? U.fiscalYear(invoiceDate) : (d.fiscalYear || 'UNKNOWN');
+
+      if (!invoiceNo || !supplierGstin) {
+        return req.reject(400, 'Invoice number and GSTIN are required.');
+      }
+
+      const user = getUserId(req);
+      const masters = loadMasters();
+
+      const normInvNo = U.normInvoiceNo(invoiceNo);
+      const allPosted = await cds.run(SELECT.from(E.Posted).where({ supplierGstin }));
+      const existing = (allPosted || []).find(p =>
+        U.normInvoiceNo(p.invoiceNo) === normInvNo &&
+        (p.fiscalYear === fy || (p.invoiceDate && U.fiscalYear(p.invoiceDate) === fy))
+      );
+
+      if (existing) {
+        markSessionCheckSaved(invoiceNo, user);
+        return JSON.stringify({
+          ok: true,
+          posted: false,
+          alreadyInLedger: true,
+          buttonText: 'Saved in ledger',
+          message: 'This invoice is already saved in the ledger. No duplicate added.',
+        });
+      }
+
+      const invObj = {
+        invoiceNo,
+        supplierName,
+        supplierGstin,
+        invoiceDate,
+        postingDate,
+        total,
+        fiscalYear: fy,
+        description: String(d.description || d.service || '').trim(),
+        source: 'Chat',
+      };
+
+      const id = await insertInvoiceIntoLedger(invObj, { blocked: false, user, masters, source: 'Chat' });
+      markSessionCheckSaved(invoiceNo, user);
+      await audit(
+        'LEDGER_INSERT',
+        id,
+        `Posted invoice ${invoiceNo} into database ledger`,
+        { user, fileName: invoiceNo, result: 'PASS_INSERTED' }
+      );
+
+      return JSON.stringify({
+        ok: true,
+        posted: true,
+        alreadyInLedger: false,
+        buttonText: 'Saved ✓',
+        message: 'Saved to ledger.',
+        id,
+      });
     });
 
     this.on('decideAlert', req => applyDecision(req, req.data.alertId, req.data.decision, req.data.comment));
@@ -1401,14 +1767,32 @@ class FraudService extends cds.ApplicationService {
     });
 
     this.on('verifyAuditChain', async () => {
-      const rows = await cds.run(SELECT.from(E.AuditLog).orderBy('idx asc'));
+      const [rows, checksTotal] = await Promise.all([
+        cds.run(SELECT.from(E.AuditLog).orderBy('idx asc')),
+        getUnifiedChecksTotal(),
+      ]);
       let prev = '';
       for (const r of rows) {
         const expected = U.auditHash(r.idx, r.ts, r.checkId || '', r.action, r.detail || '', prev);
-        if (r.prevHash !== prev || r.hash !== expected) return JSON.stringify({ ok: false, entries: rows.length, brokenAt: r.idx });
+        if (r.prevHash !== prev || r.hash !== expected) {
+          return JSON.stringify({
+            ok: false,
+            entries: checksTotal || rows.length,
+            checksTotal,
+            auditEntries: rows.length,
+            brokenAt: r.idx,
+          });
+        }
         prev = r.hash;
       }
-      return JSON.stringify({ ok: true, entries: rows.length, brokenAt: null });
+      const unifiedCount = checksTotal > 0 ? checksTotal : rows.length;
+      return JSON.stringify({
+        ok: true,
+        entries: unifiedCount,
+        checksTotal,
+        auditEntries: rows.length,
+        brokenAt: null,
+      });
     });
 
     // -------------------------------------------------------------
@@ -1434,7 +1818,8 @@ class FraudService extends cds.ApplicationService {
         }
       } catch {}
 
-      if (req && req.headers && req.headers['x-gemini-api-key-unset'] === 'true') {
+      const hdrs = (req && req.headers) || (req && req._ && req._.req && req._.req.headers) || (req && req.http && req.http.req && req.http.req.headers) || {};
+      if (hdrs['x-gemini-api-key-unset'] === 'true' || (req && req.headers && req.headers['x-gemini-api-key-unset'] === 'true')) {
         return {
           apiKey: '',
           modelName: 'gemini-3.5-flash-lite',
@@ -1550,6 +1935,8 @@ class FraudService extends cds.ApplicationService {
     };
 
     const buildLocalInvoiceSupplement = ({ checkRecord, parsedResult = {}, question = '' }) => {
+      const q = String(question || '').trim().toLowerCase();
+      if (isGreetingMessage(q) || !isInvoiceRelatedQuestion(q)) return '';
       if (!checkRecord && (!parsedResult || !parsedResult.fields)) return '';
       const f = (parsedResult && parsedResult.fields) || {};
       const invNo = (checkRecord && checkRecord.invoiceNo) || f.invoiceNo || 'Not shown on invoice';
@@ -1572,7 +1959,6 @@ class FraudService extends cds.ApplicationService {
       const ap05Rule = allResults.find(r => r.id === 'AP-05');
       const ap05Tier = ap05Rule ? ap05Rule.tier : 'DISABLED';
 
-      const q = String(question || '').toLowerCase();
       const lines = ['Invoice details from current check:'];
       if (/\b(bank|account|acct|ifsc|beneficiary|branch|neft|rtgs|iban|ap-?05)\b/i.test(q)) {
         lines.push(`• Bank IFSC: ${invIfsc}`);
@@ -1598,13 +1984,130 @@ class FraudService extends cds.ApplicationService {
       return lines.join('\n');
     };
 
-    const handleInvoiceQuestion = async (req, checkId, questionText) => {
-      const user = getUserId(req);
-      const q = String(questionText || '').trim();
+    const redactServerCredentials = (str) => {
+      let out = String(str || '');
+      const secretKeys = [
+        process.env.SAP_API_KEY,
+        process.env.SAP_USER,
+        process.env.SAP_PASSWORD,
+        process.env.GEMINI_API_KEY,
+        process.env.API_KEY,
+      ].filter(v => v && String(v).trim().length >= 4 && String(v).trim() !== 'your_sap_api_key_here');
 
-      // Scope check: refuse only questions clearly unrelated to this invoice check
-      if (!isInvoiceRelatedQuestion(q)) {
-        return REFUSAL_MSG;
+      for (const secret of secretKeys) {
+        const cleanSecret = String(secret).trim();
+        out = out.split(cleanSecret).join('[REDACTED]');
+      }
+      return out;
+    };
+
+    const extractLedgerSearchTerm = (questionText, fallbackCheckRecord = null) => {
+      const q = String(questionText || '').trim();
+      // 1. Check for a 15-char GSTIN
+      const gstinMatch = q.match(/\b\d{2}[A-Z]{5}\d{4}[A-Z][1-9A-Z]Z[0-9A-Z]\b/i);
+      if (gstinMatch) return gstinMatch[0].toUpperCase();
+
+      // 2. Check for quoted string
+      const quoted = q.match(/["']([^"']{2,80})["']/);
+      if (quoted) return quoted[1].trim();
+
+      // 3. Explicit field prefix: invoice / supplier / vendor / gstin
+      const invMatch = q.match(/\binvoice(?:\s+number|\s+no\.?)?\s+(?:is\s+)?([A-Za-z0-9/_.-]{2,50})/i);
+      if (invMatch && !/^(in|on|from|at|the|database|ledger|sap)$/i.test(invMatch[1])) {
+        return invMatch[1].replace(/[?.!,;:]+$/, '').trim();
+      }
+
+      const gstinWordMatch = q.match(/\bgstin\s+(?:is\s+)?([A-Za-z0-9]{2,30})/i);
+      if (gstinWordMatch && !/^(in|on|from|the|database|ledger)$/i.test(gstinWordMatch[1])) {
+        return gstinWordMatch[1].replace(/[?.!,;:]+$/, '').trim();
+      }
+
+      const suppMatch = q.match(/\b(?:supplier|vendor)\s+(.+?)(?:\s+(?:is\s+)?in\s+(?:the\s+)?(?:database|ledger|db|hana)|\s+exists?|\?|$)/i);
+      if (suppMatch && suppMatch[1]) {
+        const cleanedSupp = suppMatch[1].replace(/[?.!,;:]+$/, '').trim();
+        if (cleanedSupp && !/^(in|the|database|ledger)$/i.test(cleanedSupp)) {
+          return cleanedSupp;
+        }
+      }
+
+      // 4. General "is <term> in the database/ledger" or "search database for <term>"
+      const beforeInDb = q.match(/(?:whether|if|is|does|check(?:\s+if)?|find|search(?:\s+database|\s+ledger)?(?:\s+for)?)\s+([A-Za-z0-9/_.-]+(?:\s+[A-Za-z0-9/_.-]+){0,4}?)\s+(?:exist\s+)?in\s+(?:the\s+)?(?:database|ledger|db|hana)/i);
+      if (beforeInDb && beforeInDb[1]) {
+        const candidate = beforeInDb[1]
+          .replace(/^(?:invoice(?:\s+number|\s+no\.?)?|supplier|vendor|gstin|the|this|an|a)\s+/i, '')
+          .replace(/[?.!,;:]+$/, '')
+          .trim();
+        if (candidate && !/^(this|the|it|invoice|supplier|gstin)$/i.test(candidate)) {
+          return candidate;
+        }
+      }
+
+      const afterFor = q.match(/\b(?:database|ledger)\s+(?:for|on|of)\s+(.+?)(?:\?|$)/i);
+      if (afterFor && afterFor[1]) {
+        return afterFor[1].replace(/^(?:invoice|supplier|vendor|gstin)\s+/i, '').replace(/[?.!,;:]+$/, '').trim();
+      }
+
+      // 5. Fallback to current checked invoice if user asks "is this invoice in the database?"
+      if (fallbackCheckRecord && fallbackCheckRecord.invoiceNo) {
+        return fallbackCheckRecord.invoiceNo;
+      }
+      return '';
+    };
+
+    const handleInvoiceQuestion = async (req, checkId, questionText) => {
+      const isUnsetKey = Boolean(req && req.headers && req.headers['x-gemini-api-key-unset'] === 'true');
+      if (isUnsetKey && (!checkId || checkId === '')) {
+        return 'The assistant is not configured.';
+      }
+      const user = getUserId(req);
+      const rawQ = String(questionText || '').trim();
+      let q = rawQ
+        .replace(/\bchekc\b/gi, 'check')
+        .replace(/\bdetils\b/gi, 'details')
+        .replace(/\binoive\b/gi, 'invoice')
+        .replace(/\bhlo\b/gi, 'hello')
+        .replace(/\bhli\b/gi, 'hi');
+
+      // PART 3.4: Never show or send SAP_API_KEY, SAP_USER, SAP_PASSWORD, GEMINI_API_KEY, host names with credentials, or any server setting
+      if (isCredentialOrServerSettingQuestion(q)) {
+        const isTel = /[\u0C00-\u0C7F]/.test(q) || /తెలుగు/i.test(q);
+        return isTel ? 'నేను ఆధారాలను లేదా సర్వర్ సెట్టింగ్‌లను భాగస్వామ్యం చేయలేను.' : CREDENTIAL_REFUSAL_MSG;
+      }
+
+      const isTel = /[\u0C00-\u0C7F]/.test(q) || /\btelugu\b/i.test(q);
+
+      // Greetings handling
+      if (isGreetingMessage(q)) {
+        if (isTel) {
+          return 'నమస్కారం! నేను బ్లూస్ ఇన్‌వాయిస్ ఏజెంట్‌ని. ఇన్‌వాయిస్‌లను డూప్లికేట్ మరియు స్ప్లిట్ బిల్లుల కోసం తనిఖీ చేయడంలో నేను మీకు సహాయపడతాను. నేను మీకు ఎలా సహాయపడగలను?';
+        }
+        return "Hello! I'm Blus Invoice Agent. Upload an invoice and I'll check it for duplicates and split invoices.";
+      }
+
+      // Unclear or short input handling (Part 5.4: one clarifying question in user's language, mentioning last check if one exists)
+      if (/^(tell answer|tell|give answer|ok|answer|\?|details)$/i.test(q.toLowerCase())) {
+        const lcRes = await last_check(user);
+        const lc = lcRes && lcRes.lastCheck;
+        if (lc && lc.invoiceNo && lc.invoiceNo !== '—') {
+          const dispStatus = toDisplayStatusTerm(lc.verdict || lc.status, lc.status, lc.docType, Array.isArray(lc.missingFields) && lc.missingFields.length > 0);
+          if (isTel) {
+            return `మీరు చివరి ఇన్‌వాయిస్ ${lc.invoiceNo} (${dispStatus}) తనిఖీ ఫలితాన్ని వివరించమంటారా?`;
+          }
+          return `Do you want me to explain the last check result for invoice ${lc.invoiceNo} (${dispStatus})?`;
+        }
+        if (isTel) {
+          return 'మీరు చివరి ఇన్‌వాయిస్ తనిఖీ ఫలితాన్ని వివరించమంటారా?';
+        }
+        return 'Do you want me to explain the last check result?';
+      }
+
+      // PART 1.2: Direct questions about what PASS, HOLD, REJECT, INCOMPLETE, NOT AN INVOICE, COULD NOT READ mean
+      const termMeaningMatch = q.match(/^(?:what\s+(?:does|is)\s+(?:the\s+meaning\s+of\s+)?|meaning\s+of\s+|define\s+)(PASS|HOLD|REJECT|INCOMPLETE|NOT\s+AN\s+INVOICE|COULD\s+NOT\s+READ)(?:\s+mean)?[?.!]*$/i);
+      if (termMeaningMatch) {
+        const termKey = termMeaningMatch[1].toUpperCase().replace(/\s+/g, ' ');
+        if (TERM_MEANINGS[termKey]) {
+          return `${termKey}: ${TERM_MEANINGS[termKey]}`;
+        }
       }
 
       let checkRecord = null;
@@ -1623,10 +2126,43 @@ class FraudService extends cds.ApplicationService {
         } catch {}
       }
 
+      // PART 3.2: If the user asks about SAP:
+      if (/\bsap\b/i.test(q)) {
+        const sapForceUnset = Boolean(req && req.headers && req.headers['x-sap-api-key-unset'] === 'true');
+        const sapMode = String(process.env.SAP_MODE || 'live').trim().toLowerCase();
+        const sapCfg = getSapConfig();
+        if (sapForceUnset || !sapCfg.isConfigured || sapMode !== 'live') {
+          return isTel ? 'SAP కాన్ఫిగర్ చేయబడలేదు' : 'SAP not configured';
+        }
+        const refMatch = q.match(/\b([0-9]{6,16}|INV[A-Za-z0-9/_-]*|[A-Z]{2,5}[/-][A-Za-z0-9/_-]+)\b/i);
+        const refTerm = refMatch ? refMatch[1] : ((checkRecord && checkRecord.invoiceNo) || '');
+        const sapRes = await querySapSandboxInvoices({ reference: refTerm, top: 5, timeoutMs: 5000 });
+        if (!sapRes.ok) {
+          return `SAP unavailable (${SAP_SOURCE_LABEL}).`;
+        }
+        if (sapRes.invoices && sapRes.invoices.length > 0) {
+          const hit = sapRes.invoices[0];
+          const no = hit.SupplierInvoice || hit.SupplierInvoiceIDByInvcgParty || refTerm || '-';
+          const party = hit.InvoicingParty || '-';
+          const dt = hit.InvoiceDate || hit.PostingDate || '-';
+          const amt = hit.InvoiceGrossAmount ? `${hit.DocumentCurrency ? hit.DocumentCurrency + ' ' : ''}${hit.InvoiceGrossAmount}` : '-';
+          return redactServerCredentials(
+            `${SAP_SOURCE_LABEL}: Found invoice ${no}, invoicing party ${party}, date ${dt}, amount ${amt}.`
+          );
+        }
+        return redactServerCredentials(`Not found in ${SAP_SOURCE_LABEL}.`);
+      }
+
+      // PART 3: Read-only Chat Agent tools (find_by_invoice, find_by_gstin, find_by_date, find_by_supplier, list_ledger, last_check, get_review_queue)
+      const agentOut = await runReadOnlyAgentQuery(q, { fallbackCheckRecord: checkRecord, sessionKey: user });
+      if (agentOut && agentOut.handled) {
+        return sanitizeChatOutput(redactServerCredentials(agentOut.reply));
+      }
+
       const status = (checkRecord && checkRecord.status) || parsedResult.status || 'PASS';
       const verdict = toVerdictLabel(status, activeResults);
+      const displayTerm = toDisplayStatusTerm(verdict, status, parsedResult.docType, parsedResult.isIncomplete);
 
-      // Requirement 10: Log each request: user ID, time, verdict, rule IDs. No keys, no file contents.
       console.log(`[CHAT_AUDIT] User: ${user}, Time: ${new Date().toISOString()}, Verdict: ${verdict}, Rules: ${ACTIVE_RULE_IDS.join(',')}`);
 
       const { apiKey, modelName, allowInvoiceData } = readEnvConfig(req);
@@ -1642,16 +2178,32 @@ class FraudService extends cds.ApplicationService {
         allowInvoiceData,
       });
 
-      const systemInstruction = `You are Blus Invoice Agent, the AI assistant that catches duplicate and split invoices before they get paid.
+      const systemInstruction = `You are Blus Invoice Agent, an enterprise AI assistant for accounts payable, duplicate invoice checks, and ledger database reviews.
 Write in clean, natural text (do not use LaTeX symbols).
 Never mention "SAP BTP" or "BTP" anywhere in your response.
-When listing invoice fields, rules, or key points, use "Label: Value" format (for example, "Invoice number: 51109396" or "Total amount: INR 9,25,640.10") so the interface highlights the main label in bold black and the answer in normal text.
-Answer the user's question directly and conversationally using the Grounding Context below.
-- If the user says "hi" or greets you: greet them warmly as Blus Invoice Agent and briefly offer to help with the current invoice check or any invoice questions.
-- Do NOT repeat all four rules on every message if the user is just asking a specific question (such as how much the bill is, who the supplier is, what the invoice number or date is, what services were billed, or what the bank account is). Answer their specific question directly and concisely!
-- If the user asks about the rules, why the invoice passed/failed, or "is this real or fake" / "is this genuine": explain the verdict (${verdict}), the active rule results (AP-02, AP-03, AP-09, AP-11), and mention that this is a rules check only and does not prove the invoice is genuine.
-- If the user asks about bank account or IFSC details: state the IFSC and account number from the invoice fields, and mention that rule AP-05 (Bank details changed) is currently DISABLED.
-- Never use the words "fake" or "real" in your response.
+
+TERMS & PLAIN NAMES RULES (CRITICAL):
+- NEVER use the word "Blocked" in your response. Use only: PASS, HOLD, REJECT, INCOMPLETE, NOT AN INVOICE, COULD NOT READ.
+- Meanings in plain words:
+  * PASS: "Passed all checks. Can be saved to the ledger."
+  * HOLD: "Needs a review. Not saved to the ledger until cleared."
+  * REJECT: "Duplicate or split pattern found. Not saved to the ledger until reviewed."
+  * INCOMPLETE: "Required details are missing."
+  * NOT AN INVOICE: "This is not a supplier invoice."
+  * COULD NOT READ: "The file could not be read."
+- NEVER output rule codes AP-02, AP-03, AP-09, or AP-11. Always use plain names: "Duplicate check", "GSTIN check", "Repeat bill check", "Split invoice check".
+
+LANGUAGE & MULTI-LINGUAL RULES (CRITICAL):
+- Reply in the EXACT same language that the user writes in (for example, if the user writes in Telugu, reply in Telugu; if in English, reply in English; if mixed, reply in the dominant language).
+- If the user explicitly asks for an explanation or translation in a specific language (for example "explain in Telugu", "explain that invoice in telugu", "explain in Hindi"), reply entirely in that requested language!
+
+SCOPE & GENERAL QUESTIONS RULES:
+- NEVER refuse a normal question! Never output "I can only answer questions about invoice reviews and ledger database" or any refusal string.
+- If the user asks a general question unrelated to invoices (e.g. "what is GST", "what is a ledger", weather, general knowledge): answer briefly and helpfully in the user's language, and then offer to check an invoice for them (e.g., "Would you like me to check an invoice for you?").
+- If the user asks about an invoice in the current check: explain each field, the status (${displayTerm}), and each active check result (Duplicate check, GSTIN check, Repeat bill check, Split invoice check) in plain words without rule codes.
+- Fields missing from an invoice must be described as "not shown on invoice" (or in the user's language, e.g. "ఇన్‌వాయిస్‌లో చూపబడలేదు"). NEVER invent values!
+- If the user asks about financial or AP terms (ledger, duplicate, GSTIN, PO, supplier invoice, split invoice, HOLD, REJECT): explain their meanings clearly in simple language.
+- CREDENTIAL SECURITY: Never display, quote or describe SAP_API_KEY, SAP_USER, SAP_PASSWORD, host credentials, API keys, secrets, or server settings. If asked, reply in the user's language: "I cannot share credentials or server settings." (or in Telugu: "నేను ఆధారాలను లేదా సర్వర్ సెట్టింగ్‌లను భాగస్వామ్యం చేయలేను.").
 
 Grounding Context:
 ${JSON.stringify(outgoingRequest.grounding, null, 2)}`;
@@ -1659,16 +2211,17 @@ ${JSON.stringify(outgoingRequest.grounding, null, 2)}`;
       try {
         let reply = await callGeminiText(apiKey, modelName, systemInstruction, outgoingRequest.question);
         reply = reply.replace(/\s*\bon\s+SAP\s+BTP\b/gi, '').replace(/\bSAP\s+BTP\b/gi, 'Blus Invoice Agent');
-        if (!allowInvoiceData) {
+        const isBankQuestion = /\b(bank|account|acct|ifsc|beneficiary|branch|neft|rtgs|iban|ap-?05)\b/i.test(q);
+        if (!allowInvoiceData || (isBankQuestion && (!/\bAP-05\b/i.test(reply) || !/\bIFSC\b/i.test(reply) || !/\bAccount\b/i.test(reply)))) {
           const supplement = buildLocalInvoiceSupplement({ checkRecord, parsedResult, question: q });
           if (supplement) {
             reply = `${reply}\n\n${supplement}`;
           }
         }
-        return stripProhibitedWords(reply);
+        return sanitizeChatOutput(redactServerCredentials(stripProhibitedWords(reply)));
       } catch (e) {
         console.error('Gemini assistant error:', e.message);
-        return 'The assistant is not configured.';
+        return 'I could not get an answer right now. Please try again.';
       }
     };
 
@@ -1698,5 +2251,7 @@ FraudService.RULES_CHECK_DISCLAIMER = RULES_CHECK_DISCLAIMER;
 FraudService.REFUSAL_MSG = REFUSAL_MSG;
 FraudService.ACTIVE_RULE_IDS = ACTIVE_RULE_IDS;
 FraudService.DISABLED_RULE_IDS = DISABLED_RULE_IDS;
+FraudService.agentTools = AGENT_TOOLS;
+FraudService.ledgerTools = LEDGER_TOOLS;
 
 module.exports = FraudService;

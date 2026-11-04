@@ -163,14 +163,59 @@ function readPdfMeta(buf) {
   return { producer: p ? p[1] : '', creator: c ? c[1] : '' };
 }
 
+function classifyDocumentType({ text = '', fileName = '', fields = {} } = {}) {
+  const t = String(text || '').trim();
+  const fn = String(fileName || '').trim().toLowerCase();
+  const tLower = t.toLowerCase();
+
+  // UNREADABLE check
+  if (!t && (!fields || Object.keys(fields).length === 0)) {
+    return { docType: 'UNREADABLE', label: 'Unreadable Document' };
+  }
+
+  if (/\b(credit\s*note|credit\s*memo|cr\.\s*note)\b/i.test(tLower) || /\bcredit\s*note\b/i.test(fn)) {
+    return { docType: 'CREDIT_NOTE', label: 'Credit Note' };
+  }
+  if (/\b(debit\s*note|debit\s*memo|dr\.\s*note)\b/i.test(tLower) || /\bdebit\s*note\b/i.test(fn)) {
+    return { docType: 'DEBIT_NOTE', label: 'Debit Note' };
+  }
+  if (/\bproforma\b/i.test(tLower) || /\bproforma\b/i.test(fn)) {
+    return { docType: 'PROFORMA', label: 'Proforma Invoice' };
+  }
+  if (/\b(quotation|quote|estimate)\b/i.test(tLower) || /\bquotation\b/i.test(fn) || /^quote/i.test(fn)) {
+    return { docType: 'QUOTATION', label: 'Quotation' };
+  }
+  if (/\b(purchase\s*order)\b/i.test(tLower) || /^po[\s_-]*\d*\.pdf$/i.test(fn) || /^purchase[\s_-]*order/i.test(fn) || /\bpo[\s_-]*\d+\.pdf$/i.test(fn)) {
+    if (!/\b(tax\s*invoice|supplier\s*invoice)\b/i.test(tLower) || /^po/i.test(fn) || /\bpo[\s_-]*\d+\.pdf$/i.test(fn)) {
+      return { docType: 'PURCHASE_ORDER', label: 'Purchase Order' };
+    }
+  }
+  if (/\b(delivery\s*challan|dispatch\s*slip|challan)\b/i.test(tLower) || /\bchallan\b/i.test(fn)) {
+    return { docType: 'DELIVERY_CHALLAN', label: 'Delivery Challan' };
+  }
+  if (/\b(payment\s*receipt|receipt)\b/i.test(tLower) || /\breceipt\b/i.test(fn)) {
+    return { docType: 'RECEIPT', label: 'Receipt' };
+  }
+  if (/\b(account\s*statement|statement\s*of\s*account)\b/i.test(tLower) || /\bstatement\b/i.test(fn)) {
+    return { docType: 'STATEMENT', label: 'Statement' };
+  }
+  if (/\b(tax\s*invoice|supplier\s*invoice|commercial\s*invoice|invoice|bill)\b/i.test(tLower) || /\b(invoice|inv|bill)\b/i.test(fn) || fields.invoiceNo || fields.SupplierInvoice) {
+    return { docType: 'SUPPLIER_INVOICE', label: 'Supplier Invoice' };
+  }
+
+  return { docType: 'OTHER', label: 'Other Document' };
+}
+
 module.exports = {
   extractFields,
   readPdfMeta,
   toIsoDate,
   validateAndDetectFile,
   computeFieldConfidences,
+  classifyDocumentType,
   MAX_FILE_BYTES,
   LOW_CONFIDENCE_THRESHOLD,
   UNSUPPORTED_FILE_MSG,
   FILE_TOO_LARGE_MSG,
 };
+

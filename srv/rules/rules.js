@@ -24,13 +24,19 @@ const TOL_TOTAL = 1.0;
 const TOL_RATE_PCT = 0.1;
 
 const findVendor = (masters, inv) =>
-  (masters.vendors || []).find(v => U.norm(v.gstin) === U.norm(inv.supplierGstin)) ||
-  (masters.vendors || []).find(v => inv.supplierId && v.id === inv.supplierId);
+  (masters.vendors || []).find(v => U.norm(v.gstin) && U.norm(v.gstin) === U.norm(inv.supplierGstin || inv.SupplierGSTIN)) ||
+  (masters.vendors || []).find(v => inv.supplierId && v.id === inv.supplierId) ||
+  (masters.vendors || []).find(v => U.norm(v.name) && U.norm(v.name) === U.norm(inv.InvoicingParty || inv.supplierName));
 
 const findPo = (masters, inv) =>
   inv.poNumber ? (masters.purchaseOrders || []).find(p => String(p.po) === String(inv.poNumber)) : undefined;
 
-const sameSupplier = (a, b) => U.norm(a.supplierGstin || a.supplierId) === U.norm(b.supplierGstin || b.supplierId);
+const supplierKeyOf = (x) => U.norm(x.supplierGstin || x.SupplierGSTIN || x.supplierId || x.InvoicingParty || x.supplierName);
+const sameSupplier = (a, b) => {
+  const ka = supplierKeyOf(a);
+  const kb = supplierKeyOf(b);
+  return Boolean(ka && kb && ka === kb);
+};
 
 const others = (inv, ctx) => [...(ctx.posted || []), ...((ctx.batch || []).filter(b => b !== inv))];
 
@@ -70,14 +76,21 @@ function ap02(inv, ctx) {
   const pool = [...(ctx.posted || []), ...(ctx.earlier || [])];
   const hit = pool.find(p => U.dupKeyOf(p) === key || (inv.irn && p.irn && p.irn === inv.irn));
   if (hit) {
+    const invNo = hit.invoiceNo || hit.SupplierInvoice || inv.invoiceNo || inv.SupplierInvoice || '-';
+    const rawDate = hit.invoiceDate || hit.InvoiceDate || hit.PostingDate || inv.invoiceDate || inv.InvoiceDate || inv.PostingDate || '-';
+    const fyRaw = U.fiscalYear(inv.invoiceDate || inv.InvoiceDate || inv.PostingDate || rawDate) !== 'UNKNOWN'
+      ? U.fiscalYear(inv.invoiceDate || inv.InvoiceDate || inv.PostingDate || rawDate)
+      : (inv.FiscalYear || inv.fiscalYear || hit.fiscalYear || 'current');
+    const fyShort = String(fyRaw).replace(/^(\d{4})-20(\d{2})$/, '$1-$2');
     return {
       tier: 'REJECT',
-      text: `Duplicate: invoice ${inv.invoiceNo} from ${inv.supplierGstin || inv.supplierId} already exists in FY ${U.fiscalYear(inv.invoiceDate)} as ${hit.invoiceNo} dated ${hit.invoiceDate}. Outcome: REJECT.`,
+      text: `Duplicate of invoice ${invNo} from the same supplier, same financial year (${fyShort}), dated ${rawDate}.`,
     };
   }
   const bl = (ctx.masters.blacklistGstins || []).map(U.norm);
-  if (bl.includes(U.norm(inv.supplierGstin))) {
-    return { tier: 'HOLD', text: `Supplier ${U.norm(inv.supplierGstin)} is on internal blacklist.` };
+  const gstinNorm = U.norm(inv.supplierGstin || inv.SupplierGSTIN);
+  if (gstinNorm && bl.includes(gstinNorm)) {
+    return { tier: 'HOLD', text: `Supplier ${gstinNorm} is on internal blacklist.` };
   }
   return { tier: 'PASS', text: 'No duplicate found for this supplier and financial year.' };
 }
@@ -87,8 +100,8 @@ function ap03(inv, ctx) {
   if (!RULE_CONFIG.isRuleActive('AP-03')) {
     return { tier: 'DISABLED', text: 'This check is disabled in the active configuration.' };
   }
-  const g = U.norm(inv.supplierGstin);
-  if (!g) return { tier: 'PASS', text: 'No supplier GSTIN provided.' };
+  const g = U.norm(inv.supplierGstin || inv.SupplierGSTIN);
+  if (!g) return { tier: 'SKIPPED', text: 'GSTIN not provided' };
 
   const vendors = ctx.masters.vendors || [];
   const matching = vendors.filter(v => U.norm(v.gstin) === g);
@@ -156,25 +169,38 @@ function ap09(inv, ctx) {
   if (!RULE_CONFIG.isRuleActive('AP-09')) {
     return { tier: 'DISABLED', text: 'This check is disabled in the active configuration.' };
   }
+  const usedPostingDate = Boolean(inv.postingDateUsed || (!inv.InvoiceDate && (inv.PostingDate || inv.postingDate)));
+  const dateNoteSuffix = usedPostingDate ? ' (Invoice date not provided, posting date used)' : '';
+  const invDate = inv.InvoiceDate || inv.invoiceDate || inv.PostingDate || inv.postingDate;
+
   const po = findPo(ctx.masters, inv);
   if (po && po.recurring) {
-    return { tier: 'PASS', text: `Matched to recurring contract PO ${po.po}. Recurring contract POs are excluded.` };
+    return { tier: 'PASS', text: `Matched to recurring contract PO ${po.po}. Recurring contract POs are excluded.${dateNoteSuffix}` };
   }
-  const hit = others(inv, ctx).find(h =>
-    sameSupplier(h, inv) &&
-    U.num(h.total) === U.num(inv.total) &&
-    U.daysBetween(h.invoiceDate, inv.invoiceDate) <= 90 &&
-    U.normInvoiceNo(h.invoiceNo) !== U.normInvoiceNo(inv.invoiceNo) &&
-    U.similarity(h.description, inv.description) >= 0.9);
+  const hit = others(inv, ctx).find(h => {
+    const hDate = h.InvoiceDate || h.invoiceDate || h.PostingDate || h.postingDate;
+    return sameSupplier(h, inv) &&
+      U.num(h.total ?? h.InvoiceGrossAmount) === U.num(inv.total ?? inv.InvoiceGrossAmount) &&
+      U.daysBetween(hDate, invDate) <= 90 &&
+      U.normInvoiceNo(h.invoiceNo || h.SupplierInvoice) !== U.normInvoiceNo(inv.invoiceNo || inv.SupplierInvoice) &&
+      U.similarity(h.description || h.SupplierInvoiceIDByInvcgParty || h.DocumentHeaderText, inv.description || inv.SupplierInvoiceIDByInvcgParty || inv.DocumentHeaderText) >= 0.9;
+  });
 
   if (hit) {
     const tier = process.env.AP09_TIER || (ctx.masters && ctx.masters.config && ctx.masters.config.AP09_TIER) || 'REJECT';
+    const hitNo = hit.invoiceNo || hit.SupplierInvoice;
+    const hitDate = hit.invoiceDate || hit.InvoiceDate || hit.PostingDate || hit.postingDate || '-';
     return {
       tier,
-      text: `Repeat bill with same amount and similar services within 90 days (${hit.invoiceNo} dated ${hit.invoiceDate}). Outcome: ${tier}. Override only by CFO and Controller together, with a logged reason.`,
+      text: `Repeat bill with same amount and similar services within 90 days (${hitNo} dated ${hitDate}). Outcome: ${tier}. Override only by CFO and Controller together, with a logged reason.${dateNoteSuffix}`,
     };
   }
-  return { tier: 'PASS', text: 'No repeat bill with same amount and similar services within 90 days.' };
+  return {
+    tier: 'PASS',
+    text: usedPostingDate
+      ? 'No repeat bill with same amount and similar services within 90 days. Invoice date not provided, posting date used.'
+      : 'No repeat bill with same amount and similar services within 90 days.',
+  };
 }
 
 // ---------- AP-10 Lookalike resubmission (DISABLED by default) ----------

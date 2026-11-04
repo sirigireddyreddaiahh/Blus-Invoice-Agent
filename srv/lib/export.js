@@ -33,6 +33,17 @@ const S4_EXPORT_HEADERS = [
   'Split invoice pattern',
 ];
 
+const LEDGER_EXPORT_HEADERS = [
+  'Invoice No',
+  'Supplier',
+  'GSTIN',
+  'Invoice Date',
+  'Posting Date',
+  'Amount (INR)',
+  'Fiscal Year',
+  'Source',
+];
+
 function cleanRuleText(text) {
   return String(text || '').replace(/^AP-\d+\s*·?\s*/i, '').trim();
 }
@@ -100,10 +111,14 @@ function extractS4RowCells(r) {
 
   const activeResults = results.filter(x => ['AP-02', 'AP-03', 'AP-09', 'AP-11'].includes(x.id));
   const activeNonPass = activeResults
-    .filter(x => x.tier !== 'PASS')
+    .filter(x => x.tier !== 'PASS' && x.tier !== 'SKIPPED')
     .map(x => cleanRuleText(x.text))
     .join(' | ');
-  const reason = activeNonPass || 'All active rules passed';
+  const gstinMissing = !r.supplierGstin || activeResults.some(x => x.id === 'AP-03' && (x.tier === 'SKIPPED' || /GSTIN not provided/i.test(x.text)));
+  let reason = activeNonPass || 'All active rules passed';
+  if (gstinMissing && !/GSTIN not provided/i.test(reason)) {
+    reason = `${reason} · GSTIN not provided`;
+  }
 
   return [
     r.invoiceNo || r.ID || '',
@@ -337,12 +352,33 @@ async function generateHistoryExcelBuffer(rows) {
   return Buffer.from(arrayBuffer);
 }
 
+function extractLedgerRowCells(r) {
+  const s = String(r.source || '').trim().toUpperCase();
+  let sourceLabel = 'Import';
+  if (s === 'BATCH' || s === 'S4') sourceLabel = 'Batch';
+  else if (s === 'CHAT' || s === 'UPLOAD') sourceLabel = 'Chat';
+
+  const postingDate = r.postingDate || (r.postedAt ? String(r.postedAt).slice(0, 10) : (r.invoiceDate || ''));
+  return [
+    r.invoiceNo || '',
+    r.supplierName || '',
+    r.supplierGstin || '',
+    r.invoiceDate || '',
+    postingDate,
+    r.total !== undefined && r.total !== null ? Number(r.total) : '',
+    r.fiscalYear || '',
+    sourceLabel,
+  ];
+}
+
 module.exports = {
   HISTORY_EXPORT_HEADERS,
   S4_EXPORT_HEADERS,
+  LEDGER_EXPORT_HEADERS,
   cleanRuleText,
   extractHistoryRowCells,
   extractS4RowCells,
+  extractLedgerRowCells,
   filterCheckRows,
   escapeCsvCell,
   getStatusCellStyle,
@@ -351,3 +387,4 @@ module.exports = {
   generateHistoryCsv,
   generateHistoryExcelBuffer,
 };
+

@@ -29,6 +29,10 @@ async function loadLedgerForInvoices(invoices = []) {
   return posted || [];
 }
 
+function supplierMatchKey(x) {
+  return U.norm(x.supplierGstin || x.SupplierGSTIN || x.supplierId || x.InvoicingParty || x.supplierName);
+}
+
 /**
  * Evaluates whether an invoice matches any existing record in the ledger or inside the same batch.
  * Returns a plain-language match object without rule codes:
@@ -37,19 +41,19 @@ async function loadLedgerForInvoices(invoices = []) {
  * - "Not found in database" if there is no match.
  */
 function findDatabaseMatch(inv, { posted = [], batch = [], earlier = [] } = {}) {
-  const normGstin = U.norm(inv.supplierGstin || inv.supplierId);
-  const normInvNo = U.normInvoiceNo(inv.invoiceNo);
-  const invTotal = U.num(inv.total);
-  const invDate = inv.invoiceDate;
-  const fy = U.fiscalYear(invDate);
+  const normSupp = supplierMatchKey(inv);
+  const normInvNo = U.normInvoiceNo(inv.invoiceNo || inv.SupplierInvoice);
+  const invTotal = U.num(inv.total ?? inv.InvoiceGrossAmount);
+  const invDate = inv.invoiceDate || inv.InvoiceDate || inv.PostingDate || inv.postingDate;
+  const fy = invDate ? U.fiscalYear(invDate) : (inv.FiscalYear || inv.fiscalYear || 'UNKNOWN');
 
   const formatRecord = (r) => ({
-    invoiceNo: r.invoiceNo || '-',
-    supplierName: r.supplierName || inv.supplierName || 'Supplier',
-    supplierGstin: r.supplierGstin || '-',
-    invoiceDate: r.invoiceDate || '-',
-    total: r.total !== undefined && r.total !== null ? Number(r.total) : null,
-    totalFormatted: `INR ${formatMoney(r.total)}`,
+    invoiceNo: r.invoiceNo || r.SupplierInvoice || '-',
+    supplierName: r.supplierName || r.InvoicingParty || inv.supplierName || inv.InvoicingParty || 'Supplier',
+    supplierGstin: r.supplierGstin || r.SupplierGSTIN || '-',
+    invoiceDate: r.invoiceDate || r.InvoiceDate || r.PostingDate || '-',
+    total: (r.total ?? r.InvoiceGrossAmount) !== undefined && (r.total ?? r.InvoiceGrossAmount) !== null ? Number(r.total ?? r.InvoiceGrossAmount) : null,
+    totalFormatted: `INR ${formatMoney(r.total ?? r.InvoiceGrossAmount)}`,
   });
 
   // Check 1: Same invoice number in the database ledger
@@ -57,9 +61,10 @@ function findDatabaseMatch(inv, { posted = [], batch = [], earlier = [] } = {}) 
   const exactLedgerMatch = (posted || []).find(p => {
     if (inv.irn && p.irn && p.irn === inv.irn) return true;
     if (U.dupKeyOf(p) === dupKey) return true;
-    if (normInvNo && U.normInvoiceNo(p.invoiceNo) === normInvNo && U.norm(p.supplierGstin) === normGstin) {
+    if (normInvNo && U.normInvoiceNo(p.invoiceNo || p.SupplierInvoice) === normInvNo && supplierMatchKey(p) === normSupp) {
       if (p.fiscalYear && fy && p.fiscalYear === fy) return true;
-      if (!p.fiscalYear && p.invoiceDate && U.fiscalYear(p.invoiceDate) === fy) return true;
+      const pDate = p.invoiceDate || p.InvoiceDate || p.PostingDate;
+      if (!p.fiscalYear && pDate && U.fiscalYear(pDate) === fy) return true;
     }
     return false;
   });
@@ -78,11 +83,11 @@ function findDatabaseMatch(inv, { posted = [], batch = [], earlier = [] } = {}) 
 
   // Check 2: Same vendor, amount and service within 90 days in the ledger
   const repeatLedgerMatch = (posted || []).find(p =>
-    U.norm(p.supplierGstin) === normGstin &&
-    U.num(p.total) === invTotal &&
-    U.daysBetween(p.invoiceDate, invDate) <= 90 &&
-    U.normInvoiceNo(p.invoiceNo) !== normInvNo &&
-    U.similarity(p.description, inv.description) >= 0.9
+    supplierMatchKey(p) === normSupp &&
+    U.num(p.total ?? p.InvoiceGrossAmount) === invTotal &&
+    U.daysBetween(p.invoiceDate || p.InvoiceDate || p.PostingDate, invDate) <= 90 &&
+    U.normInvoiceNo(p.invoiceNo || p.SupplierInvoice) !== normInvNo &&
+    U.similarity(p.description || p.SupplierInvoiceIDByInvcgParty || p.DocumentHeaderText, inv.description || inv.SupplierInvoiceIDByInvcgParty || inv.DocumentHeaderText) >= 0.9
   );
 
   if (repeatLedgerMatch) {
@@ -99,9 +104,9 @@ function findDatabaseMatch(inv, { posted = [], batch = [], earlier = [] } = {}) 
 
   // Check 3: Split invoice pattern against approval limits in ledger
   const splitLedgerMatch = (posted || []).find(p => {
-    if (U.norm(p.supplierGstin) !== normGstin) return false;
-    if (U.daysBetween(p.invoiceDate, invDate) > 14) return false;
-    const pAmt = U.num(p.total);
+    if (supplierMatchKey(p) !== normSupp) return false;
+    if (U.daysBetween(p.invoiceDate || p.InvoiceDate || p.PostingDate, invDate) > 14) return false;
+    const pAmt = U.num(p.total ?? p.InvoiceGrossAmount);
     const levels = [100000, 500000];
     return levels.some(limit => {
       const isBand = (pAmt >= limit * 0.95 && pAmt < limit) && (invTotal >= limit * 0.95 && invTotal < limit);
@@ -122,12 +127,14 @@ function findDatabaseMatch(inv, { posted = [], batch = [], earlier = [] } = {}) 
   }
 
   // Check 4: Matches inside the same batch (earlier rows in same upload)
-  const exactBatchMatch = (earlier || []).find(b =>
-    b !== inv &&
-    U.norm(b.supplierGstin) === normGstin &&
-    U.normInvoiceNo(b.invoiceNo) === normInvNo &&
-    U.fiscalYear(b.invoiceDate) === fy
-  );
+  const exactBatchMatch = (earlier || []).find(b => {
+    if (b === inv) return false;
+    const bDate = b.invoiceDate || b.InvoiceDate || b.PostingDate;
+    const bFy = bDate ? U.fiscalYear(bDate) : (b.FiscalYear || b.fiscalYear || 'UNKNOWN');
+    return supplierMatchKey(b) === normSupp &&
+      U.normInvoiceNo(b.invoiceNo || b.SupplierInvoice) === normInvNo &&
+      bFy === fy;
+  });
 
   if (exactBatchMatch) {
     const rec = formatRecord(exactBatchMatch);
@@ -143,11 +150,11 @@ function findDatabaseMatch(inv, { posted = [], batch = [], earlier = [] } = {}) 
 
   const repeatBatchMatch = (batch || []).find(b =>
     b !== inv &&
-    U.norm(b.supplierGstin) === normGstin &&
-    U.num(b.total) === invTotal &&
-    U.daysBetween(b.invoiceDate, invDate) <= 90 &&
-    U.normInvoiceNo(b.invoiceNo) !== normInvNo &&
-    U.similarity(b.description, inv.description) >= 0.9
+    supplierMatchKey(b) === normSupp &&
+    U.num(b.total ?? b.InvoiceGrossAmount) === invTotal &&
+    U.daysBetween(b.invoiceDate || b.InvoiceDate || b.PostingDate, invDate) <= 90 &&
+    U.normInvoiceNo(b.invoiceNo || b.SupplierInvoice) !== normInvNo &&
+    U.similarity(b.description || b.SupplierInvoiceIDByInvcgParty || b.DocumentHeaderText, inv.description || inv.SupplierInvoiceIDByInvcgParty || inv.DocumentHeaderText) >= 0.9
   );
 
   if (repeatBatchMatch) {
@@ -172,22 +179,40 @@ function findDatabaseMatch(inv, { posted = [], batch = [], earlier = [] } = {}) 
   };
 }
 
+function normalizeLedgerSource(rawSource) {
+  const s = String(rawSource || '').trim().toUpperCase();
+  if (s === 'IMPORT' || s === 'LEDGER_IMPORT') return 'Import';
+  if (s === 'BATCH' || s === 'S4') return 'Batch';
+  if (s === 'CHAT' || s === 'UPLOAD') return 'Chat';
+  return 'Chat';
+}
+
 /**
  * Inserts a PASS (or cleared/posted) invoice into the HANA ledger (ap.Posted).
  */
-async function insertInvoiceIntoLedger(inv, { blocked = false, user = 'reviewer' } = {}) {
-  const fy = U.fiscalYear(inv.invoiceDate);
+async function insertInvoiceIntoLedger(inv, { blocked = false, user = 'reviewer', source = '' } = {}) {
+  const invDate = inv.invoiceDate || inv.InvoiceDate || inv.PostingDate || inv.postingDate || null;
+  const fy = invDate ? U.fiscalYear(invDate) : (inv.FiscalYear || inv.fiscalYear || 'UNKNOWN');
+  const invNo = inv.invoiceNo || inv.SupplierInvoice || null;
+  const suppGstin = inv.supplierGstin || inv.SupplierGSTIN || null;
+  const suppName = inv.supplierName || inv.InvoicingParty || null;
+  const totalVal = inv.total ?? inv.InvoiceGrossAmount;
+  const normalizedSource = normalizeLedgerSource(source || inv.ledgerSource || inv.source || 'Chat');
+
+  const whereCond = suppGstin
+    ? { supplierGstin: suppGstin, invoiceNo: invNo, fiscalYear: fy }
+    : { supplierName: suppName, invoiceNo: invNo, fiscalYear: fy };
+
   const existing = await cds.run(
-    SELECT.one.from('ap.Posted').where({
-      supplierGstin: inv.supplierGstin || null,
-      invoiceNo: inv.invoiceNo || null,
-      fiscalYear: fy,
-    })
+    SELECT.one.from('ap.Posted').where(whereCond)
   );
 
   if (existing) {
-    if (existing.blocked && !blocked) {
-      await cds.run(UPDATE('ap.Posted').set({ blocked: false }).where({ ID: existing.ID }));
+    const updates = {};
+    if (existing.blocked && !blocked) updates.blocked = false;
+    if (!existing.source && normalizedSource) updates.source = normalizedSource;
+    if (Object.keys(updates).length > 0) {
+      await cds.run(UPDATE('ap.Posted').set(updates).where({ ID: existing.ID }));
     }
     return existing.ID;
   }
@@ -195,17 +220,18 @@ async function insertInvoiceIntoLedger(inv, { blocked = false, user = 'reviewer'
   const id = crypto.randomUUID();
   await cds.run(INSERT.into('ap.Posted').entries({
     ID: id,
-    invoiceNo: inv.invoiceNo,
-    supplierGstin: inv.supplierGstin,
+    invoiceNo: invNo,
+    supplierGstin: suppGstin,
     fiscalYear: fy,
-    invoiceDate: inv.invoiceDate,
-    total: inv.total !== undefined && inv.total !== null ? Number(inv.total) : 0,
-    supplierName: inv.supplierName || null,
-    description: inv.description || '',
+    invoiceDate: invDate,
+    total: totalVal !== undefined && totalVal !== null ? Number(totalVal) : 0,
+    supplierName: suppName,
+    description: inv.description || inv.SupplierInvoiceIDByInvcgParty || inv.DocumentHeaderText || '',
     irn: inv.irn || null,
     blocked,
     recurringPo: Boolean(inv.recurringPo),
     postedAt: new Date().toISOString(),
+    source: normalizedSource,
   }));
   return id;
 }
@@ -214,5 +240,7 @@ module.exports = {
   loadLedgerForInvoices,
   findDatabaseMatch,
   insertInvoiceIntoLedger,
+  normalizeLedgerSource,
   formatMoney,
 };
+

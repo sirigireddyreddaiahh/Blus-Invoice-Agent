@@ -7,6 +7,7 @@ const {
   findDatabaseMatch,
   insertInvoiceIntoLedger,
 } = require('./ledger');
+const { checkSapMatchForInvoice, querySapSandboxInvoices, getSapConfig } = require('./sap');
 
 const CHUNK_SIZE = 50;
 
@@ -157,7 +158,7 @@ async function processJob(task) {
   }
 
   if (typeof audit === 'function') {
-    const isResume = actualStartingIndex > 0;
+    const isResume = Boolean(task.isResume || actualStartingIndex > 0);
     await audit(
       'BATCH_JOB',
       null,
@@ -198,6 +199,13 @@ async function processJob(task) {
   let passCount = (jobRow && jobRow.passCount) || initialPassCount;
   let holdCount = (jobRow && jobRow.holdCount) || initialHoldCount;
   let rejectCount = (jobRow && jobRow.rejectCount) || initialRejectCount;
+
+  const sapCache = new Map();
+  let sapCircuitBroken = false;
+  const prefetchedSapRes =
+    total > 5 && getSapConfig().isConfigured
+      ? await querySapSandboxInvoices({ top: 50, timeoutMs: 5000 })
+      : null;
 
   // Process chunk by chunk starting from actualStartingIndex
   for (let cStart = actualStartingIndex; cStart < total; cStart += CHUNK_SIZE) {
@@ -257,6 +265,12 @@ async function processJob(task) {
           batch: chunkInvoices,
           earlier: lightweightEarlier,
         });
+        const sapMatch = await checkSapMatchForInvoice(inv, {
+          prefetchedSapRes,
+          cache: sapCache,
+          sapCircuitBroken,
+          onUnavailable: () => { sapCircuitBroken = true; },
+        });
 
         const checkId = crypto.randomUUID();
         const tsNow = new Date().toISOString();
@@ -264,7 +278,7 @@ async function processJob(task) {
         if (enriched.status === 'PASS') {
           passCount++;
           // Auto-insert PASS invoices into ledger so subsequent chunks/uploads detect them
-          await insertInvoiceIntoLedger(inv, { blocked: false, user, masters });
+          await insertInvoiceIntoLedger(inv, { blocked: false, user, masters, source: 'Batch' });
           posted.push(inv);
         } else if (enriched.status === 'HOLD') {
           holdCount++;
@@ -288,6 +302,7 @@ async function processJob(task) {
           ...enriched,
           fields: publicView(inv),
           databaseMatch,
+          sapMatch,
         };
 
         checksToInsert.push({
@@ -338,6 +353,7 @@ async function processJob(task) {
           checkId,
           ...enriched,
           databaseMatch,
+          sapMatch,
           invoice: publicView(inv),
         });
       } catch (invErr) {
@@ -599,6 +615,15 @@ async function resumeJob(jobId, { masters, audit, user = 'user' } = {}) {
     }).where({ ID: job.ID })
   );
 
+  if (typeof audit === 'function') {
+    await audit(
+      'BATCH_JOB',
+      null,
+      `Batch job ${job.jobId || job.ID} resumed from invoice ${startingIndex + 1} of ${job.total}`,
+      { user: user || job.createdBy || 'user', fileName: 'batch-job', result: 'RESUMED' }
+    );
+  }
+
   // Push resume task into the queue
   jobQueue.push({
     jobId: job.jobId || job.ID,
@@ -607,6 +632,7 @@ async function resumeJob(jobId, { masters, audit, user = 'user' } = {}) {
     source: 'S4',
     masters,
     audit,
+    isResume: true,
     startingIndex,
     initialResults: existingResults,
     initialErrors: existingErrors,

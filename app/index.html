@@ -134,6 +134,12 @@
           </span>
           <span class="nav-label">2. S/4HANA extract</span>
         </button>
+        <button type="button" class="nav-item" data-page="ledger" id="nav-ledger" title="Ledger">
+          <span class="nav-icon" aria-hidden="true">
+            <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M4 19.5A2.5 2.5 0 0 1 6.5 17H20"/><path d="M6.5 2H20v20H6.5A2.5 2.5 0 0 1 4 19.5v-15A2.5 2.5 0 0 1 6.5 2z"/></svg>
+          </span>
+          <span class="nav-label">Ledger</span>
+        </button>
         <button type="button" class="nav-item" data-page="alerts" id="nav-alerts" title="3. Review queue">
           <span class="nav-icon" aria-hidden="true">
             <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"/><line x1="12" y1="8" x2="12" y2="12"/><line x1="12" y1="16" x2="12.01" y2="16"/></svg>
@@ -163,6 +169,24 @@
            ========================================================= -->
       <section id="page-upload" class="page-section active" aria-label="Invoice check chat">
         <div id="aiModeView" class="ai-mode-shell">
+          <!-- PART 1: Top Summary Line (hidden in chat mode; shown in S/4HANA extract tab) -->
+          <div class="top-summary-wrap hidden" id="uploadTopSummaryWrap" aria-hidden="true">
+            <div class="top-summary-line" id="uploadTopSummaryLine" aria-live="polite">
+              <button type="button" class="summary-metric-btn" data-summary-action="uploaded">Uploaded: <span id="uploadSummaryUploaded">0</span></button>
+              <span class="summary-sep">·</span>
+              <button type="button" class="summary-metric-btn" data-summary-action="ledger">Saved to ledger: <span id="uploadSummarySavedToLedger">0</span></button>
+              <span class="summary-sep">·</span>
+              <button type="button" class="summary-metric-btn" data-summary-action="passed">Passed: <span id="uploadSummaryPassed">0</span></button>
+              <span class="summary-sep">·</span>
+              <button type="button" class="summary-metric-btn" data-summary-action="held">Held: <span id="uploadSummaryHeld">0</span></button>
+              <span class="summary-sep">·</span>
+              <button type="button" class="summary-metric-btn" data-summary-action="rejected">Rejected: <span id="uploadSummaryRejected">0</span></button>
+              <span class="summary-sep">·</span>
+              <button type="button" class="summary-metric-btn" data-summary-action="failed">Failed to read: <span id="uploadSummaryFailed">0</span></button>
+            </div>
+            <div class="summary-consistency-warning hidden" id="uploadSummaryConsistencyWarn">Count check failed: see Activity log.</div>
+          </div>
+
           <!-- Chat Message Area: fills all space between top bar and composer; empty on static load -->
           <div id="aiChatThread" class="ai-chat-thread" role="log" aria-live="polite"></div>
 
@@ -218,83 +242,164 @@
            PAGE 2: S/4HANA EXTRACT
            ========================================================= -->
       <section id="page-s4" class="page-section" aria-labelledby="heading-s4">
-        <div class="page-header">
-          <p class="section-kicker">Batch Ledger Verification</p>
-          <h2 id="heading-s4">S/4HANA extract</h2>
-          <p>Import a CSV or JSON extract from SAP S/4HANA or load the sample extract, then run batch duplicate and split-bill rules.</p>
+        <div class="page-header page-header-row">
+          <div>
+            <h2 id="heading-s4">S/4HANA extract</h2>
+            <p>Check supplier invoices against the ledger and SAP.</p>
+          </div>
+          <span id="sapSourceBadge" class="source-chip" title="SAP sandbox (demo data)">Source: Uploaded file</span>
+        </div>
+
+        <!-- PART 1: Top Summary Line (S/4HANA extract tab) -->
+        <div class="top-summary-wrap" id="s4TopSummaryWrap">
+          <div class="top-summary-line" id="s4TopSummaryLine" aria-live="polite">
+            <button type="button" class="summary-metric-btn" data-summary-action="uploaded">Uploaded: <span id="s4SummaryUploaded">0</span></button>
+            <span class="summary-sep">·</span>
+            <button type="button" class="summary-metric-btn" data-summary-action="ledger">Saved to ledger: <span id="s4SummarySavedToLedger">0</span></button>
+            <span class="summary-sep">·</span>
+            <button type="button" class="summary-metric-btn" data-summary-action="passed">Passed: <span id="s4SummaryPassed">0</span></button>
+            <span class="summary-sep">·</span>
+            <button type="button" class="summary-metric-btn" data-summary-action="held">Held: <span id="s4SummaryHeld">0</span></button>
+            <span class="summary-sep">·</span>
+            <button type="button" class="summary-metric-btn" data-summary-action="rejected">Rejected: <span id="s4SummaryRejected">0</span></button>
+            <span class="summary-sep">·</span>
+            <button type="button" class="summary-metric-btn" data-summary-action="failed">Failed to read: <span id="s4SummaryFailed">0</span></button>
+          </div>
+          <div class="summary-consistency-warning hidden" id="s4SummaryConsistencyWarn">Count check failed: see Activity log.</div>
+        </div>
+
+        <!-- Four KPI cards in one row: Total, PASS, HOLD, REJECT -->
+        <div class="kpi-grid kpi-grid-4" id="s4SummaryCounts">
+          <div class="kpi-card total">
+            <span class="kpi-label">Total</span>
+            <span class="kpi-val" id="s4CountTotal">0</span>
+          </div>
+          <div class="kpi-card pass">
+            <span class="kpi-label">PASS</span>
+            <span class="kpi-val" id="s4CountPass">0</span>
+          </div>
+          <div class="kpi-card hold">
+            <span class="kpi-label">HOLD</span>
+            <span class="kpi-val" id="s4CountHold">0</span>
+          </div>
+          <div class="kpi-card reject">
+            <span class="kpi-label">REJECT</span>
+            <span class="kpi-val" id="s4CountReject">0</span>
+          </div>
         </div>
 
         <div class="card">
-          <div class="btn-row" id="s4ActionRow">
-            <label for="s4FileInput" class="inline-select-label">
-              Import file(s) (CSV, JSON, PDF, Images)
-              <input type="file" id="s4FileInput" multiple accept=".csv,.json,.pdf,.png,.jpg,.jpeg,text/csv,application/json,application/pdf,image/*" aria-label="Import files">
-            </label>
-            <button type="button" id="btnImportS4">Import</button>
-            <button type="button" id="btnImportToLedger">Import to ledger</button>
-            <button type="button" id="btnUseSampleS4">Use sample extract</button>
-            <button type="button" id="btnCheckAllS4" class="primary">Check all</button>
-            <button type="button" id="btnCancelS4" class="btn-cancel-job hidden">Cancel</button>
-            <button type="button" id="btnResumeS4" class="primary hidden">Resume</button>
+          <!-- Toolbar in one row: Choose files, Import, Check all (primary), More menu -->
+          <div class="s4-toolbar-row" id="s4ActionRow">
+            <div class="s4-toolbar-left">
+              <label for="s4FileInput" class="file-picker-btn" id="btnChooseS4FilesLabel">
+                <span>Choose files</span>
+                <input type="file" id="s4FileInput" class="sr-only-input" multiple accept=".csv,.json,.pdf,.png,.jpg,.jpeg,text/csv,application/json,application/pdf,image/*" aria-label="Choose files">
+              </label>
+              <span id="s4SelectedFileLabel" class="selected-file-hint">No file selected</span>
+              <button type="button" id="btnImportS4">Import</button>
+              <button type="button" id="btnCheckAllS4" class="primary">Check all</button>
+              <button type="button" id="btnCancelS4" class="btn-cancel-job hidden">Cancel</button>
+              <button type="button" id="btnResumeS4" class="primary hidden">Resume</button>
+            </div>
+
+            <div class="s4-toolbar-right">
+              <button type="button" id="btnToggleSapSample" class="link-btn">View SAP sandbox sample (5)</button>
+              <div class="dropdown-wrap" id="s4MoreMenuWrap">
+                <button type="button" id="btnS4MoreMenu" class="dropdown-trigger" aria-expanded="false" aria-haspopup="true">
+                  More
+                  <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><polyline points="6 9 12 15 18 9"></polyline></svg>
+                </button>
+                <div id="s4MoreDropdown" class="dropdown-menu dropdown-menu-right hidden" role="menu">
+                  <button type="button" id="btnUseSampleS4" class="dropdown-item" role="menuitem">Use sample extract</button>
+                  <button type="button" id="btnImportToLedger" class="dropdown-item" role="menuitem">Import to ledger</button>
+                  <button type="button" id="btnTestSapConnection" class="dropdown-item" role="menuitem">Test SAP connection</button>
+                  <button type="button" id="btnFetchSapNow" class="dropdown-item" role="menuitem">Fetch from SAP now</button>
+                </div>
+              </div>
+            </div>
           </div>
 
-          <!-- Slim Blue-to-Green Progress Bar between Toolbar and Results Table -->
+          <!-- Collapsible SAP sandbox sample preview card (collapsed by default) -->
+          <div id="sapTestConnectionWrap" class="sap-preview-card hidden">
+            <div class="sap-preview-header">
+              <strong>SAP sandbox (demo data) — Sample (5 invoices)</strong>
+              <button type="button" id="btnCloseSapPreview" class="btn-sm">Close</button>
+            </div>
+            <div class="table-wrap" style="margin-top: 8px;">
+              <table id="sapTestTable" aria-label="SAP sandbox demo invoices">
+                <thead>
+                  <tr>
+                    <th>SupplierInvoice</th>
+                    <th>FiscalYear</th>
+                    <th>CompanyCode</th>
+                    <th>InvoicingParty</th>
+                    <th class="num-col">InvoiceGrossAmount</th>
+                    <th>DocumentCurrency</th>
+                    <th>InvoiceDate</th>
+                    <th>PostingDate</th>
+                    <th>SupplierInvoiceIDByInvcgParty</th>
+                    <th>Field Notes</th>
+                  </tr>
+                </thead>
+                <tbody id="sapTestTableBody"></tbody>
+              </table>
+            </div>
+          </div>
+
+          <!-- Thin full-width progress bar, text on the right -->
           <div id="s4ProgressWrap" class="s4-progress-wrap hidden" aria-live="polite">
             <div class="s4-progress-bar-track">
               <div id="s4ProgressBar" class="s4-progress-bar-fill" style="width: 0%;"></div>
             </div>
             <div class="s4-progress-meta">
-              <span id="s4ProgressText" class="s4-progress-text">0 of 0 processed (0%)</span>
               <button type="button" id="btnViewS4Errors" class="s4-errors-link hidden">View errors (0)</button>
+              <span id="s4ProgressText" class="s4-progress-text">Processing 0 of 0 (0%)</span>
             </div>
             <div id="s4ErrorsModal" class="s4-errors-modal hidden">
               <div class="s4-errors-modal-header">
-                <span class="s4-errors-modal-title">Failed Invoices</span>
+                <span class="s4-errors-modal-title">Row &amp; Processing Errors</span>
                 <button type="button" id="btnCloseS4Errors" class="s4-errors-modal-close" aria-label="Close error list">&times;</button>
               </div>
               <div id="s4ErrorsList" class="s4-errors-list"></div>
             </div>
           </div>
+
           <div id="s4Banner" class="status-banner hidden" role="status"></div>
+          <div id="s4ColumnsFoundBar" class="status-banner info hidden" role="status"></div>
 
-          <!-- Summary counts strip above the table -->
-          <div class="summary-stats-strip" id="s4SummaryCounts">
-            <div class="stat-pill total">
-              <span class="stat-pill-label">Total</span>
-              <span class="stat-pill-val" id="s4CountTotal">0</span>
-            </div>
-            <div class="stat-pill pass">
-              <span class="stat-pill-label">PASS</span>
-              <span class="stat-pill-val" id="s4CountPass">0</span>
-            </div>
-            <div class="stat-pill hold">
-              <span class="stat-pill-label">HOLD</span>
-              <span class="stat-pill-val" id="s4CountHold">0</span>
-            </div>
-            <div class="stat-pill reject">
-              <span class="stat-pill-label">REJECT</span>
-              <span class="stat-pill-val" id="s4CountReject">0</span>
-            </div>
-          </div>
-
-          <!-- Status filter, search box, and download buttons -->
+          <!-- Filters in one row: segmented control (All, PASS, HOLD, REJECT), search box, Download menu -->
           <div class="filter-bar s4-filter-bar">
-            <label for="s4FilterStatus">
+            <div class="segmented-control" id="s4StatusSegmented" role="group" aria-label="Filter by status">
+              <button type="button" class="seg-btn active" data-status="ALL">All</button>
+              <button type="button" class="seg-btn" data-status="PASS">PASS</button>
+              <button type="button" class="seg-btn" data-status="HOLD">HOLD</button>
+              <button type="button" class="seg-btn" data-status="REJECT">REJECT</button>
+            </div>
+            <!-- Keep select synced for automated checks -->
+            <label for="s4FilterStatus" class="sr-only-label">
               Status
               <select id="s4FilterStatus" aria-label="Filter S/4 results by status">
-                <option value="ALL">All statuses</option>
+                <option value="ALL">All</option>
                 <option value="PASS">PASS</option>
                 <option value="HOLD">HOLD</option>
                 <option value="REJECT">REJECT</option>
               </select>
             </label>
-            <label for="s4FilterSearch" style="flex: 1;">
-              Search
+
+            <div class="filter-search-wrap">
               <input type="text" id="s4FilterSearch" placeholder="Search invoice number or supplier..." aria-label="Search invoice number or supplier">
-            </label>
-            <div class="btn-row filter-actions">
-              <button type="button" id="btnExportS4Csv" class="primary">Download CSV</button>
-              <button type="button" id="btnExportS4Excel">Download Excel</button>
+            </div>
+
+            <div class="dropdown-wrap" id="s4DownloadMenuWrap">
+              <button type="button" id="btnS4DownloadMenu" class="dropdown-trigger" aria-expanded="false" aria-haspopup="true">
+                Download
+                <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><polyline points="6 9 12 15 18 9"></polyline></svg>
+              </button>
+              <div id="s4DownloadDropdown" class="dropdown-menu dropdown-menu-right hidden" role="menu">
+                <button type="button" id="btnExportS4Csv" class="dropdown-item" role="menuitem">Download CSV</button>
+                <button type="button" id="btnExportS4Excel" class="dropdown-item" role="menuitem">Download Excel</button>
+              </div>
             </div>
           </div>
 
@@ -302,13 +407,10 @@
             <table id="s4Table" aria-label="S/4HANA extract invoices">
               <thead>
                 <tr>
-                  <th>ID</th>
-                  <th>Supplier</th>
-                  <th>GSTIN</th>
                   <th>Invoice No</th>
+                  <th>Supplier</th>
                   <th>Date</th>
                   <th class="num-col">Total (INR)</th>
-                  <th>Database match</th>
                   <th>Status</th>
                   <th>Reason</th>
                 </tr>
@@ -316,6 +418,7 @@
               <tbody id="s4TableBody"></tbody>
             </table>
           </div>
+          <template id="sapMatchColumnTemplate"><table><thead><tr><th>SAP match</th></tr></thead></table></template>
 
           <!-- S/4 Pagination Bar -->
           <div class="pagination-bar" id="s4Pagination">
@@ -330,17 +433,18 @@
 
         <!-- Search database box -->
         <div class="card">
-          <div class="page-header" style="margin-bottom: 12px; padding-bottom: 8px;">
-            <p class="section-kicker">HANA Invoice Ledger</p>
-            <h3 style="font-size: 16px; font-weight: 600; color: var(--text-primary); margin-bottom: 2px;">Search database</h3>
-            <p style="font-size: 13px; color: var(--text-muted);">Enter an invoice number, supplier name, or GSTIN to inspect booked records in the reference ledger.</p>
+          <div class="card-section-header">
+            <div>
+              <h3 class="section-title">Search database</h3>
+              <p class="section-subtitle">Search booked invoices in the reference ledger by invoice number, supplier, or GSTIN.</p>
+            </div>
+            <span id="searchDbSourceLabel" class="source-chip">Source: Ledger (HANA)</span>
           </div>
           <div class="filter-bar" style="margin-bottom: 0;">
-            <label for="inputSearchDb" style="flex: 1;">
-              Search query
+            <div class="filter-search-wrap">
               <input type="text" id="inputSearchDb" placeholder="Enter invoice number, supplier or GSTIN..." aria-label="Search database query">
-            </label>
-            <div class="btn-row filter-actions">
+            </div>
+            <div class="btn-row filter-actions" style="margin-top: 0;">
               <button type="button" id="btnSearchDb" class="primary">Search database</button>
               <button type="button" id="btnClearSearchDb">Clear</button>
             </div>
@@ -363,9 +467,73 @@
               <tbody id="searchDbTableBody"></tbody>
             </table>
           </div>
+          <!-- Search Database Pagination Bar (50 rows per page) -->
+          <div class="pagination-bar hidden" id="searchDbPagination">
+            <span class="pagination-info" id="searchDbPaginationInfo">Showing 0-0 of 0</span>
+            <div class="pagination-controls">
+              <button type="button" id="searchDbPrevPage" class="btn-page" disabled>&larr; Previous</button>
+              <div id="searchDbPageNumbers" class="pagination-pages"></div>
+              <button type="button" id="searchDbNextPage" class="btn-page" disabled>Next &rarr;</button>
+            </div>
+          </div>
         </div>
 
         <div id="resultCardS4" class="card hidden" aria-live="polite"></div>
+      </section>
+
+      <!-- =========================================================
+           PAGE 2B: LEDGER VIEW (HANA ap.Posted)
+           ========================================================= -->
+      <section id="page-ledger" class="page-section" aria-labelledby="heading-ledger">
+        <div class="page-header page-header-row">
+          <div>
+            <h2 id="heading-ledger">Ledger</h2>
+            <p>Invoices saved to the reference ledger.</p>
+          </div>
+          <span id="ledgerSourceBadge" class="source-chip">Source: Ledger (HANA ap.Posted)</span>
+        </div>
+
+        <div class="card">
+          <div class="filter-bar">
+            <div class="filter-search-wrap">
+              <input type="text" id="ledgerSearchInput" placeholder="Search invoice number, supplier name or GSTIN..." aria-label="Search ledger by invoice number, supplier name or GSTIN">
+            </div>
+            <div class="btn-row filter-actions" style="margin-top: 0;">
+              <button type="button" id="btnLedgerSearch" class="primary">Search</button>
+              <button type="button" id="btnLedgerClear">Clear</button>
+              <button type="button" id="btnExportLedgerCsv">Download CSV</button>
+              <button type="button" id="btnExportLedgerExcel">Download Excel</button>
+            </div>
+          </div>
+
+          <div class="table-wrap">
+            <table id="ledgerTable" aria-label="Ledger invoices table">
+              <thead>
+                <tr>
+                  <th>Invoice No</th>
+                  <th>Supplier</th>
+                  <th>GSTIN</th>
+                  <th>Invoice Date</th>
+                  <th>Posting Date</th>
+                  <th class="num-col">Amount (INR)</th>
+                  <th>Fiscal Year</th>
+                  <th>Source</th>
+                </tr>
+              </thead>
+              <tbody id="ledgerTableBody"></tbody>
+            </table>
+          </div>
+
+          <!-- Ledger Pagination Bar (50 rows per page) -->
+          <div class="pagination-bar" id="ledgerPagination">
+            <span class="pagination-info" id="ledgerPaginationInfo">Showing 0-0 of 0</span>
+            <div class="pagination-controls">
+              <button type="button" id="ledgerPrevPage" class="btn-page" disabled>&larr; Previous</button>
+              <div id="ledgerPageNumbers" class="pagination-pages"></div>
+              <button type="button" id="ledgerNextPage" class="btn-page" disabled>Next &rarr;</button>
+            </div>
+          </div>
+        </div>
       </section>
 
       <!-- =========================================================
@@ -373,25 +541,40 @@
            ========================================================= -->
       <section id="page-alerts" class="page-section" aria-labelledby="heading-alerts">
         <div class="page-header">
-          <p class="section-kicker">Exception Governance &amp; Workflow</p>
           <h2 id="heading-alerts">Review queue</h2>
-          <p>Open HOLD and REJECT alerts raised by the active rules. APController users can record Clear, Confirm, or Escalate decisions with a mandatory comment.</p>
+          <p>Invoices on hold or rejected, waiting for a decision.</p>
+        </div>
+
+        <!-- KPI row: OPEN, HOLD, REJECT -->
+        <div class="kpi-grid kpi-grid-3" id="alertsSummaryCounts">
+          <div class="kpi-card total">
+            <span class="kpi-label">OPEN</span>
+            <span class="kpi-val" id="alertsCountOpen">0</span>
+          </div>
+          <div class="kpi-card hold">
+            <span class="kpi-label">HOLD</span>
+            <span class="kpi-val" id="alertsCountHold">0</span>
+          </div>
+          <div class="kpi-card reject">
+            <span class="kpi-label">REJECT</span>
+            <span class="kpi-val" id="alertsCountReject">0</span>
+          </div>
         </div>
 
         <div class="card">
           <div class="filter-bar">
-            <label for="filterAlertsStatus">
+            <label for="filterAlertsStatus" class="inline-select-label">
               Status
               <select id="filterAlertsStatus" aria-label="Filter review queue by status">
-                <option value="ALL">All statuses</option>
+                <option value="ALL" selected>All</option>
                 <option value="HOLD">HOLD</option>
                 <option value="REJECT">REJECT</option>
               </select>
             </label>
-            <div class="btn-row filter-actions">
-              <button type="button" id="btnRefreshAlerts">Refresh queue</button>
+            <div class="btn-row filter-actions" style="margin-top: 0;">
+              <button type="button" id="btnRefreshAlerts">Refresh</button>
             </div>
-            <span id="alertsRoleHint" class="meta-inline"></span>
+            <span id="alertsRoleHint" class="meta-inline hidden"></span>
           </div>
           <div id="alertsBanner" class="status-banner hidden"></div>
 
@@ -399,14 +582,12 @@
             <table id="alertsTable" aria-label="Review queue alerts">
               <thead>
                 <tr>
-                  <th>Invoice number</th>
+                  <th>Invoice No</th>
                   <th>Supplier</th>
                   <th>Issue</th>
-                  <th>Title</th>
                   <th>Reason</th>
                   <th>Status</th>
-                  <th>DecisionState</th>
-                  <th id="alertsActionHeader">Controller Decision (Comment required)</th>
+                  <th id="alertsActionHeader">Action</th>
                 </tr>
               </thead>
               <tbody id="alertsTableBody"></tbody>
@@ -430,45 +611,58 @@
            ========================================================= -->
       <section id="page-history" class="page-section" aria-labelledby="heading-history">
         <div class="page-header">
-          <p class="section-kicker">Persistence &amp; Audit Reporting</p>
           <h2 id="heading-history">Check history</h2>
-          <p>Every check run recorded in Blus Invoice Agent persistence. Exports include the four active rules only while disabled rules remain stored in the database.</p>
+          <p>Complete history of invoice checks and rule evaluations.</p>
+        </div>
+
+        <!-- KPI cards: Total checks, PASS, HOLD, REJECT for the current filter -->
+        <div class="kpi-grid kpi-grid-4" id="historySummaryCounts">
+          <div class="kpi-card total">
+            <span class="kpi-label">Total checks</span>
+            <span class="kpi-val" id="historyCountTotal">0</span>
+          </div>
+          <div class="kpi-card pass">
+            <span class="kpi-label">PASS</span>
+            <span class="kpi-val" id="historyCountPass">0</span>
+          </div>
+          <div class="kpi-card hold">
+            <span class="kpi-label">HOLD</span>
+            <span class="kpi-val" id="historyCountHold">0</span>
+          </div>
+          <div class="kpi-card reject">
+            <span class="kpi-label">REJECT</span>
+            <span class="kpi-val" id="historyCountReject">0</span>
+          </div>
         </div>
 
         <div class="card">
-          <div class="filter-bar">
+          <!-- Filters in one row: status, date from, date to, supplier, Clear button -->
+          <div class="filter-bar history-filter-bar">
             <label for="filterHistoryStatus">
               Status
               <select id="filterHistoryStatus" aria-label="Filter history by status">
-                <option value="ALL">All statuses</option>
+                <option value="ALL">All</option>
                 <option value="PASS">PASS</option>
                 <option value="HOLD">HOLD</option>
                 <option value="REJECT">REJECT</option>
               </select>
             </label>
             <label for="filterHistoryFrom">
-              From date
+              Date from
               <input type="date" id="filterHistoryFrom" aria-label="Filter from date">
             </label>
             <label for="filterHistoryTo">
-              To date
+              Date to
               <input type="date" id="filterHistoryTo" aria-label="Filter to date">
             </label>
-            <label for="filterHistorySupplier">
+            <label for="filterHistorySupplier" class="filter-supplier-label">
               Supplier
-              <input type="text" id="filterHistorySupplier" placeholder="Search supplier or GSTIN..." aria-label="Filter by supplier">
+              <input type="text" id="filterHistorySupplier" placeholder="Supplier, GSTIN or invoice..." aria-label="Filter by supplier">
             </label>
-            <label for="filterHistoryLimit">
-              Rows
-              <select id="filterHistoryLimit" aria-label="Rows per page">
-                <option value="25">25</option>
-                <option value="50" selected>50</option>
-                <option value="100">100</option>
-              </select>
-            </label>
-            <div class="btn-row filter-actions">
-              <button type="button" id="btnApplyHistoryFilter">Apply filters</button>
-              <button type="button" id="btnExportHistoryCsv" class="primary">Download CSV</button>
+            <div class="btn-row filter-actions" style="margin-top: 0;">
+              <button type="button" id="btnApplyHistoryFilter" class="primary">Apply</button>
+              <button type="button" id="btnClearHistoryFilter">Clear</button>
+              <button type="button" id="btnExportHistoryCsv">Download CSV</button>
               <button type="button" id="btnExportHistoryExcel">Download Excel</button>
             </div>
           </div>
@@ -479,21 +673,29 @@
                 <tr>
                   <th>Time</th>
                   <th>File</th>
-                  <th>Invoice number</th>
+                  <th>Invoice No</th>
                   <th>Supplier</th>
                   <th class="num-col">Total (INR)</th>
                   <th>Status</th>
-                  <th>Reviewer</th>
+                  <th>Reviewed by</th>
                 </tr>
               </thead>
               <tbody id="historyTableBody"></tbody>
             </table>
           </div>
 
-          <!-- History Pagination Bar -->
+          <!-- History Pagination Bar & Rows-per-page selector aligned right -->
           <div class="pagination-bar" id="historyPagination">
             <span class="pagination-info" id="historyPaginationInfo">Showing 0-0 of 0</span>
             <div class="pagination-controls">
+              <label for="filterHistoryLimit" class="inline-select-label rows-per-page-label">
+                <span>Rows per page</span>
+                <select id="filterHistoryLimit" aria-label="Rows per page">
+                  <option value="25">25</option>
+                  <option value="50" selected>50</option>
+                  <option value="100">100</option>
+                </select>
+              </label>
               <button type="button" id="historyPrevPage" class="btn-page" disabled>&larr; Previous</button>
               <div id="historyPageNumbers" class="pagination-pages"></div>
               <button type="button" id="historyNextPage" class="btn-page" disabled>Next &rarr;</button>
@@ -506,37 +708,44 @@
            PAGE 5: ACTIVITY LOG
            ========================================================= -->
       <section id="page-activity" class="page-section" aria-labelledby="heading-activity">
-        <div class="page-header">
-          <p class="section-kicker">Cryptographic Integrity Ledger</p>
-          <h2 id="heading-activity">Activity log</h2>
-          <p>Read-only hash-chained audit trail of every check, import, decision, and ledger post.</p>
+        <div class="page-header page-header-row">
+          <div>
+            <h2 id="heading-activity">Activity log</h2>
+            <p>Tamper-evident record of checks, imports and decisions.</p>
+          </div>
+          <div id="auditChainBadge" class="integrity-chip">Audit chain verified · 0 entries</div>
         </div>
 
         <div class="card">
-          <div class="toolbar-row">
-            <div id="auditChainBadge" class="status-banner success">Audit Hash Chain: Verified</div>
-            <div class="btn-row">
-              <button type="button" id="btnRefreshActivity">Refresh log</button>
-              <button type="button" id="btnExportActivityCsv" class="primary">Export CSV</button>
+          <!-- Activity Log Filter Row: Showing: Checks only / All events + Action filter -->
+          <div class="filter-bar activity-filter-bar">
+            <div class="activity-view-toggle" role="group" aria-label="Activity log record scope">
+              <span class="activity-showing-label" id="activityShowingLabel">Showing: Checks only</span>
+              <div class="segmented-control" id="activityViewSegmented">
+                <button type="button" class="seg-btn active" id="btnActivityViewChecks" data-view="CHECKS">Checks only</button>
+                <button type="button" class="seg-btn" id="btnActivityViewAll" data-view="ALL">All events</button>
+              </div>
             </div>
-          </div>
 
-          <!-- Activity Log Action Filter -->
-          <div class="filter-bar" style="margin-top: 12px; margin-bottom: 12px;">
-            <label for="filterActivityAction">
+            <label for="filterActivityAction" class="inline-select-label">
               Action
               <select id="filterActivityAction" aria-label="Filter activity log by action">
                 <option value="ALL">All actions</option>
-                <option value="CHAT_CHECK">CHAT_CHECK</option>
-                <option value="IMPORT">IMPORT</option>
-                <option value="DECISION">DECISION</option>
-                <option value="BATCH_JOB">BATCH_JOB</option>
-                <option value="DATABASE_CHECK">DATABASE_CHECK</option>
-                <option value="LEDGER_INSERT">LEDGER_INSERT</option>
-                <option value="LEDGER_IMPORT">LEDGER_IMPORT</option>
-                <option value="DATABASE_SEARCH">DATABASE_SEARCH</option>
+                <option value="CHAT_CHECK">Check</option>
+                <option value="IMPORT">Import</option>
+                <option value="LEDGER_INSERT">Ledger entry</option>
+                <option value="LEDGER_IMPORT">Ledger import</option>
+                <option value="DATABASE_CHECK">Database check</option>
+                <option value="BATCH_JOB">Batch job</option>
+                <option value="DECISION">Decision</option>
+                <option value="READ_FAILED">Failed to read</option>
               </select>
             </label>
+
+            <div class="btn-row filter-actions" style="margin-top: 0; margin-left: auto;">
+              <button type="button" id="btnRefreshActivity">Refresh</button>
+              <button type="button" id="btnExportActivityCsv" class="primary">Download CSV</button>
+            </div>
           </div>
 
           <div class="table-wrap">
@@ -544,10 +753,10 @@
               <thead>
                 <tr>
                   <th>Time</th>
-                  <th>User</th>
-                  <th>File</th>
                   <th>Action</th>
+                  <th>File or source</th>
                   <th>Result</th>
+                  <th>By</th>
                 </tr>
               </thead>
               <tbody id="activityTableBody"></tbody>
@@ -569,6 +778,72 @@
     </main>
   </div>
 
-  <script src="app.js"></script>
+  <!-- =========================================================
+       RIGHT-SIDE DRAWER: S/4HANA INVOICE DETAILS
+       ========================================================= -->
+  <div id="s4DrawerBackdrop" class="drawer-backdrop hidden" aria-hidden="true"></div>
+  <aside id="s4DetailDrawer" class="side-drawer hidden" role="dialog" aria-modal="true" aria-labelledby="s4DrawerTitle">
+    <div class="drawer-header">
+      <div>
+        <h3 id="s4DrawerTitle" class="drawer-title">Invoice details</h3>
+        <p id="s4DrawerSubtitle" class="drawer-subtitle"></p>
+      </div>
+      <button type="button" id="btnCloseS4Drawer" class="drawer-close-btn" aria-label="Close drawer">&times;</button>
+    </div>
+    <div id="s4DrawerBody" class="drawer-body"></div>
+  </aside>
+
+  <!-- =========================================================
+       RIGHT-SIDE DRAWER: REVIEW QUEUE DECISION
+       ========================================================= -->
+  <div id="reviewDrawerBackdrop" class="drawer-backdrop hidden" aria-hidden="true"></div>
+  <aside id="reviewDecisionDrawer" class="side-drawer hidden" role="dialog" aria-modal="true" aria-labelledby="reviewDrawerTitle">
+    <div class="drawer-header">
+      <div>
+        <h3 id="reviewDrawerTitle" class="drawer-title">Review invoice</h3>
+        <p id="reviewDrawerSubtitle" class="drawer-subtitle"></p>
+      </div>
+      <button type="button" id="btnCloseReviewDrawer" class="drawer-close-btn" aria-label="Close review drawer">&times;</button>
+    </div>
+    <div class="drawer-body">
+      <div id="reviewDrawerDetails" class="drawer-section"></div>
+      <div class="drawer-section">
+        <label for="reviewDecisionSelect">
+          Decision
+          <select id="reviewDecisionSelect" aria-label="Select decision">
+            <option value="CONFIRM">Confirm issue</option>
+            <option value="CLEAR">Clear issue</option>
+            <option value="ESCALATE">Escalate</option>
+          </select>
+        </label>
+        <label for="reviewDecisionComment" style="margin-top: 12px;">
+          Comment (required)
+          <textarea id="reviewDecisionComment" rows="3" placeholder="Enter reason for this decision..." aria-label="Decision comment"></textarea>
+        </label>
+        <div id="reviewDrawerError" class="status-banner error hidden" style="margin-top: 10px;"></div>
+      </div>
+    </div>
+    <div class="drawer-footer">
+      <button type="button" id="btnCancelReviewDrawer">Cancel</button>
+      <button type="button" id="btnSaveReviewDecision" class="primary">Save decision</button>
+    </div>
+  </aside>
+
+  <!-- =========================================================
+       RIGHT-SIDE DRAWER: FAILED TO READ FILES LIST
+       ========================================================= -->
+  <div id="failedReadsBackdrop" class="drawer-backdrop hidden" aria-hidden="true"></div>
+  <aside id="failedReadsDrawer" class="side-drawer hidden" role="dialog" aria-modal="true" aria-labelledby="failedReadsDrawerTitle">
+    <div class="drawer-header">
+      <div>
+        <h3 id="failedReadsDrawerTitle" class="drawer-title">Failed to read</h3>
+        <p class="drawer-subtitle">Files or rows that could not be read and were not saved to the ledger.</p>
+      </div>
+      <button type="button" id="btnCloseFailedReadsDrawer" class="drawer-close-btn" aria-label="Close failed files list">&times;</button>
+    </div>
+    <div id="failedReadsDrawerBody" class="drawer-body"></div>
+  </aside>
+
+  <script src="app.js?v=3"></script>
 </body>
 </html>
