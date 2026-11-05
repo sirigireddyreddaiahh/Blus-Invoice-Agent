@@ -1,0 +1,10 @@
+.env
+.aistudio/
+.git/
+.github/
+mta_archives/
+*.mtar
+*.map
+test/
+db.sqlite*
+bun.lock
