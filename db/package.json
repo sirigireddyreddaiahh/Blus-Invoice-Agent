@@ -1,0 +1,8 @@
+{
+  "name": "blus-invoice-agent-db",
+  "version": "1.0.0",
+  "private": true,
+  "dependencies": {
+    "@sap/hdi-deploy": "^5.0.0"
+  }
+}
