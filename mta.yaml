@@ -10,7 +10,10 @@ build-parameters:
   before-all:
     - builder: custom
       commands:
-        - npm install
+        - rm -rf gen
+        - mkdir -p gen/srv
+        - cp -r srv app db data server.js package.json package-lock.json eng.traineddata gen/srv/
+        - cd gen/srv && npm ci --omit=dev
 
 modules:
   # ----------------- DB DEPLOYER -----------------
@@ -27,7 +30,7 @@ modules:
   # ----------------- CAP SERVICE -----------------
   - name: blus-invoice-agent-srv
     type: nodejs
-    path: .
+    path: gen/srv
     parameters:
       buildpack: nodejs_buildpack
       memory: 512M
