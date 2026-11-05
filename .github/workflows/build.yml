@@ -25,8 +25,16 @@ jobs:
       - name: Build MTA archive
         run: mbt build -t ./mta_archives
 
+      - name: List build output
+        if: always()
+        run: find . -name "*.mtar" -not -path "./node_modules/*"
+
       - name: Upload MTAR
+        if: always()
         uses: actions/upload-artifact@v4
         with:
           name: blus-invoice-agent-mtar
-          path: mta_archives/*.mtar
+          path: |
+            mta_archives/*.mtar
+            **/*.mtar
+          if-no-files-found: warn
