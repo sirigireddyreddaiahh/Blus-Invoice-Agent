@@ -1,0 +1,32 @@
+name: Build MTA
+
+on:
+  push:
+    branches: [ main ]
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: 'npm'
+
+      - name: Install MBT
+        run: npm install -g mbt
+
+      - name: Build MTA archive
+        run: mbt build -t ./mta_archives
+
+      - name: Upload MTAR
+        uses: actions/upload-artifact@v4
+        with:
+          name: blus-invoice-agent-mtar
+          path: mta_archives/*.mtar
