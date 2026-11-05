@@ -22,6 +22,8 @@ modules:
     path: db
     parameters:
       buildpack: nodejs_buildpack
+      memory: 512M
+      disk-quota: 1024M
     requires:
       - name: blus-invoice-agent-db-hdi
         properties:
