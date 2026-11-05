@@ -1,4 +1,4 @@
-'use strict';
+﻿'use strict';
 const { GoogleGenAI } = require('@google/genai');
 
 const FAILED_TO_READ_REASON = 'No readable text found. Try a clearer scan or a Fiori CSV export.';
@@ -74,7 +74,7 @@ async function tryExtractWithGeminiAssist({ buf, fileName = 'invoice.pdf', kind 
       const mimeType = kind === 'PNG'
         ? 'image/png'
         : (kind === 'JPG' ? 'image/jpeg' : 'application/pdf');
-      const modelName = String(process.env.GEMINI_MODEL || 'gemini-2.5-flash').trim().replace(/^models\//, '');
+      const modelName = String(process.env.GEMINI_MODEL || 'gemini-3.8-flash').trim().replace(/^models\//, '');
 
       const ai = new GoogleGenAI({
         apiKey,
@@ -174,3 +174,4 @@ module.exports = {
   getExternalCallCount,
   resetExternalCallCount,
 };
+
