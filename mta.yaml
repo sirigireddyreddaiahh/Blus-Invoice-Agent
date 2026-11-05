@@ -1,89 +1,40 @@
-_schema-version: '3.1'
-ID: blus-invoice-agent
-version: 1.0.0
-description: "Blus Invoice Agent: Invoice Fraud & Duplicate Engine with Read-only AI Assistant"
+name: Build MTA
 
-parameters:
-  enable-parallel-deployments: true
+on:
+  push:
+    branches: [ main ]
+  workflow_dispatch:
 
-build-parameters:
-  before-all:
-    - builder: custom
-      commands:
-        - rm -rf gen
-        - mkdir -p gen/srv
-        - cp -r srv app db data server.js package.json package-lock.json eng.traineddata gen/srv/
-        - npm install --omit=dev --prefix gen/srv
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
 
-modules:
-  # ----------------- DB DEPLOYER -----------------
-  - name: blus-invoice-agent-db-deployer
-    type: hdb
-    path: db
-    parameters:
-      buildpack: nodejs_buildpack
-      memory: 512M
-      disk-quota: 1024M
-    requires:
-      - name: blus-invoice-agent-db-hdi
-        properties:
-          TARGET_CONTAINER: ~{hdi-container-name}
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: 'npm'
 
-  # ----------------- CAP SERVICE -----------------
-  - name: blus-invoice-agent-srv
-    type: nodejs
-    path: gen/srv
-    parameters:
-      buildpack: nodejs_buildpack
-      memory: 512M
-      disk-quota: 1024M
-    properties:
-      ALLOW_INVOICE_DATA_TO_LLM: "false"
-      CLIENT_DB_LOOKUP_ENABLED: "false"
-      TESSDATA_PATH: "/home/vcap/app"
-      SAP_MODE: "mock"
-      SAP_API_URL: "https://sandbox.api.sap.com/s4hanacloud/sap/opu/odata/sap/API_SUPPLIERINVOICE_PROCESS_SRV"
-    requires:
-      - name: blus-invoice-agent-db-hdi
-      - name: blus-invoice-agent-auth
-    provides:
-      - name: srv-api
-        properties:
-          srv-url: ${default-url}
+      - name: Install MBT
+        run: npm install -g mbt
 
-  # ----------------- APPROUTER -----------------
-  - name: blus-invoice-agent-approuter
-    type: approuter.nodejs
-    path: approuter
-    parameters:
-      memory: 256M
-      disk-quota: 512M
-    requires:
-      - name: blus-invoice-agent-auth
-      - name: srv-api
-        group: destinations
-        properties:
-          name: srv-api
-          url: ~{srv-url}
-          forwardAuthToken: true
+      - name: Build MTA archive
+        run: mbt build -t ./mta_archives
 
-resources:
-  # ----------------- HANA HDI CONTAINER -----------------
-  - name: blus-invoice-agent-db-hdi
-    type: com.sap.xs.hdi-container
-    parameters:
-      service: hana
-      service-plan: hdi-shared
-    properties:
-      hdi-container-name: ${service-name}
+      - name: List build output
+        if: always()
+        run: find . -name "*.mtar" -not -path "./node_modules/*"
 
-  # ----------------- XSUAA AUTH -----------------
-  - name: blus-invoice-agent-auth
-    type: org.cloudfoundry.managed-service
-    parameters:
-      service: xsuaa
-      service-plan: application
-      path: ./xs-security.json
-      config:
-        xsappname: blus-invoice-agent
-        tenant-mode: dedicated
+      - name: Upload MTAR
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: blus-invoice-agent-mtar
+          path: |
+            mta_archives/*.mtar
+            **/*.mtar
+          if-no-files-found: warn
