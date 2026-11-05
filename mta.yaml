@@ -12,7 +12,7 @@ build-parameters:
       commands:
         - rm -rf gen
         - mkdir -p gen/srv
-        - cp -r srv app db data server.js package.json package-lock.json eng.traineddata gen/srv/
+        - cp -r srv app data server.js package.json package-lock.json eng.traineddata gen/srv/
         - cd gen/srv && npm ci --omit=dev
 
 modules:
@@ -83,5 +83,5 @@ resources:
       service-plan: application
       path: ./xs-security.json
       config:
-        xsappname: blus-invoice-agent-${space}
+        xsappname: blus-invoice-agent
         tenant-mode: dedicated
