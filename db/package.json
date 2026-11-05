@@ -2,7 +2,10 @@
   "name": "blus-invoice-agent-db",
   "version": "1.0.0",
   "private": true,
+  "scripts": {
+    "start": "node node_modules/@sap/hdi-deploy/deploy.js"
+  },
   "dependencies": {
-    "@sap/hdi-deploy": "^5.0.0"
+    "@sap/hdi-deploy": "^4.9.0"
   }
 }
