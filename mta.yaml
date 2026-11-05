@@ -13,7 +13,7 @@ build-parameters:
         - rm -rf gen
         - mkdir -p gen/srv
         - cp -r srv app data server.js package.json package-lock.json eng.traineddata gen/srv/
-        - npm ci --omit=dev --prefix gen/srv
+        - npm install --omit=dev --prefix gen/srv
 
 modules:
   # ----------------- DB DEPLOYER -----------------
