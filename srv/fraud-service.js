@@ -1,4 +1,4 @@
-﻿'use strict';
+'use strict';
 const cds = require('@sap/cds');
 const crypto = require('crypto');
 const fs = require('fs');
@@ -27,7 +27,7 @@ const { createBatchJob, getJob, cancelJob, resumeJob } = require('./lib/queue');
 const { getUnifiedChecksTotal, getS4ResultsQuery, getReviewQueueQuery, getCheckHistoryQuery, getActivityLogsQuery, searchLedgerDatabaseQuery, getLedgerQuery, getSummaryQuery, cleanRuleText, getRuleName } = require('./lib/pagination');
 const { processDocumentBatch } = require('./lib/document-processor');
 const { checkSapMatchForInvoice, querySapSandboxInvoices, getSapConfig, SAP_SOURCE_LABEL } = require('./lib/sap');
-const { AGENT_TOOLS, LEDGER_TOOLS, CREDENTIAL_REFUSAL_MSG, TERM_MEANINGS, toDisplayStatusTerm, sanitizeChatOutput, isCredentialOrServerSettingQuestion, runReadOnlyAgentQuery, setSessionLastCheck, markSessionCheckSaved, last_check } = require('./lib/agent-tools');
+const { AGENT_TOOLS, LEDGER_TOOLS, CREDENTIAL_REFUSAL_MSG, TERM_MEANINGS, toDisplayStatusTerm, sanitizeChatOutput, isCredentialOrServerSettingQuestion, runReadOnlyAgentQuery, setSessionLastCheck, markSessionCheckSaved, last_check, classifyChatIntent, buildIntentReply, formatFixedInvoiceCheckText } = require('./lib/agent-tools');
 const { FAILED_TO_READ_REASON, AI_ASSIST_LABEL, hasReadableFields, tryExtractWithGeminiAssist } = require('./lib/ai-extract');
 
 const s4Invoices = require('../data/s4-invoices.json');
@@ -146,7 +146,7 @@ function buildVerdictExplanation(verdict, activeResults = [], extra = {}) {
     return 'Stopped by active rule evaluation.';
   }
   const parts = triggered.map(r => `${r.id} (${r.title}): ${stripProhibitedWords(r.text)}`);
-  const prefix = verdict === 'Blocked' ? 'Stopped by active rule check â€” ' : 'Flagged for review by active rule check â€” ';
+  const prefix = verdict === 'Blocked' ? 'Stopped by active rule check — ' : 'Flagged for review by active rule check — ';
   return stripProhibitedWords(prefix + parts.join(' | '));
 }
 
@@ -217,7 +217,7 @@ function buildDetectionAndInvoiceSummary({ checkRecord, parsedResult = {}, activ
     const bankLines = [];
     if (ap05Tier === 'DISABLED') {
       bankLines.push(
-        `Bank details check (AP-05 â€” Bank details changed) is currently disabled by configuration.`
+        `Bank details check (AP-05 — Bank details changed) is currently disabled by configuration.`
       );
       bankLines.push(
         `Invoice (${invNo}) bank details extracted: IFSC: ${invoiceIfsc} | Account number: ${invoiceAccount}.`
@@ -253,17 +253,17 @@ function buildDetectionAndInvoiceSummary({ checkRecord, parsedResult = {}, activ
 
   if (checkRecord) {
     lines.push(`Invoice Check Summary (${fileLabel}):`);
-    lines.push(`â€¢ Verdict: ${verdict} (Rule Status: ${status})`);
-    lines.push(`â€¢ Invoice No: ${invNo} | Date: ${invDate}`);
-    lines.push(`â€¢ Supplier: ${supplier} | Supplier GSTIN: ${supplierGstin} | Buyer GSTIN: ${buyerGstin}`);
-    lines.push(`â€¢ Amounts: Taxable INR ${taxable} | Total INR ${total} | Description: ${desc}`);
-    lines.push(`â€¢ Bank Details on Invoice: IFSC: ${invoiceIfsc} | Account number: ${invoiceAccount} (Rule AP-05 is ${ap05Tier})`);
+    lines.push(`• Verdict: ${verdict} (Rule Status: ${status})`);
+    lines.push(`• Invoice No: ${invNo} | Date: ${invDate}`);
+    lines.push(`• Supplier: ${supplier} | Supplier GSTIN: ${supplierGstin} | Buyer GSTIN: ${buyerGstin}`);
+    lines.push(`• Amounts: Taxable INR ${taxable} | Total INR ${total} | Description: ${desc}`);
+    lines.push(`• Bank Details on Invoice: IFSC: ${invoiceIfsc} | Account number: ${invoiceAccount} (Rule AP-05 is ${ap05Tier})`);
     if (dq) {
-      lines.push(`â€¢ Data Quality (Step 5): Arithmetic ${dq.arithmeticStatus} (${dq.arithmeticText}) Â· GSTIN format ${dq.gstinStatus} (${dq.gstinText})`);
+      lines.push(`• Data Quality (Step 5): Arithmetic ${dq.arithmeticStatus} (${dq.arithmeticText}) · GSTIN format ${dq.gstinStatus} (${dq.gstinText})`);
     }
     if (Array.isArray(parsedResult.similarInvoices)) {
       const simCount = parsedResult.similarInvoices.length;
-      lines.push(`â€¢ Past Invoices Lookup (Step 7): ${simCount > 0 ? `${simCount} past posted invoice(s) found for this supplier` : 'No matching past posted invoices found'}.`);
+      lines.push(`• Past Invoices Lookup (Step 7): ${simCount > 0 ? `${simCount} past posted invoice(s) found for this supplier` : 'No matching past posted invoices found'}.`);
     }
     lines.push('');
   }
@@ -271,34 +271,34 @@ function buildDetectionAndInvoiceSummary({ checkRecord, parsedResult = {}, activ
   lines.push('Summary of the 10-Step Invoice Check Pipeline:');
   if (steps) {
     for (const s of steps) {
-      lines.push(`${s.step}. ${s.title} [${s.status}] â€” ${s.detail}`);
+      lines.push(`${s.step}. ${s.title} [${s.status}] — ${s.detail}`);
     }
   } else {
-    lines.push('1. Received the file â€” Validates file size (max 10 MB) and reads the uploaded document.');
-    lines.push('2. Detected the file type â€” Identifies PDF with text, Scanned PDF, Image (PNG/JPG), XLSX, or CSV.');
-    lines.push('3. Read the document â€” Extracts embedded PDF text or runs Tesseract OCR + QR e-Invoice JWT decoding.');
-    lines.push('4. Extracted the fields â€” Extracts key fields (Supplier Name, Supplier GSTIN, Buyer GSTIN, Invoice No, Date, PO, Taxable, Taxes, Total, Bank IFSC/Account).');
-    lines.push('5. Checked arithmetic and GSTIN format â€” Verifies Taxable + CGST + SGST + IGST = Total and checks the 15-character GSTIN format & modulo-36 check-character.');
-    lines.push('6. Ran the active rules AP-02, AP-03, AP-09, AP-11 â€” Evaluates the 4 active fraud and duplicate detection rules.');
-    lines.push('7. Looked up similar past invoices â€” Cross-checks against posted invoices and vendor master records.');
-    lines.push('8. Decided from the rules â€” Computes PASS (Passed checks), HOLD (Needs review), or REJECT (Blocked).');
-    lines.push('9. Saved to the check log â€” Records the tamper-evident check and audit trail for Check History export.');
-    lines.push('10. Showed the result â€” Displays the verdict, triggered rule reasons, and recommended next action.');
+    lines.push('1. Received the file — Validates file size (max 10 MB) and reads the uploaded document.');
+    lines.push('2. Detected the file type — Identifies PDF with text, Scanned PDF, Image (PNG/JPG), XLSX, or CSV.');
+    lines.push('3. Read the document — Extracts embedded PDF text or runs Tesseract OCR + QR e-Invoice JWT decoding.');
+    lines.push('4. Extracted the fields — Extracts key fields (Supplier Name, Supplier GSTIN, Buyer GSTIN, Invoice No, Date, PO, Taxable, Taxes, Total, Bank IFSC/Account).');
+    lines.push('5. Checked arithmetic and GSTIN format — Verifies Taxable + CGST + SGST + IGST = Total and checks the 15-character GSTIN format & modulo-36 check-character.');
+    lines.push('6. Ran the active rules AP-02, AP-03, AP-09, AP-11 — Evaluates the 4 active fraud and duplicate detection rules.');
+    lines.push('7. Looked up similar past invoices — Cross-checks against posted invoices and vendor master records.');
+    lines.push('8. Decided from the rules — Computes PASS (Passed checks), HOLD (Needs review), or REJECT (Blocked).');
+    lines.push('9. Saved to the check log — Records the tamper-evident check and audit trail for Check History export.');
+    lines.push('10. Showed the result — Displays the verdict, triggered rule reasons, and recommended next action.');
   }
 
   lines.push('');
   lines.push('Rules Used to Check the Invoice (4 Active Fraud Rules + Data Quality Checks):');
-  lines.push('â€¢ AP-02 (Exact duplicate â€” Outcome: REJECT): Checks if an invoice from the same supplier GSTIN in the same financial year (Aprilâ€“March) already has the same normalised invoice number or IRN.');
-  lines.push('â€¢ AP-03 (GSTIN reuse â€” Outcome: REJECT): Checks if one GSTIN is registered across more than one vendor ID in the vendor master (unless on the parent/affiliate exemption list).');
-  lines.push('â€¢ AP-09 (Same vendor, amount and services â€” Outcome: REJECT): Checks if the same supplier submitted another bill for the exact same amount with >=90% description similarity within 90 days (recurring contract POs excluded).');
-  lines.push('â€¢ AP-11 (Split invoices â€” Outcome: HOLD): Checks if two or more bills from the same supplier within 14 days each sit within 5% below an approval threshold while their combined total reaches >= 1,00,000 INR.');
-  lines.push('â€¢ Step 5 Data Checks (Arithmetic & GSTIN Format): Verifies that Taxable + Tax equals Total and validates the 15-character GSTIN structure and check-character.');
+  lines.push('• AP-02 (Exact duplicate — Outcome: REJECT): Checks if an invoice from the same supplier GSTIN in the same financial year (April–March) already has the same normalised invoice number or IRN.');
+  lines.push('• AP-03 (GSTIN reuse — Outcome: REJECT): Checks if one GSTIN is registered across more than one vendor ID in the vendor master (unless on the parent/affiliate exemption list).');
+  lines.push('• AP-09 (Same vendor, amount and services — Outcome: REJECT): Checks if the same supplier submitted another bill for the exact same amount with >=90% description similarity within 90 days (recurring contract POs excluded).');
+  lines.push('• AP-11 (Split invoices — Outcome: HOLD): Checks if two or more bills from the same supplier within 14 days each sit within 5% below an approval threshold while their combined total reaches >= 1,00,000 INR.');
+  lines.push('• Step 5 Data Checks (Arithmetic & GSTIN Format): Verifies that Taxable + Tax equals Total and validates the 15-character GSTIN structure and check-character.');
 
   if (activeResults && activeResults.length > 0) {
     lines.push('');
     lines.push('Active Rule Results for This Invoice:');
     for (const r of activeResults) {
-      lines.push(`â€¢ ${r.id} (${r.title}): ${r.tier} â€” ${r.text}`);
+      lines.push(`• ${r.id} (${r.title}): ${r.tier} — ${r.text}`);
     }
   }
 
@@ -511,7 +511,7 @@ function buildTenSteps({
 }) {
   const kb = Math.max(1, Math.round((Number(fileSize) || 0) / 1024));
   const fieldCount = Object.keys(fields || {}).length;
-  const ruleRows = (activeResults || []).map(r => `${r.id} (${r.title}): ${r.tier} â€” ${r.text}`);
+  const ruleRows = (activeResults || []).map(r => `${r.id} (${r.title}): ${r.tier} — ${r.text}`);
   const pastMatches = (lookupInfo && lookupInfo.pastPosted) || [];
   const matchSummary = pastMatches.length > 0
     ? `${pastMatches.length} past invoice(s) found (${pastMatches.map(m => m.invoiceNo).join(', ')}). Source: ${lookupInfo.source}.`
@@ -555,7 +555,7 @@ function buildTenSteps({
       step: 5,
       title: 'Checked arithmetic and GSTIN format.',
       status: (dataQuality.arithmeticValid && dataQuality.gstinValid) ? 'done' : 'Check',
-      detail: `Arithmetic: ${dataQuality.arithmeticStatus} (${dataQuality.arithmeticText}) Â· GSTIN format: ${dataQuality.gstinStatus} (${dataQuality.gstinText})`,
+      detail: `Arithmetic: ${dataQuality.arithmeticStatus} (${dataQuality.arithmeticText}) · GSTIN format: ${dataQuality.gstinStatus} (${dataQuality.gstinText})`,
     },
     {
       step: 6,
@@ -586,7 +586,7 @@ function buildTenSteps({
       step: 10,
       title: 'Showed the result.',
       status: 'done',
-      detail: `Status: ${finalStatus} Â· Reasons: ${reasons} Â· Next action: ${nextAction}`,
+      detail: `Status: ${finalStatus} · Reasons: ${reasons} · Next action: ${nextAction}`,
     },
   ];
 }
@@ -682,7 +682,7 @@ class FraudService extends cds.ApplicationService {
         }));
       }
 
-      const aiTag = (inv.aiAssistUsed || extraMeta.aiAssistUsed) ? ` Â· ${AI_ASSIST_LABEL}` : '';
+      const aiTag = (inv.aiAssistUsed || extraMeta.aiAssistUsed) ? ` · ${AI_ASSIST_LABEL}` : '';
       if (source === 'CHAT') {
         // Section 6: Log the user, time, file name and verdict. Do not log file contents or any key.
         console.log(`[CHAT_CHECK] User: ${user}, Time: ${ts}, File: ${inv.fileName || 'invoice.pdf'}, Verdict: ${enriched.verdict}`);
@@ -941,11 +941,11 @@ class FraudService extends cds.ApplicationService {
           setSessionLastCheck(user, {
             checkId: null,
             fileName: fileName || 'invoice',
-            invoiceNo: 'â€”',
-            supplierName: 'â€”',
-            supplierGstin: 'â€”',
-            invoiceDate: 'â€”',
-            postingDate: 'â€”',
+            invoiceNo: '—',
+            supplierName: '—',
+            supplierGstin: '—',
+            invoiceDate: '—',
+            postingDate: '—',
             total: null,
             docType: 'SUPPLIER_INVOICE',
             docTypeLabel: 'Supplier Invoice',
@@ -1163,11 +1163,11 @@ class FraudService extends cds.ApplicationService {
         setSessionLastCheck(user, {
           checkId,
           fileName: fileName || inv.fileName || inv.invoiceNo,
-          invoiceNo: inv.invoiceNo || 'â€”',
-          supplierName: inv.supplierName || 'â€”',
-          supplierGstin: inv.supplierGstin || 'â€”',
-          invoiceDate: inv.invoiceDate || 'â€”',
-          postingDate: inv.postingDate || 'â€”',
+          invoiceNo: inv.invoiceNo || '—',
+          supplierName: inv.supplierName || '—',
+          supplierGstin: inv.supplierGstin || '—',
+          invoiceDate: inv.invoiceDate || '—',
+          postingDate: inv.postingDate || '—',
           total: inv.total,
           docType: docClass.docType || 'SUPPLIER_INVOICE',
           docTypeLabel: docClass.label || 'Supplier Invoice',
@@ -1327,11 +1327,11 @@ class FraudService extends cds.ApplicationService {
       setSessionLastCheck(user, {
         checkId,
         fileName: inv.fileName || inv.invoiceNo || 'manual-entry',
-        invoiceNo: inv.invoiceNo || 'â€”',
-        supplierName: inv.supplierName || 'â€”',
-        supplierGstin: inv.supplierGstin || 'â€”',
-        invoiceDate: inv.invoiceDate || 'â€”',
-        postingDate: inv.postingDate || 'â€”',
+        invoiceNo: inv.invoiceNo || '—',
+        supplierName: inv.supplierName || '—',
+        supplierGstin: inv.supplierGstin || '—',
+        invoiceDate: inv.invoiceDate || '—',
+        postingDate: inv.postingDate || '—',
         total: inv.total,
         docType: 'SUPPLIER_INVOICE',
         docTypeLabel: 'Supplier Invoice',
@@ -1754,7 +1754,7 @@ class FraudService extends cds.ApplicationService {
         ok: true,
         posted: true,
         alreadyInLedger: false,
-        buttonText: 'Saved âœ“',
+        buttonText: 'Saved ✓',
         message: 'Saved to ledger.',
         id,
       });
@@ -1961,25 +1961,25 @@ class FraudService extends cds.ApplicationService {
 
       const lines = ['Invoice details from current check:'];
       if (/\b(bank|account|acct|ifsc|beneficiary|branch|neft|rtgs|iban|ap-?05)\b/i.test(q)) {
-        lines.push(`â€¢ Bank IFSC: ${invIfsc}`);
-        lines.push(`â€¢ Bank account number: ${invAcct}`);
-        lines.push(`â€¢ Rule AP-05 (Bank details changed): ${ap05Tier}`);
+        lines.push(`• Bank IFSC: ${invIfsc}`);
+        lines.push(`• Bank account number: ${invAcct}`);
+        lines.push(`• Rule AP-05 (Bank details changed): ${ap05Tier}`);
       } else if (/\b(much|bill|amount|amounts|total|tax|taxes|taxable|cgst|sgst|igst|price|cost|value|money|pay|payment)\b/i.test(q)) {
-        lines.push(`â€¢ Total amount: ${totalStr}`);
-        lines.push(`â€¢ Taxable amount: ${taxableStr}`);
-        lines.push(`â€¢ Taxes: CGST ${cgstStr} Â· SGST ${sgstStr} Â· IGST ${igstStr}`);
-        lines.push(`â€¢ Invoice number: ${invNo} (${invDate})`);
+        lines.push(`• Total amount: ${totalStr}`);
+        lines.push(`• Taxable amount: ${taxableStr}`);
+        lines.push(`• Taxes: CGST ${cgstStr} · SGST ${sgstStr} · IGST ${igstStr}`);
+        lines.push(`• Invoice number: ${invNo} (${invDate})`);
       } else if (/\b(supplier|vendor|seller|buyer|who|company|party|gstin|gst)\b/i.test(q)) {
-        lines.push(`â€¢ Supplier name: ${supplier}`);
-        lines.push(`â€¢ Supplier GSTIN: ${supplierGstin}`);
-        lines.push(`â€¢ Buyer GSTIN: ${buyerGstin}`);
-        lines.push(`â€¢ Invoice number: ${invNo} Â· Total: ${totalStr}`);
+        lines.push(`• Supplier name: ${supplier}`);
+        lines.push(`• Supplier GSTIN: ${supplierGstin}`);
+        lines.push(`• Buyer GSTIN: ${buyerGstin}`);
+        lines.push(`• Invoice number: ${invNo} · Total: ${totalStr}`);
       } else {
-        lines.push(`â€¢ Invoice number: ${invNo} Â· Date: ${invDate} Â· PO: ${poNumber}`);
-        lines.push(`â€¢ Supplier: ${supplier} Â· GSTIN: ${supplierGstin}`);
-        lines.push(`â€¢ Total: ${totalStr} (Taxable: ${taxableStr}, CGST: ${cgstStr}, SGST: ${sgstStr}, IGST: ${igstStr})`);
-        lines.push(`â€¢ Description: ${desc}`);
-        lines.push(`â€¢ Bank details: IFSC ${invIfsc} Â· Account number ${invAcct} (Rule AP-05: ${ap05Tier})`);
+        lines.push(`• Invoice number: ${invNo} · Date: ${invDate} · PO: ${poNumber}`);
+        lines.push(`• Supplier: ${supplier} · GSTIN: ${supplierGstin}`);
+        lines.push(`• Total: ${totalStr} (Taxable: ${taxableStr}, CGST: ${cgstStr}, SGST: ${sgstStr}, IGST: ${igstStr})`);
+        lines.push(`• Description: ${desc}`);
+        lines.push(`• Bank details: IFSC ${invIfsc} · Account number ${invAcct} (Rule AP-05: ${ap05Tier})`);
       }
       return lines.join('\n');
     };
@@ -2070,8 +2070,8 @@ class FraudService extends cds.ApplicationService {
 
       // PART 3.4: Never show or send SAP_API_KEY, SAP_USER, SAP_PASSWORD, GEMINI_API_KEY, host names with credentials, or any server setting
       if (isCredentialOrServerSettingQuestion(q)) {
-        const isTel = /[\u0C00-\u0C7F]/.test(q) || /à°¤à±†à°²à±à°—à±/i.test(q);
-        return isTel ? 'à°¨à±‡à°¨à± à°†à°§à°¾à°°à°¾à°²à°¨à± à°²à±‡à°¦à°¾ à°¸à°°à±à°µà°°à± à°¸à±†à°Ÿà±à°Ÿà°¿à°‚à°—à±â€Œà°²à°¨à± à°­à°¾à°—à°¸à±à°µà°¾à°®à±à°¯à°‚ à°šà±‡à°¯à°²à±‡à°¨à±.' : CREDENTIAL_REFUSAL_MSG;
+        const isTel = /[\u0C00-\u0C7F]/.test(q) || /à°¤à±†à°²à±à°—ు/i.test(q);
+        return isTel ? "నేను ఆధారాలను లేదా సర్వర్ సెట్టింగ్‌లను భాగస్వామ్యం చేయలేను." : CREDENTIAL_REFUSAL_MSG;
       }
 
       const isTel = /[\u0C00-\u0C7F]/.test(q) || /\btelugu\b/i.test(q);
@@ -2079,7 +2079,7 @@ class FraudService extends cds.ApplicationService {
       // Greetings handling
       if (isGreetingMessage(q)) {
         if (isTel) {
-          return 'à°¨à°®à°¸à±à°•à°¾à°°à°‚! à°¨à±‡à°¨à± à°¬à±à°²à±‚à°¸à± à°‡à°¨à±â€Œà°µà°¾à°¯à°¿à°¸à± à°à°œà±†à°‚à°Ÿà±â€Œà°¨à°¿. à°‡à°¨à±â€Œà°µà°¾à°¯à°¿à°¸à±â€Œà°²à°¨à± à°¡à±‚à°ªà±à°²à°¿à°•à±‡à°Ÿà± à°®à°°à°¿à°¯à± à°¸à±à°ªà±à°²à°¿à°Ÿà± à°¬à°¿à°²à±à°²à±à°² à°•à±‹à°¸à°‚ à°¤à°¨à°¿à°–à±€ à°šà±‡à°¯à°¡à°‚à°²à±‹ à°¨à±‡à°¨à± à°®à±€à°•à± à°¸à°¹à°¾à°¯à°ªà°¡à°¤à°¾à°¨à±. à°¨à±‡à°¨à± à°®à±€à°•à± à°Žà°²à°¾ à°¸à°¹à°¾à°¯à°ªà°¡à°—à°²à°¨à±?';
+          return "నమస్కారం! నేను బ్లూస్ ఇన్‌వాయిస్ ఏజెంట్‌ని. ఇన్‌వాయిస్‌లను డూప్లికేట్ మరియు స్ప్లిట్ బిల్లుల కోసం తనిఖీ చేయడంలో మరియు లెడ్జర్‌ను శోధించడంలో నేను మీకు సహాయపడగలను. నేను మీకు ఎలా సహాయపడగలను?";
         }
         return "Hello! I'm Blus Invoice Agent. Upload an invoice and I'll check it for duplicates and split invoices.";
       }
@@ -2088,15 +2088,15 @@ class FraudService extends cds.ApplicationService {
       if (/^(tell answer|tell|give answer|ok|answer|\?|details)$/i.test(q.toLowerCase())) {
         const lcRes = await last_check(user);
         const lc = lcRes && lcRes.lastCheck;
-        if (lc && lc.invoiceNo && lc.invoiceNo !== 'â€”') {
+        if (lc && lc.invoiceNo && lc.invoiceNo !== '—') {
           const dispStatus = toDisplayStatusTerm(lc.verdict || lc.status, lc.status, lc.docType, Array.isArray(lc.missingFields) && lc.missingFields.length > 0);
           if (isTel) {
-            return `à°®à±€à°°à± à°šà°¿à°µà°°à°¿ à°‡à°¨à±â€Œà°µà°¾à°¯à°¿à°¸à± ${lc.invoiceNo} (${dispStatus}) à°¤à°¨à°¿à°–à±€ à°«à°²à°¿à°¤à°¾à°¨à±à°¨à°¿ à°µà°¿à°µà°°à°¿à°‚à°šà°®à°‚à°Ÿà°¾à°°à°¾?`;
+            return `మీరు చివరి ఇన్‌వాయిస్ ${lc.invoiceNo} (${dispStatus}) తనిఖీ ఫలితాన్ని వివరించమంటారా?`;
           }
           return `Do you want me to explain the last check result for invoice ${lc.invoiceNo} (${dispStatus})?`;
         }
         if (isTel) {
-          return 'à°®à±€à°°à± à°šà°¿à°µà°°à°¿ à°‡à°¨à±â€Œà°µà°¾à°¯à°¿à°¸à± à°¤à°¨à°¿à°–à±€ à°«à°²à°¿à°¤à°¾à°¨à±à°¨à°¿ à°µà°¿à°µà°°à°¿à°‚à°šà°®à°‚à°Ÿà°¾à°°à°¾?';
+          return "మీరు చివరి ఇన్‌వాయిస్ తనిఖీ ఫలితాన్ని వివరించమంటారా?";
         }
         return 'Do you want me to explain the last check result?';
       }
@@ -2126,13 +2126,26 @@ class FraudService extends cds.ApplicationService {
         } catch {}
       }
 
+      // STEP 1 & 2: CLASSIFY INTENT AND ROUTE BEFORE ANY GEMINI CALL
+      const intent = classifyChatIntent(q);
+      const intentRes = await buildIntentReply(intent, q, {
+        checkRecord,
+        parsedResult,
+        activeResults,
+        sessionKey: user,
+      });
+      if (intentRes && intentRes.handled) {
+        return sanitizeChatOutput(redactServerCredentials(intentRes.reply));
+      }
+
       // PART 3.2: If the user asks about SAP:
       if (/\bsap\b/i.test(q)) {
+        const isTel = /[\u0C00-\u0C7F]/.test(q) || /\btelugu\b/i.test(q);
         const sapForceUnset = Boolean(req && req.headers && req.headers['x-sap-api-key-unset'] === 'true');
         const sapMode = String(process.env.SAP_MODE || 'live').trim().toLowerCase();
         const sapCfg = getSapConfig();
         if (sapForceUnset || !sapCfg.isConfigured || sapMode !== 'live') {
-          return isTel ? 'SAP à°•à°¾à°¨à±à°«à°¿à°—à°°à± à°šà±‡à°¯à°¬à°¡à°²à±‡à°¦à±' : 'SAP not configured';
+          return isTel ? 'SAP కాన్ఫిగర్ చేయబడలేదు' : 'SAP not configured';
         }
         const refMatch = q.match(/\b([0-9]{6,16}|INV[A-Za-z0-9/_-]*|[A-Z]{2,5}[/-][A-Za-z0-9/_-]+)\b/i);
         const refTerm = refMatch ? refMatch[1] : ((checkRecord && checkRecord.invoiceNo) || '');
@@ -2201,9 +2214,9 @@ SCOPE & GENERAL QUESTIONS RULES:
 - NEVER refuse a normal question! Never output "I can only answer questions about invoice reviews and ledger database" or any refusal string.
 - If the user asks a general question unrelated to invoices (e.g. "what is GST", "what is a ledger", weather, general knowledge): answer briefly and helpfully in the user's language, and then offer to check an invoice for them (e.g., "Would you like me to check an invoice for you?").
 - If the user asks about an invoice in the current check: explain each field, the status (${displayTerm}), and each active check result (Duplicate check, GSTIN check, Repeat bill check, Split invoice check) in plain words without rule codes.
-- Fields missing from an invoice must be described as "not shown on invoice" (or in the user's language, e.g. "à°‡à°¨à±â€Œà°µà°¾à°¯à°¿à°¸à±â€Œà°²à±‹ à°šà±‚à°ªà°¬à°¡à°²à±‡à°¦à±"). NEVER invent values!
+- Fields missing from an invoice must be described as "not shown on invoice" (or in the user's language, e.g. "ఇన్‌వాయిస్‌లో చూపబడలేదు"). NEVER invent values!
 - If the user asks about financial or AP terms (ledger, duplicate, GSTIN, PO, supplier invoice, split invoice, HOLD, REJECT): explain their meanings clearly in simple language.
-- CREDENTIAL SECURITY: Never display, quote or describe SAP_API_KEY, SAP_USER, SAP_PASSWORD, host credentials, API keys, secrets, or server settings. If asked, reply in the user's language: "I cannot share credentials or server settings." (or in Telugu: "à°¨à±‡à°¨à± à°†à°§à°¾à°°à°¾à°²à°¨à± à°²à±‡à°¦à°¾ à°¸à°°à±à°µà°°à± à°¸à±†à°Ÿà±à°Ÿà°¿à°‚à°—à±â€Œà°²à°¨à± à°­à°¾à°—à°¸à±à°µà°¾à°®à±à°¯à°‚ à°šà±‡à°¯à°²à±‡à°¨à±.").
+- CREDENTIAL SECURITY: Never display, quote or describe SAP_API_KEY, SAP_USER, SAP_PASSWORD, host credentials, API keys, secrets, or server settings. If asked, reply in the user's language: "I cannot share credentials or server settings." (or in Telugu: "నేను ఆధారాలను లేదా సర్వర్ సెట్టింగ్‌లను భాగస్వామ్యం చేయలేను.").
 
 Grounding Context:
 ${JSON.stringify(outgoingRequest.grounding, null, 2)}`;

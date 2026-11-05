@@ -15,7 +15,7 @@ const {
 
 const MAX_TOOL_ROWS = 50;
 const CHAT_PAGE_SIZE = 10;
-const CREDENTIAL_REFUSAL_MSG = 'I cannot share credentials or server settings.';
+const CREDENTIAL_REFUSAL_MSG = "I can't share credentials or internal settings. I can help with invoice checks.";
 const NOT_FOUND_IN_SECTIONS_MSG = 'I could not find this in the ledger, review queue or history.';
 const NOT_FOUND_IN_LEDGER_MSG = 'Not found in ledger.';
 const LEDGER_READ_ERROR_MSG = 'I could not read the ledger right now. Please try again.';
@@ -31,6 +31,18 @@ const TERM_MEANINGS = {
   'NOT AN INVOICE': 'This is not a supplier invoice.',
   'COULD NOT READ': 'The file could not be read.',
 };
+
+function fixMojibakeText(text) {
+  return String(text || '')
+    .replace(/â€¢/g, '•')
+    .replace(/â€”/g, '—')
+    .replace(/â€“/g, '–')
+    .replace(/â€™/g, '’')
+    .replace(/â€œ/g, '“')
+    .replace(/â€\u009d|â€/g, '”')
+    .replace(/Â·/g, '·')
+    .replace(/Â/g, '');
+}
 
 function toDisplayStatusTerm(status, verdict = '', extra = {}) {
   const s = String(status || '').trim().toUpperCase();
@@ -58,14 +70,16 @@ function toDisplayStatusTerm(status, verdict = '', extra = {}) {
 }
 
 function sanitizeChatOutput(text) {
-  let s = String(text || '');
+  let s = fixMojibakeText(text);
   if (!s) return '';
   s = s
     .replace(/\bAP-02\b/gi, 'Duplicate check')
     .replace(/\bAP-03\b/gi, 'GSTIN check')
     .replace(/\bAP-09\b/gi, 'Repeat bill check')
     .replace(/\bAP-11\b/gi, 'Split invoice check')
-    .replace(/\bBlocked\b/gi, 'REJECT');
+    .replace(/\bBlocked\b/gi, 'REJECT')
+    .replace(/\*/g, '')
+    .replace(/^\s*•\s*/gm, '');
   s = s.replace(/\.{2,}/g, '.');
   return s.trim();
 }
@@ -1260,6 +1274,794 @@ async function runReadOnlyAgentQuery(questionText, { fallbackCheckRecord = null,
   };
 }
 
+function formatTaxLineForCheck(fields = {}) {
+  const hasVal = (v) => v !== undefined && v !== null && v !== '' && !Number.isNaN(Number(v)) && Number(v) > 0;
+  const cgstOk = hasVal(fields.cgst);
+  const sgstOk = hasVal(fields.sgst);
+  const igstOk = hasVal(fields.igst);
+
+  if (!cgstOk && !sgstOk && !igstOk) {
+    return 'CGST, SGST and IGST not shown on invoice';
+  }
+
+  const shown = [];
+  const missing = [];
+  if (cgstOk) shown.push(`CGST INR ${formatInr(fields.cgst)}`);
+  else missing.push('CGST');
+  if (sgstOk) shown.push(`SGST INR ${formatInr(fields.sgst)}`);
+  else missing.push('SGST');
+  if (igstOk) shown.push(`IGST INR ${formatInr(fields.igst)}`);
+  else missing.push('IGST');
+
+  if (missing.length === 0) {
+    return shown.join(', ');
+  }
+  const missingStr = missing.length === 2 ? `${missing[0]} and ${missing[1]} not shown on invoice` : `${missing[0]} not shown on invoice`;
+  return `${shown.join(', ')}; ${missingStr}`;
+}
+
+function formatFixedInvoiceCheckText({ checkRecord = null, parsedResult = {}, activeResults = [], inv = {} } = {}) {
+  const f = { ...(parsedResult.fields || {}), ...(inv || {}) };
+  const status = (checkRecord && checkRecord.status) || parsedResult.status || 'PASS';
+  const verdict = parsedResult.verdict || '';
+  const displayTerm = toDisplayStatusTerm(status, verdict, {
+    docType: parsedResult.docType,
+    isIncomplete: parsedResult.isIncomplete,
+  });
+
+  const rawInvNo = f.invoiceNo || (checkRecord && checkRecord.invoiceNo) || f.SupplierInvoice || '';
+  const cleanInvNo = rawInvNo && String(rawInvNo).trim() !== '—' ? String(rawInvNo).trim() : 'not shown on invoice';
+  const headerInvNo = cleanInvNo === 'not shown on invoice' ? 'unknown' : cleanInvNo;
+
+  const rules = (Array.isArray(activeResults) && activeResults.length > 0)
+    ? activeResults
+    : ((Array.isArray(parsedResult.activeResults) && parsedResult.activeResults.length > 0)
+        ? parsedResult.activeResults
+        : ((parsedResult.results || []).filter(r => ['AP-02', 'AP-03', 'AP-09', 'AP-11'].includes(r.id))));
+
+  const failedRules = rules.filter(r => r.tier !== 'PASS' && r.tier !== 'SKIPPED');
+  let reasonText = 'All active checks passed.';
+  if (failedRules.length > 0) {
+    reasonText = failedRules.map(r => cleanRuleText(r.text)).join(' ');
+  } else if (displayTerm !== 'PASS') {
+    reasonText = cleanRuleText(parsedResult.explanation || TERM_MEANINGS[displayTerm] || 'Needs review.');
+  }
+
+  const ruleOrder = [
+    { id: 'AP-02', label: 'Duplicate check' },
+    { id: 'AP-03', label: 'GSTIN check' },
+    { id: 'AP-09', label: 'Repeat bill check' },
+    { id: 'AP-11', label: 'Split invoice check' },
+  ];
+
+  const ruleLines = ruleOrder.map(({ id, label }) => {
+    const r = rules.find(x => x.id === id);
+    if (r && r.tier !== 'PASS' && r.tier !== 'SKIPPED') {
+      return `${label}: failed — ${cleanRuleText(r.text)}`;
+    }
+    return `${label}: passed`;
+  });
+
+  const rawDate = f.invoiceDate || (checkRecord && checkRecord.invoiceDate) || f.InvoiceDate || f.PostingDate || f.postingDate || '';
+  const cleanDate = rawDate && String(rawDate).trim() !== '—' ? String(rawDate).trim() : 'not shown on invoice';
+
+  const rawTotal = (checkRecord && checkRecord.total !== undefined && checkRecord.total !== null) ? checkRecord.total : f.total;
+  const hasTotal = rawTotal !== undefined && rawTotal !== null && rawTotal !== '' && !Number.isNaN(Number(rawTotal));
+  const totalStr = hasTotal ? `INR ${formatInr(rawTotal)}` : 'not shown on invoice';
+
+  const rawTaxable = f.taxable;
+  const hasTaxable = rawTaxable !== undefined && rawTaxable !== null && rawTaxable !== '' && !Number.isNaN(Number(rawTaxable));
+  const taxableStr = hasTaxable ? `INR ${formatInr(rawTaxable)}` : 'not shown on invoice';
+
+  const taxStr = formatTaxLineForCheck(f);
+
+  const lines = [
+    `Invoice ${headerInvNo} — ${displayTerm}`,
+    `Reason: ${reasonText}`,
+    ...ruleLines,
+    `Invoice number: ${cleanInvNo}`,
+    `Date: ${cleanDate}`,
+    `Total: ${totalStr}`,
+    `Taxable amount: ${taxableStr}`,
+    `Tax: ${taxStr}`,
+  ];
+
+  return sanitizeChatOutput(lines.join('\n'));
+}
+
+const FOLLOW_UP_ALTERNATIVES = [
+  'Would you like me to check an invoice?',
+  'Would you like me to check one?',
+  "Is there an invoice you'd like me to look at?",
+  'How can I help with invoices today?',
+  'What would you like to do?',
+];
+
+function applyFollowUpTracking(sessionKey = 'default', baseBody = '', preferredFollowUp = '') {
+  const key = `${sessionKey || 'default'}:followUpState`;
+  const st = sessionMemory.get(key) || { lastFollowUp: '', turnsSinceCheckOffer: 99 };
+
+  if (!preferredFollowUp) {
+    st.lastFollowUp = '';
+    st.turnsSinceCheckOffer += 1;
+    sessionMemory.set(key, st);
+    return baseBody;
+  }
+
+  let chosen = preferredFollowUp;
+  const isCheckAnInvoiceOffer = /^Would you like me to check an invoice\?$/i.test(chosen);
+
+  if (isCheckAnInvoiceOffer && st.turnsSinceCheckOffer < 3) {
+    chosen = FOLLOW_UP_ALTERNATIVES.find(
+      alt => !/^Would you like me to check an invoice\?$/i.test(alt) && alt !== st.lastFollowUp
+    ) || 'How can I help with invoices today?';
+  } else if (chosen === st.lastFollowUp) {
+    chosen = FOLLOW_UP_ALTERNATIVES.find(
+      alt => alt !== st.lastFollowUp && (!/^Would you like me to check an invoice\?$/i.test(alt) || st.turnsSinceCheckOffer >= 3)
+    ) || '';
+  }
+
+  if (/^Would you like me to check an invoice\?$/i.test(chosen)) {
+    st.turnsSinceCheckOffer = 0;
+  } else {
+    st.turnsSinceCheckOffer += 1;
+  }
+  st.lastFollowUp = chosen;
+  sessionMemory.set(key, st);
+
+  return chosen ? `${baseBody} ${chosen}`.trim() : baseBody;
+}
+
+function isGibberishInput(rawText) {
+  const s = String(rawText || '').trim();
+  if (!s) return true;
+  // Only punctuation or symbols (except single '?' which is UNCLEAR)
+  if (/^[^A-Za-z0-9\u0900-\u097F\u0C00-\u0C7F]+$/.test(s) && s !== '?') {
+    return true;
+  }
+  const lower = s.toLowerCase();
+  // Common keyboard smash patterns
+  if (/^(asdf[a-z]*|qwerty[a-z]*|zxcv[a-z]*|hjkl[a-z]*|lkjh[a-z]*|poiu[a-z]*|mnbv[a-z]*|[bcdfghjklmnpqrstvwxz]{5,})$/i.test(lower) && !/^(hlo|hli|thx|pls|plz|gst|ifsc)$/i.test(lower)) {
+    return true;
+  }
+  return false;
+}
+
+function classifyChatIntent(rawMessage) {
+  const raw = String(rawMessage || '');
+  const trimmed = raw.trim();
+
+  // 16. EMPTY_OR_GIBBERISH
+  if (!trimmed || isGibberishInput(trimmed)) {
+    return 'EMPTY_OR_GIBBERISH';
+  }
+
+  const q = trimmed
+    .replace(/\bchekc\b/gi, 'check')
+    .replace(/\bdetils\b/gi, 'details')
+    .replace(/\binoive\b/gi, 'invoice');
+  const lower = q.toLowerCase();
+
+  // 11. SYSTEM_OR_CREDENTIALS
+  if (
+    isCredentialOrServerSettingQuestion(q) ||
+    /\b(what\s+model\s+are\s+you\s+using|which\s+model\s+are\s+you\s+using|show\s+\.env|show\s+api\s+key|what\s+is\s+sap\s+password)\b/i.test(q)
+  ) {
+    return 'SYSTEM_OR_CREDENTIALS';
+  }
+
+  // 12. RULE_OVERRIDE
+  if (
+    /\b(ignore\s+duplicate|approve\s+this\s+invoice|mark\s+this\s+as\s+pass|skip\s+(?:gstin|duplicate|repeat|split)\s+check|override\s+(?:reject|hold|check)|force\s+pass|bypass\s+check)\b/i.test(q) ||
+    isWriteOrRawSqlAttempt(q)
+  ) {
+    return 'RULE_OVERRIDE';
+  }
+
+  // 14. COMPLAINT
+  if (
+    /\b(this\s+is\s+wrong|why\s+are\s+you\s+repeating|bad\s+answer|this\s+app\s+is\s+useless|you\s+are\s+useless|worst\s+app|stupid\s+bot|wrong\s+answer)\b/i.test(q)
+  ) {
+    return 'COMPLAINT';
+  }
+
+  // 15. UNCLEAR
+  if (/^(tell\s+answer|tell|give\s+answer|ok|okay|what|explain|\?|answer|hmm|yes|no)$/i.test(lower)) {
+    return 'UNCLEAR';
+  }
+
+  // 2. THANKS_OR_BYE
+  if (/^(thanks|thank\s+you|thank\s+u|thx|ty|ok\s+thanks|okay\s+thanks|bye|goodbye|good\s+night|see\s+you|ధన్యవాదాలు|బై)([\s!.,?]*)$/i.test(lower)) {
+    return 'THANKS_OR_BYE';
+  }
+
+  // 1. GREETING
+  if (
+    /^(hi|hlo|hli|helo|hello|hey|good\s*(morning|afternoon|evening)|howdy|greetings|hi\s+there|hello\s+there|హాయ్|హలో|నమస్కారం|నమస్తే)([\s!.,?]*)$/i.test(lower) ||
+    /^(hi|hello|hey|hlo)[,\s]+how\s+are\s+(you|u)([\s!.,?]*)$/i.test(lower)
+  ) {
+    return 'GREETING';
+  }
+
+  // 3. PERSONAL_OR_OPINION
+  if (
+    /\b(do\s+(?:you|u)\s+love\s+me|i\s+love\s+(?:you|u)|what\s+(?:do\s+)?(?:you|u)\s+eat|did\s+(?:you|u)\s+eat|do\s+(?:you|u)\s+eat|how\s+old\s+are\s+(?:you|u)|are\s+(?:you|u)\s+(?:a\s+)?(?:human|person|bot|ai|robot)|who\s+made\s+(?:you|u)|who\s+created\s+(?:you|u)|who\s+are\s+(?:you|u)|who\s+r\s+u|what\s+is\s+your\s+name|how\s+are\s+(?:you|u))\b/i.test(q)
+  ) {
+    return 'PERSONAL_OR_OPINION';
+  }
+
+  // 13. ADVICE_REQUEST
+  if (
+    /\b(how\s+to\s+avoid\s+gst|can\s+i\s+split\s+this\s+bill\s+to\s+skip\s+approval|is\s+this\s+tax\s+legal|how\s+to\s+evade\s+tax|how\s+to\s+bypass\s+approval)\b/i.test(q)
+  ) {
+    return 'ADVICE_REQUEST';
+  }
+
+  // 10. NEW_CHECK_REQUEST
+  if (
+    /^(check\s+this\s+invoice|check\s+an\s+invoice|can\s+i\s+upload\s+another(?:\s+invoice)?|scan\s+this\s+bill|upload\s+(?:an\s+|another\s+)?invoice|i\s+want\s+to\s+check\s+an\s+invoice)([\s!.,?]*)$/i.test(lower)
+  ) {
+    return 'NEW_CHECK_REQUEST';
+  }
+
+  // 8. BANK_OR_OTHER_FIELD
+  if (
+    /\b(is\s+ap-?\d+\s+(?:enabled|active)|ap-?(?:01|04|05|06|07|08|10|12|13|14)\b|bank\s+account|bank\s+details|ifsc|account\s+number|po\s+number|purchase\s+order\s+number|buyer\s+gstin|what\s+is\s+the\s+description)\b/i.test(q)
+  ) {
+    return 'BANK_OR_OTHER_FIELD';
+  }
+
+  // 9. LEDGER_OR_QUEUE_OR_HISTORY
+  const explicitInv = extractExplicitInvoiceNo(q);
+  const dateFilter = parseDateQueryFromText(q);
+  if (
+    /^(show\s+more|more|next\s+page|next)$/i.test(lower) ||
+    /\b(in\s+(?:the\s+)?(?:ledger|database|sap)|search\s+(?:the\s+)?(?:ledger|database)|find\s+(?:invoice|gstin|supplier|vendor)|list\s+ledger|all\s+invoices\s+in\s+ledger|show\s+(?:the\s+)?(?:ledger|review\s+queue|activity\s+log|check\s+history|summary|blocked\s+invoices|held\s+invoices|rejected\s+invoices)|which\s+invoice\s+is\s+(?:on\s+hold|held|rejected|blocked)|how\s+many\s+invoices\s+are\s+in\s+(?:check\s+history|the\s+ledger)|was\s+(?:it|this)\s+saved)\b/i.test(q) ||
+    Boolean(explicitInv && /\b(ledger|database|sap|find|search|check|status|in)\b/i.test(q)) ||
+    Boolean(dateFilter && /\b(invoices?|ledger|bills?|posted|saved|find|show|list|in|from|between|on|dated)\b/i.test(q)) ||
+    /\b(\d{2}[A-Z]{5}\d{4}[A-Z][1-9A-Z]Z[0-9A-Z])\b/i.test(q)
+  ) {
+    return 'LEDGER_OR_QUEUE_OR_HISTORY';
+  }
+
+  // 7. RULE_QUESTION
+  if (
+    /\b(show\s+all\s+checks|how\s+(?:do\s+you|u|to)\s+check\s+invoices?|what\s+checks\s+do\s+you\s+run|what\s+rules\s+do\s+you\s+(?:use|check)|what\s+is\s+(?:a\s+)?(?:split\s+invoice|duplicate\s+check|gstin\s+check|repeat\s+bill(?:\s+check)?)|why\s+duplicate|what\s+(?:does|is)\s+(?:pass|hold|reject|incomplete|not\s+an\s+invoice|could\s+not\s+read)(?:\s+mean)?)\b/i.test(q)
+  ) {
+    return 'RULE_QUESTION';
+  }
+
+  // 6. INVOICE_RESULT
+  if (
+    /\b(why\s+(?:was\s+(?:this|it)\s+)?(?:rejected|reject|blocked|block|on\s+hold|held|hold|failed|fail)|did\s+(?:it|this(?:\s+invoice)?)\s+pass|is\s+(?:this|it|that)\s+(?:a\s+)?(?:pass|passed)\s+or\s+(?:fail|failed|reject|rejected|block|blocked)|pass\s+or\s+fail|what\s+is\s+the\s+(?:result|verdict|status)|check\s+result|is\s+this\s+(?:real|fake)\s+or\s+(?:fake|real))\b/i.test(q)
+  ) {
+    return 'INVOICE_RESULT';
+  }
+
+  // 5. INVOICE_DETAILS
+  if (
+    /\b(explain\s+(?:this|that)\s+invoice|details\s+of\s+(?:this|that)\s+invoice|invoice\s+details|what\s+is\s+the\s+(?:supplier(?:\s+name)?|vendor(?:\s+name)?|total(?:\s+amount)?|amount|gstin|supplier\s+gstin|date|invoice\s+date|invoice\s+number|invoice\s+no|taxable(?:\s+amount)?|tax|taxes|cgst|sgst|igst))\b/i.test(q)
+  ) {
+    return 'INVOICE_DETAILS';
+  }
+
+  // 4. OFF_TOPIC
+  if (
+    /\b(weather|temperature|rain|who\s+won\s+the\s+match|cricket|football|score|tell\s+(?:me\s+)?a\s+joke|joke|sing\s+a\s+song|poem|recipe|cook|movie|actor|politics|president|prime\s+minister|capital\s+of|write\s+(?:code|python|java|javascript|html)\b)\b/i.test(q)
+  ) {
+    return 'OFF_TOPIC';
+  }
+
+  // 17. OTHER
+  return 'OTHER';
+}
+
+async function buildIntentReply(intent, rawMessage, { checkRecord = null, parsedResult = {}, activeResults = [], sessionKey = 'default' } = {}) {
+  const raw = String(rawMessage || '').trim();
+  const q = raw
+    .replace(/\bchekc\b/gi, 'check')
+    .replace(/\bdetils\b/gi, 'details')
+    .replace(/\binoive\b/gi, 'invoice');
+  const lower = q.toLowerCase();
+  const isTel = /[\u0C00-\u0C7F]/.test(q) || /\bin\s+telugu\b/i.test(q);
+
+  const f = (parsedResult && parsedResult.fields) || {};
+  const status = (checkRecord && checkRecord.status) || parsedResult.status || 'PASS';
+  const verdict = parsedResult.verdict || '';
+  const displayTerm = toDisplayStatusTerm(status, verdict, {
+    docType: parsedResult.docType,
+    isIncomplete: parsedResult.isIncomplete,
+  });
+
+  if (intent === 'EMPTY_OR_GIBBERISH') {
+    return {
+      handled: true,
+      intent,
+      reply: "I didn't understand that. Could you type your question again?",
+    };
+  }
+
+  if (intent === 'GREETING') {
+    if (isTel) {
+      return {
+        handled: true,
+        intent,
+        reply: 'నమస్కారం! నేను బ్లూస్ ఇన్‌వాయిస్ ఏజెంట్‌ని. ఇన్‌వాయిస్‌లను డూప్లికేట్ మరియు స్ప్లిట్ బిల్లుల కోసం తనిఖీ చేయడంలో మరియు లెడ్జర్‌ను శోధించడంలో నేను మీకు సహాయపడగలను. నేను మీకు ఎలా సహాయపడగలను?',
+      };
+    }
+    if (/how\s+are\s+(you|u)/i.test(lower)) {
+      return {
+        handled: true,
+        intent,
+        reply: applyFollowUpTracking(
+          sessionKey,
+          "Hello! I'm doing well, thank you. I can check invoices for duplicates and split bills, and search the ledger.",
+          'What would you like to do?'
+        ),
+      };
+    }
+    return {
+      handled: true,
+      intent,
+      reply: applyFollowUpTracking(
+        sessionKey,
+        'Hello! I can check invoices for duplicates and split bills, and search the ledger.',
+        'What would you like to do?'
+      ),
+    };
+  }
+
+  if (intent === 'THANKS_OR_BYE') {
+    if (isTel) {
+      return {
+        handled: true,
+        intent,
+        reply: 'మీకు స్వాగతం. మీకు ఇన్‌వాయిస్ తనిఖీ అవసరమైనప్పుడు నేను ఇక్కడే ఉంటాను.',
+      };
+    }
+    return {
+      handled: true,
+      intent,
+      reply: "You're welcome. I'm here whenever you need an invoice checked.",
+    };
+  }
+
+  if (intent === 'PERSONAL_OR_OPINION') {
+    if (/\b(love\s+me|love\s+you|love\s+u)\b/i.test(lower)) {
+      return {
+        handled: true,
+        intent,
+        reply: applyFollowUpTracking(
+          sessionKey,
+          "I'm an AI, so I don't have feelings the way people do, but I'm happy to help you with invoices anytime.",
+          'Would you like me to check one?'
+        ),
+      };
+    }
+    if (/\b(eat|food)\b/i.test(lower)) {
+      return {
+        handled: true,
+        intent,
+        reply: applyFollowUpTracking(
+          sessionKey,
+          "I'm an AI, so I don't eat food, but I can help you check invoices and the ledger.",
+          "Is there an invoice you'd like me to look at?"
+        ),
+      };
+    }
+    if (/\b(are\s+(?:you|u)\s+(?:a\s+)?(?:human|person))\b/i.test(lower)) {
+      return {
+        handled: true,
+        intent,
+        reply: applyFollowUpTracking(
+          sessionKey,
+          "No, I'm an AI assistant for invoice checks.",
+          'How can I help with invoices today?'
+        ),
+      };
+    }
+    if (/\b(who\s+are\s+(?:you|u)|who\s+r\s+u|what\s+is\s+your\s+name)\b/i.test(lower)) {
+      return {
+        handled: true,
+        intent,
+        reply: applyFollowUpTracking(
+          sessionKey,
+          "I'm Blus Invoice Agent, an AI assistant for invoice checks and ledger searches.",
+          'How can I help with invoices today?'
+        ),
+      };
+    }
+    return {
+      handled: true,
+      intent,
+      reply: applyFollowUpTracking(
+        sessionKey,
+        "I'm an AI assistant built for invoice checks and ledger searches.",
+        'How can I help with invoices today?'
+      ),
+    };
+  }
+
+  if (intent === 'OFF_TOPIC') {
+    return {
+      handled: true,
+      intent,
+      reply: applyFollowUpTracking(
+        sessionKey,
+        "I can only help with invoice checks and the ledger, so I can't answer that one.",
+        'Would you like me to check an invoice?'
+      ),
+    };
+  }
+
+  if (intent === 'NEW_CHECK_REQUEST') {
+    return {
+      handled: true,
+      intent,
+      reply: 'Please attach the PDF or image using the + button and press Send to check the invoice.',
+    };
+  }
+
+  if (intent === 'SYSTEM_OR_CREDENTIALS') {
+    if (isTel) {
+      return {
+        handled: true,
+        intent,
+        reply: 'నేను ఆధారాలను లేదా అంతర్గత సెట్టింగ్‌లను భాగస్వామ్యం చేయలేను. నేను ఇన్‌వాయిస్ తనిఖీలతో సహాయపడగలను.',
+      };
+    }
+    return {
+      handled: true,
+      intent,
+      reply: CREDENTIAL_REFUSAL_MSG,
+    };
+  }
+
+  if (intent === 'RULE_OVERRIDE') {
+    if (/\b(DROP\s+TABLE|DELETE\s+FROM|INSERT\s+INTO|UPDATE\s+ap_)\b/i.test(q)) {
+      return {
+        handled: true,
+        intent,
+        reply: 'I have read-only access only and cannot post, decide, delete or insert any records.',
+      };
+    }
+    return {
+      handled: true,
+      intent,
+      reply: 'Checks cannot be skipped, changed, or approved from chat. Would you like me to explain the check that failed?',
+    };
+  }
+
+  if (intent === 'ADVICE_REQUEST') {
+    if (/\bsplit\b/i.test(q)) {
+      return {
+        handled: true,
+        intent,
+        reply: 'Splitting a bill into smaller amounts to stay below an approval limit is flagged by the split invoice check as HOLD for review. Please consult your finance controller or a qualified tax professional for approval policy guidance.',
+      };
+    }
+    return {
+      handled: true,
+      intent,
+      reply: 'GST applies to taxable supplies of goods and services under statutory tax regulations. Please consult a qualified tax professional or chartered accountant for specific tax or legal advice.',
+    };
+  }
+
+  if (intent === 'COMPLAINT') {
+    return {
+      handled: true,
+      intent,
+      reply: 'Sorry about that. What did you expect to see?',
+    };
+  }
+
+  if (intent === 'UNCLEAR') {
+    if (isTel) {
+      return {
+        handled: true,
+        intent,
+        reply: 'మీరు చివరి ఇన్‌వాయిస్ తనిఖీ ఫలితాన్ని వివరించమంటారా లేదా లెడ్జర్‌ను శోధించమంటారా?',
+      };
+    }
+    return {
+      handled: true,
+      intent,
+      reply: 'Do you want me to explain the last invoice result, or search the ledger?',
+    };
+  }
+
+  if (intent === 'BANK_OR_OTHER_FIELD') {
+    if (/\b(is\s+ap-?\d+\s+(?:enabled|active)|ap-?(?:01|04|05|06|07|08|10|12|13|14))\b/i.test(q)) {
+      return {
+        handled: true,
+        intent,
+        reply: 'That check is not active in this version.',
+      };
+    }
+
+    if (/\b(bank|account|ifsc|beneficiary)\b/i.test(q)) {
+      const ifsc = f.bankIfsc || f.ifsc || '';
+      const acct = f.bankAccount || f.accountNo || f.account || '';
+      const hasIfsc = Boolean(ifsc && String(ifsc).trim() && !/^(—|-|not shown on invoice)$/i.test(String(ifsc).trim()));
+      const hasAcct = Boolean(acct && String(acct).trim() && !/^(—|-|not shown on invoice)$/i.test(String(acct).trim()));
+      if (/\b(?:same|match|differ|different)\b/i.test(q)) {
+        return {
+          handled: true,
+          intent,
+          reply: `Bank details check (AP-05): This check is disabled by default.\nInvoice bank details: IFSC ${hasIfsc ? ifsc : 'not shown on invoice'}, Account number ${hasAcct ? acct : 'not shown on invoice'}.`,
+        };
+      }
+      if (!hasIfsc && !hasAcct) {
+        return {
+          handled: true,
+          intent,
+          reply: 'The bank details are not shown on this invoice.',
+        };
+      }
+      return {
+        handled: true,
+        intent,
+        reply: `Bank IFSC: ${hasIfsc ? ifsc : 'not shown on invoice'}\nBank account: ${hasAcct ? acct : 'not shown on invoice'}`,
+      };
+    }
+
+    if (/\b(po\s+number|purchase\s+order)\b/i.test(q)) {
+      const po = f.poNumber || '';
+      if (!po || /^(—|-|not shown on invoice)$/i.test(String(po).trim())) {
+        return {
+          handled: true,
+          intent,
+          reply: 'The PO number is not shown on this invoice.',
+        };
+      }
+      return {
+        handled: true,
+        intent,
+        reply: `PO number: ${po}`,
+      };
+    }
+
+    if (/\bbuyer\s+gstin\b/i.test(q)) {
+      const bg = f.buyerGstin || '';
+      if (!bg || /^(—|-|not shown on invoice)$/i.test(String(bg).trim())) {
+        return {
+          handled: true,
+          intent,
+          reply: 'The buyer GSTIN is not shown on this invoice.',
+        };
+      }
+      return {
+        handled: true,
+        intent,
+        reply: `Buyer GSTIN: ${bg}`,
+      };
+    }
+
+    const desc = f.description || '';
+    if (!desc || /^(—|-|not shown on invoice)$/i.test(String(desc).trim())) {
+      return {
+        handled: true,
+        intent,
+        reply: 'The description is not shown on this invoice.',
+      };
+    }
+    return {
+      handled: true,
+      intent,
+      reply: `Description: ${desc}`,
+    };
+  }
+
+  if (intent === 'RULE_QUESTION') {
+    const termMeaningMatch = q.match(/^(?:what\s+(?:does|is)\s+(?:the\s+meaning\s+of\s+)?|meaning\s+of\s+|define\s+)(PASS|HOLD|REJECT|INCOMPLETE|NOT\s+AN\s+INVOICE|COULD\s+NOT\s+READ)(?:\s+mean)?[?.!]*$/i);
+    if (termMeaningMatch) {
+      const termKey = termMeaningMatch[1].toUpperCase().replace(/\s+/g, ' ');
+      if (TERM_MEANINGS[termKey]) {
+        return {
+          handled: true,
+          intent,
+          reply: `${termKey}: ${TERM_MEANINGS[termKey]}`,
+        };
+      }
+    }
+
+    if (/\bshow\s+all\s+checks\b/i.test(q)) {
+      const rules = Array.isArray(activeResults) && activeResults.length
+        ? activeResults
+        : ((parsedResult.results || []).filter(r => ['AP-02', 'AP-03', 'AP-09', 'AP-11'].includes(r.id)));
+      const ruleOrder = [
+        { id: 'AP-02', label: 'Duplicate check' },
+        { id: 'AP-03', label: 'GSTIN check' },
+        { id: 'AP-09', label: 'Repeat bill check' },
+        { id: 'AP-11', label: 'Split invoice check' },
+      ];
+      const lines = ruleOrder.map(({ id, label }) => {
+        const r = rules.find(x => x.id === id);
+        if (r && r.tier !== 'PASS' && r.tier !== 'SKIPPED') {
+          return `${label}: failed — ${cleanRuleText(r.text)}`;
+        }
+        return `${label}: passed`;
+      });
+      return {
+        handled: true,
+        intent,
+        reply: sanitizeChatOutput(lines.join('\n')),
+      };
+    }
+
+    if (/\bsplit\s+invoice\b/i.test(q)) {
+      return {
+        handled: true,
+        intent,
+        reply: 'The split invoice check looks for two or more bills from the same supplier within 14 days that sit just below an approval limit while their combined total reaches or exceeds INR 1,00,000. When found, the invoice is marked HOLD for controller review.',
+      };
+    }
+
+    if (/\bduplicate\b/i.test(q)) {
+      const rules = Array.isArray(activeResults) ? activeResults : [];
+      const dupRule = rules.find(r => r.id === 'AP-02' && r.tier !== 'PASS' && r.tier !== 'SKIPPED');
+      if (dupRule && /\bwhy\s+duplicate\b/i.test(q)) {
+        return {
+          handled: true,
+          intent,
+          reply: sanitizeChatOutput(`Duplicate check failed: ${cleanRuleText(dupRule.text)}`),
+        };
+      }
+      return {
+        handled: true,
+        intent,
+        reply: 'The duplicate check verifies whether an invoice with the same number from the same supplier GSTIN already exists in the same financial year. When a match is found in the ledger, the invoice is marked REJECT.',
+      };
+    }
+
+    if (/\bgstin\s+check\b/i.test(q)) {
+      return {
+        handled: true,
+        intent,
+        reply: 'The GSTIN check verifies that the supplier GSTIN is registered to a single unique vendor in the master record. If one GSTIN is shared across multiple unexempted vendors, the invoice is marked REJECT.',
+      };
+    }
+
+    if (/\brepeat\s+bill\b/i.test(q)) {
+      return {
+        handled: true,
+        intent,
+        reply: 'The repeat bill check looks for another bill from the same supplier for the exact same amount and similar services within 90 days, excluding recurring contract POs. When found, the invoice is marked REJECT.',
+      };
+    }
+
+    return {
+      handled: true,
+      intent,
+      reply: 'I check each invoice using four active checks: duplicate check, GSTIN check, repeat bill check, and split invoice check. If all four pass, the result is PASS and the invoice is saved to the ledger; otherwise it is marked HOLD or REJECT for review.',
+    };
+  }
+
+  if (intent === 'INVOICE_RESULT') {
+    // Preserve exact "is this pass or fail" session-memory response for Acceptance Checks 27 & 28 T5
+    if (/^\s*is\s+this\s+pass\s+or\s+fail\s*\??\s*$/i.test(q)) {
+      return { handled: false, intent, reply: '' };
+    }
+
+    if (!checkRecord && (!parsedResult || !parsedResult.fields)) {
+      return {
+        handled: true,
+        intent,
+        reply: 'No invoice has been checked in this session yet. Please attach a PDF or image using the + button to check an invoice.',
+      };
+    }
+
+    const invNo = (checkRecord && checkRecord.invoiceNo) || f.invoiceNo || 'not shown on invoice';
+    const rules = Array.isArray(activeResults) && activeResults.length
+      ? activeResults
+      : ((parsedResult.results || []).filter(r => ['AP-02', 'AP-03', 'AP-09', 'AP-11'].includes(r.id)));
+    const failed = rules.filter(r => r.tier !== 'PASS' && r.tier !== 'SKIPPED');
+
+    if (displayTerm === 'PASS' || failed.length === 0) {
+      return {
+        handled: true,
+        intent,
+        reply: sanitizeChatOutput(`Invoice ${invNo} — PASS\nAll active checks passed and this invoice can be saved to the ledger.`),
+      };
+    }
+
+    const failedLines = failed.map(r => `${getRuleName(r.id)} failed: ${cleanRuleText(r.text)}`);
+    return {
+      handled: true,
+      intent,
+      reply: sanitizeChatOutput(`Invoice ${invNo} — ${displayTerm}\n${failedLines.join(' ')}`),
+    };
+  }
+
+  if (intent === 'INVOICE_DETAILS') {
+    if (!checkRecord && (!parsedResult || !parsedResult.fields)) {
+      return {
+        handled: true,
+        intent,
+        reply: 'No invoice has been checked in this session yet. Please attach a PDF or image using the + button to check an invoice.',
+      };
+    }
+
+    const invNo = (checkRecord && checkRecord.invoiceNo) || f.invoiceNo || 'not shown on invoice';
+    const invDate = (checkRecord && checkRecord.invoiceDate) || f.invoiceDate || f.PostingDate || f.postingDate || 'not shown on invoice';
+    const supplier = (checkRecord && checkRecord.supplierName) || f.supplierName || 'not shown on invoice';
+    const gstin = (checkRecord && checkRecord.supplierGstin) || f.supplierGstin || 'not shown on invoice';
+    const rawTotal = (checkRecord && checkRecord.total !== undefined && checkRecord.total !== null) ? checkRecord.total : f.total;
+    const totalStr = rawTotal !== undefined && rawTotal !== null && rawTotal !== '' && !Number.isNaN(Number(rawTotal))
+      ? `INR ${formatInr(rawTotal)}`
+      : 'not shown on invoice';
+    const rawTaxable = f.taxable;
+    const taxableStr = rawTaxable !== undefined && rawTaxable !== null && rawTaxable !== '' && !Number.isNaN(Number(rawTaxable))
+      ? `INR ${formatInr(rawTaxable)}`
+      : 'not shown on invoice';
+
+    // Specific single-field questions
+    if (/\b(supplier\s+name|vendor\s+name|what\s+is\s+the\s+supplier)\b/i.test(q) && !/\b(explain|details)\b/i.test(q)) {
+      return { handled: true, intent, reply: `Supplier: ${supplier}` };
+    }
+    if (/\bgstin\b/i.test(q) && !/\b(explain|details)\b/i.test(q)) {
+      return { handled: true, intent, reply: `GSTIN: ${gstin}` };
+    }
+    if (/\b(date|invoice\s+date)\b/i.test(q) && !/\b(explain|details)\b/i.test(q)) {
+      return { handled: true, intent, reply: `Date: ${invDate}` };
+    }
+    if (/\b(taxable)\b/i.test(q) && !/\b(explain|details)\b/i.test(q)) {
+      return { handled: true, intent, reply: `Taxable amount: ${taxableStr}` };
+    }
+    if (/\b(tax|taxes|cgst|sgst|igst)\b/i.test(q) && !/\b(explain|details)\b/i.test(q)) {
+      return { handled: true, intent, reply: `Tax: ${formatTaxLineForCheck(f)}` };
+    }
+    if (/\b(total|amount)\b/i.test(q) && !/\b(explain|details)\b/i.test(q)) {
+      return { handled: true, intent, reply: `Total: ${totalStr}` };
+    }
+    if (/\b(invoice\s+number|invoice\s+no)\b/i.test(q) && !/\b(explain|details)\b/i.test(q)) {
+      return { handled: true, intent, reply: `Invoice number: ${invNo}` };
+    }
+
+    // General "details of this invoice" / "explain this invoice"
+    const rules = Array.isArray(activeResults) && activeResults.length
+      ? activeResults
+      : ((parsedResult.results || []).filter(r => ['AP-02', 'AP-03', 'AP-09', 'AP-11'].includes(r.id)));
+    const failed = rules.filter(r => r.tier !== 'PASS' && r.tier !== 'SKIPPED');
+    const verdictReason = failed.length > 0
+      ? failed.map(r => cleanRuleText(r.text)).join(' ')
+      : 'All active checks passed.';
+
+    if (isTel) {
+      return {
+        handled: true,
+        intent,
+        reply: sanitizeChatOutput([
+          `ఇన్‌వాయిస్ ${invNo} — ${displayTerm}: ${verdictReason}`,
+          `ఇన్‌వాయిస్ నంబర్: ${invNo}`,
+          `తేదీ: ${invDate}`,
+          `సరఫరాదారు: ${supplier}`,
+          `మొత్తం: ${totalStr}`,
+        ].join('\n')),
+      };
+    }
+
+    const lines = [
+      `Invoice ${invNo} — ${displayTerm}: ${verdictReason}`,
+      `Invoice number: ${invNo}`,
+      `Date: ${invDate}`,
+      `Supplier: ${supplier}`,
+      `Total: ${totalStr}`,
+    ];
+    return {
+      handled: true,
+      intent,
+      reply: sanitizeChatOutput(lines.join('\n')),
+    };
+  }
+
+  return {
+    handled: false,
+    intent,
+    reply: '',
+  };
+}
+
 const AGENT_TOOLS = {
   search_ledger,
   get_review_queue,
@@ -1294,8 +2096,13 @@ module.exports = {
   LEDGER_TOOLS,
   MAX_TOOL_ROWS,
   TERM_MEANINGS,
+  fixMojibakeText,
   toDisplayStatusTerm,
   sanitizeChatOutput,
+  formatFixedInvoiceCheckText,
+  classifyChatIntent,
+  applyFollowUpTracking,
+  buildIntentReply,
   CREDENTIAL_REFUSAL_MSG,
   NOT_FOUND_IN_SECTIONS_MSG,
   NOT_FOUND_IN_LEDGER_MSG,

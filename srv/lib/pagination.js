@@ -9,7 +9,17 @@ const RULE_NAME_MAP = {
 };
 
 function cleanRuleText(text) {
-  let s = String(text || '').replace(/^AP-\d+\s*·?\s*/i, '').trim();
+  let s = String(text || '')
+    .replace(/â€¢/g, '•')
+    .replace(/â€”/g, '—')
+    .replace(/â€“/g, '–')
+    .replace(/â€™/g, '’')
+    .replace(/â€œ/g, '“')
+    .replace(/â€\u009d|â€/g, '”')
+    .replace(/Â·/g, '·')
+    .replace(/Â/g, '')
+    .replace(/^AP-\d+\s*·?\s*/i, '')
+    .trim();
   if (!s) return '';
 
   // Rewrite legacy duplicate format ("Duplicate: invoice X from ... already exists in FY Y as X dated Z. Outcome: REJECT.")

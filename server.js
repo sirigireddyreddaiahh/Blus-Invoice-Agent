@@ -317,6 +317,16 @@ async function main() {
     }
 
     req.user = new cds.User({ id: user.id, roles: user.roles });
+    if (/^\/fraud\/(askInvoice|chat|chatCheckInvoice)\b/i.test(req.path || req.url || '')) {
+      res.setHeader('Content-Type', 'application/json; charset=utf-8');
+      const origSetHeader = res.setHeader.bind(res);
+      res.setHeader = (name, val) => {
+        if (String(name).toLowerCase() === 'content-type' && /application\/json/i.test(String(val)) && !/charset=/i.test(String(val))) {
+          return origSetHeader(name, 'application/json; charset=utf-8');
+        }
+        return origSetHeader(name, val);
+      };
+    }
     next();
   });
 

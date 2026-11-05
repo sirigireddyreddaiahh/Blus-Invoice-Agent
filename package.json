@@ -28,7 +28,10 @@
   "cds": {
     "requires": {
       "db": {
-        "kind": "sqlite"
+        "kind": "sqlite",
+        "credentials": {
+          "url": ":memory:"
+        }
       },
       "auth": {
         "kind": "mocked",

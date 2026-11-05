@@ -1,4 +1,4 @@
-﻿'use strict';
+'use strict';
 const { GoogleGenAI } = require('@google/genai');
 
 const FAILED_TO_READ_REASON = 'No readable text found. Try a clearer scan or a Fiori CSV export.';

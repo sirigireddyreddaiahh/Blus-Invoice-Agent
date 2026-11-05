@@ -77,14 +77,21 @@ function ap02(inv, ctx) {
   const hit = pool.find(p => U.dupKeyOf(p) === key || (inv.irn && p.irn && p.irn === inv.irn));
   if (hit) {
     const invNo = hit.invoiceNo || hit.SupplierInvoice || inv.invoiceNo || inv.SupplierInvoice || '-';
-    const rawDate = hit.invoiceDate || hit.InvoiceDate || hit.PostingDate || inv.invoiceDate || inv.InvoiceDate || inv.PostingDate || '-';
-    const fyRaw = U.fiscalYear(inv.invoiceDate || inv.InvoiceDate || inv.PostingDate || rawDate) !== 'UNKNOWN'
-      ? U.fiscalYear(inv.invoiceDate || inv.InvoiceDate || inv.PostingDate || rawDate)
+    const hitDate = String(hit.invoiceDate || hit.InvoiceDate || hit.PostingDate || '').trim();
+    const invDate = String(inv.invoiceDate || inv.InvoiceDate || inv.PostingDate || '').trim();
+    const rawDate = hitDate || invDate || '-';
+    const fyRaw = U.fiscalYear(invDate || rawDate) !== 'UNKNOWN'
+      ? U.fiscalYear(invDate || rawDate)
       : (inv.FiscalYear || inv.fiscalYear || hit.fiscalYear || 'current');
     const fyShort = String(fyRaw).replace(/^(\d{4})-20(\d{2})$/, '$1-$2');
+    const hitTotal = U.num(hit.total ?? hit.InvoiceGrossAmount);
+    const invTotal = U.num(inv.total ?? inv.InvoiceGrossAmount);
+    const isSameDateAndTotal = Boolean(hitDate && invDate && hitDate === invDate && Math.abs(hitTotal - invTotal) < 0.01);
     return {
       tier: 'REJECT',
-      text: `Duplicate of invoice ${invNo} from the same supplier, same financial year (${fyShort}), dated ${rawDate}.`,
+      text: isSameDateAndTotal
+        ? 'This invoice is already saved in the ledger. Uploading it again is treated as a duplicate.'
+        : `Duplicate of invoice ${invNo} from the same supplier, same financial year (${fyShort}), with a different date or total.`,
     };
   }
   const bl = (ctx.masters.blacklistGstins || []).map(U.norm);

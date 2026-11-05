@@ -12,7 +12,7 @@ build-parameters:
       commands:
         - rm -rf gen
         - mkdir -p gen/srv
-        - cp -r srv app db data server.js package.json package-lock.json eng.traineddata gen/srv/
+        - cp -r srv app db data public server.js package.json package-lock.json eng.traineddata gen/srv/
         - npm install --omit=dev --prefix gen/srv
 
 modules:
