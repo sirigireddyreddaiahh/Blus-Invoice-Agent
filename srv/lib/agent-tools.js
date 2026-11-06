@@ -1110,7 +1110,7 @@ async function runReadOnlyAgentQuery(questionText, { fallbackCheckRecord = null,
 
     // 6. "All invoices in ledger" or "list" requests -> call list_ledger(page) (Part 3.5 & Part 4.4)
     const isListAllLedger =
-      /\b(?:all\s+invoices|list\s+(?:all\s+)?invoices|show\s+(?:all\s+)?invoices|list\s+ledger|show\s+(?:the\s+)?ledger|all\s+ledger\s+invoices|what\s+invoices\s+are\s+in\s+(?:the\s+)?ledger|how\s+many\s+invoices\s+(?:are\s+)?in\s+(?:the\s+)?ledger)\b/i.test(q);
+      /\b(?:all\s+invoices|list\s+(?:all\s+)?invoices|show\s+(?:all\s+)?invoices|list\s+ledger|show\s+(?:the\s+)?ledger|all\s+ledger\s+invoices|what\s+(?:invoices|data|records?)\s+are\s+in\s+(?:the\s+)?ledger|how\s+many\s+invoices\s+(?:are\s+)?in\s+(?:the\s+)?ledger|(?:tell|show|give|get|fetch|display|read|view)\s+(?:me\s+)?(?:the\s+)?(?:all\s+)?(?:data|records?|entries|invoices?|details?|items?)?\s*(?:from|in|of)\s+(?:the\s+)?(?:ledger|database)|(?:ledger|database)\s+(?:data|records?|entries|list))\b/i.test(q);
 
     if (isListAllLedger) {
       toolsCalled.push('list_ledger');
@@ -1516,7 +1516,7 @@ function classifyChatIntent(rawMessage) {
   const dateFilter = parseDateQueryFromText(q);
   if (
     /^(show\s+more|more|next\s+page|next)$/i.test(lower) ||
-    /\b(in\s+(?:the\s+)?(?:ledger|database|sap)|search\s+(?:the\s+)?(?:ledger|database)|find\s+(?:invoice|gstin|supplier|vendor)|list\s+ledger|all\s+invoices\s+in\s+ledger|show\s+(?:the\s+)?(?:ledger|review\s+queue|activity\s+log|check\s+history|summary|blocked\s+invoices|held\s+invoices|rejected\s+invoices)|which\s+invoice\s+is\s+(?:on\s+hold|held|rejected|blocked)|how\s+many\s+invoices\s+are\s+in\s+(?:check\s+history|the\s+ledger)|was\s+(?:it|this)\s+saved)\b/i.test(q) ||
+    /\b(in\s+(?:the\s+)?(?:ledger|database|sap)|from\s+(?:the\s+)?(?:ledger|database)|(?:ledger|database)\s+(?:data|records?|entries|list)|search\s+(?:the\s+)?(?:ledger|database)|find\s+(?:invoice|gstin|supplier|vendor)|list\s+ledger|all\s+invoices\s+in\s+ledger|show\s+(?:the\s+)?(?:ledger|review\s+queue|activity\s+log|check\s+history|summary|blocked\s+invoices|held\s+invoices|rejected\s+invoices)|which\s+invoice\s+is\s+(?:on\s+hold|held|rejected|blocked)|how\s+many\s+invoices\s+are\s+in\s+(?:check\s+history|the\s+ledger)|was\s+(?:it|this)\s+saved)\b/i.test(q) ||
     Boolean(explicitInv && /\b(ledger|database|sap|find|search|check|status|in)\b/i.test(q)) ||
     Boolean(dateFilter && /\b(invoices?|ledger|bills?|posted|saved|find|show|list|in|from|between|on|dated)\b/i.test(q)) ||
     /\b(\d{2}[A-Z]{5}\d{4}[A-Z][1-9A-Z]Z[0-9A-Z])\b/i.test(q)

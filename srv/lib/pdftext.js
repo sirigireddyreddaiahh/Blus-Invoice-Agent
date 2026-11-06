@@ -65,25 +65,45 @@ async function extractPdfText(pdfBuffer) {
       verbosity: 0,
     });
     const doc = await loadingTask.promise;
-    pageCount = doc.numPages || 1;
-    const pageTexts = [];
-    for (let i = 1; i <= pageCount; i++) {
-      const page = await doc.getPage(i);
-      const content = await page.getTextContent();
-      const lines = [];
-      let lastY = null;
-      for (const item of content.items || []) {
-        const y = item.transform ? Math.round(item.transform[5]) : null;
-        if (lastY !== null && y !== null && Math.abs(y - lastY) > 4) {
-          lines.push('\n');
+    try {
+      pageCount = doc.numPages || 1;
+      const pageTexts = [];
+      for (let i = 1; i <= pageCount; i++) {
+        const page = await doc.getPage(i);
+        try {
+          const content = await page.getTextContent();
+          const rows = [];
+          for (const item of content.items || []) {
+            const str = String(item.str || '');
+            if (!str.trim()) continue;
+            const x = item.transform ? Number(item.transform[4] || 0) : 0;
+            const y = item.transform ? Number(item.transform[5] || 0) : 0;
+            let row = rows.find(r => Math.abs(r.y - y) <= 4);
+            if (!row) {
+              row = { y, items: [] };
+              rows.push(row);
+            }
+            row.items.push({ x, str: str.trim() });
+          }
+          rows.sort((a, b) => b.y - a.y);
+          const joined = rows
+            .map(r => {
+              r.items.sort((a, b) => a.x - b.x);
+              return r.items.map(it => it.str).filter(Boolean).join(' ');
+            })
+            .filter(Boolean)
+            .join('\n')
+            .trim();
+          if (joined) pageTexts.push(joined);
+        } finally {
+          try { if (page.cleanup) page.cleanup(); } catch {}
         }
-        lines.push(item.str || '');
-        if (y !== null) lastY = y;
       }
-      const joined = lines.join(' ').replace(/\s*\n\s*/g, '\n').trim();
-      if (joined) pageTexts.push(joined);
+      text = pageTexts.join('\n').trim();
+    } finally {
+      try { if (doc.cleanup) doc.cleanup(); } catch {}
+      try { if (doc.destroy) await doc.destroy(); } catch {}
     }
-    text = pageTexts.join('\n').trim();
   } catch {
     // Fallback to raw stream / FlateDecode extraction
   }

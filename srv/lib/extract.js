@@ -36,17 +36,30 @@ function extractFields(text) {
   const taxIds = [...t.matchAll(/tax\s*id\s*[:\-]\s*([A-Za-z0-9\-\/]+)/gi)].map(m => m[1]);
   const isVatStyle = /\bVAT\b/i.test(t) && !/\b(CGST|SGST|IGST)\b/i.test(t);
   const sum = isVatStyle ? t.match(SUMMARY_RE) : null;
+  const tableRowMatch = t.match(/(?:^|\n)\s*1\s+([A-Za-z][A-Za-z0-9\s\-/().,&]{1,80}?)\s+(\d{6,8})\s+\d+(?:\.\d+)?%\s+/);
   const fields = {
-    supplierName: first(t, /(?:supplier|seller|vendor)\s*(?:name)?\s*[:\-]\s*([^\n\r]+)/i),
+    supplierName:
+      first(t, /(?:supplier|seller|vendor)\s*(?:name)?\s*[:\-]\s*([^\n\r]+)/i) ||
+      first(t, /(?:^|\n)\s*([^\n\r:]{3,100}?)\s*\r?\n\s*(?:Regd\.?\s*Office|Registered\s*Office|Factory\s*Address|Corporate\s*Office)\b/i) ||
+      first(t, /TAX\s+INVOICE\s*(?:\r?\n\s*\([^)]+\))?\s*\r?\n\s*([A-Z][^\n\r:]{3,90}?(?:Private\s+Limited|Pvt\.?\s*Ltd\.?|Limited|Ltd\.?|LLP|Services|Enterprises|Industries|Distributors|Solutions|Corporation|Corp\.?))\b/i) ||
+      first(t, /(?:^|\n)\s*(?:For\s+)?([A-Z][^\n\r:]{3,90}?(?:Private\s+Limited|Pvt\.?\s*Ltd\.?|Limited|Ltd\.?|LLP))\s*(?:\r?\n\s*Date\s*[:\-][^\n\r]*)?\r?\n\s*Authorised\s+Signatory/i),
     supplierGstin: gstins[0] || first(t, /(?:supplier|seller|vendor)\s*gstin\s*[:\-]?\s*([0-9A-Z]{15})/i),
     buyerGstin: gstins[1] || first(t, /buyer\s*gstin\s*[:\-]?\s*([0-9A-Z]{15})/i),
     buyerTaxId: taxIds.find(id => id !== gstins[0]),
     invoiceNo: first(t, /invoice\s*(?:no\.?|number|#)\s*[:\-]?\s*([A-Za-z0-9\/\-]+)/i),
     invoiceDate: toIsoDate(first(t, DATE_RE)),
-    poNumber: first(t, /\bPO\s*(?:no\.?|number|#)?\s*[:\-]?\s*(\d{6,12})\b/i),
-    description: first(t, /(?:description|services|items)\s*[:\-]\s*([^\n\r]{3,160})/i),
-    hsn: first(t, /(?:HSN|SAC)\s*(?:code)?\s*[:\-]?\s*(\d{4,8})/i),
-    taxable: sum ? num(sum[2]) : money(t, /taxable\s*(?:value|amount)?\s*[:\-]?\s*(?:INR|Rs\.?)?\s*([\d,]+\.?\d*)/i),
+    poNumber:
+      first(t, /\bPO\s*(?:no\.?|number|#)?\s*[:\-]?\s*(\d{6,12})\b/i) ||
+      first(t, /\bpurchase\s*or?d?er\s*(?:no\.?|number|#)?\s*[:\-]?\s*([A-Za-z0-9][A-Za-z0-9\s\/\-]{1,25}?)(?=\s+(?:Time|Date|Sales|Terms|Mode)\b|\r|\n|$)/i),
+    description:
+      first(t, /(?:description|services|items)\s*[:\-]\s*([^\n\r]{3,160})/i) ||
+      (tableRowMatch ? tableRowMatch[1].trim() : null),
+    hsn:
+      first(t, /(?:HSN|SAC)\s*(?:code)?\s*[:\-]?\s*(\d{4,8})/i) ||
+      (tableRowMatch ? tableRowMatch[2].trim() : null),
+    taxable: sum ? num(sum[2])
+      : (money(t, /taxable\s*(?:value|amount)?\s*[:\-]?\s*(?:INR|Rs\.?)?\s*([\d,]+\.?\d*)/i)
+        ?? money(t, /(?:total\s*basic\s*amount|basic\s*amount|sub\s*total)\s*[:\-]?\s*(?:INR|Rs\.?)?\s*([\d,]+\.?\d*)/i)),
     vat: sum ? num(sum[3]) : undefined,
     cgst: money(t, /cgst[^\n\r]*?([\d,]+\.\d{2})/i) ?? money(t, /cgst(?:\s*\(\d+%\))?\s*[:\-]\s*(?:INR|Rs\.?)?\s*([\d,]+)/i),
     sgst: money(t, /sgst[^\n\r]*?([\d,]+\.\d{2})/i) ?? money(t, /sgst(?:\s*\(\d+%\))?\s*[:\-]\s*(?:INR|Rs\.?)?\s*([\d,]+)/i),

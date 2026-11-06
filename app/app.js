@@ -298,15 +298,43 @@ function getHeaders() {
   };
 }
 
+async function parseJsonResponse(res) {
+  if (!res) return null;
+  try {
+    const contentType = (res.headers && typeof res.headers.get === 'function') ? (res.headers.get('content-type') || '') : '';
+    if (contentType && !contentType.includes('application/json')) {
+      return null;
+    }
+    const text = await res.text();
+    if (!text || typeof text !== 'string') return null;
+    const trimmed = text.trim();
+    if (trimmed.startsWith('<') || (!trimmed.startsWith('{') && !trimmed.startsWith('['))) {
+      return null;
+    }
+    return JSON.parse(trimmed);
+  } catch {
+    return null;
+  }
+}
+
 async function api(endpoint, body = null, method = 'POST') {
   const opts = { method, headers: getHeaders() };
   if (method === 'POST' && body !== null) {
     opts.body = JSON.stringify(body);
   }
   const r = await fetch('/fraud/' + endpoint, opts);
-  const data = await r.json().catch(() => ({}));
+  let data = {};
+  try {
+    const text = await r.text();
+    if (text) {
+      const trimmed = text.trim();
+      if (!trimmed.startsWith('<') && (trimmed.startsWith('{') || trimmed.startsWith('['))) {
+        data = JSON.parse(trimmed);
+      }
+    }
+  } catch {}
   if (!r.ok) {
-    const msg = (data.error && data.error.message) || (`Request failed (${r.status})`);
+    const msg = (data && data.error && data.error.message) || (`Request failed (${r.status})`);
     throw new Error(msg);
   }
   const val = data.value !== undefined ? data.value : data;
@@ -318,7 +346,7 @@ async function api(endpoint, body = null, method = 'POST') {
 
 async function odataGet(entityAndQuery) {
   const r = await fetch('/fraud/' + entityAndQuery, { method: 'GET', headers: getHeaders() });
-  const data = await r.json().catch(() => ({}));
+  const data = (await parseJsonResponse(r)) || {};
   if (!r.ok) throw new Error((data.error && data.error.message) || 'Failed to load data');
   return data.value || [];
 }
@@ -436,7 +464,7 @@ async function fetchJobStatus(jobId) {
       headers: getHeaders(),
     });
     if (!res.ok) return null;
-    return await res.json();
+    return await parseJsonResponse(res);
   } catch (err) {
     return null;
   }
@@ -1733,8 +1761,8 @@ async function loadS4Results(page = 1, isPolling = false) {
       method: 'GET',
       headers: getHeaders(),
     });
-    if (!res.ok) return;
-    const data = await res.json();
+    const data = await parseJsonResponse(res);
+    if (!data) return;
     state.s4Results = data.rows || [];
     state.s4Total = data.total || 0;
     state.s4TotalPages = data.totalPages || 1;
@@ -1914,7 +1942,7 @@ if ($('btnTestSapConnection')) {
         method: 'GET',
         headers: getHeaders(),
       });
-      const data = await res.json();
+      const data = (await parseJsonResponse(res)) || {};
       if (!data.ok) {
         if ($('sapTestConnectionWrap')) $('sapTestConnectionWrap').classList.add('hidden');
         const statusMsg = data.status || 'SAP unavailable';
@@ -1946,7 +1974,7 @@ if ($('btnFetchSapNow')) {
         headers: getHeaders(),
         body: JSON.stringify({ top: 20, runCheck: true }),
       });
-      const data = await res.json();
+      const data = (await parseJsonResponse(res)) || {};
       if (!data.ok) {
         const statusMsg = data.status || 'SAP unavailable';
         const reasonText = data.reason ? ` (${data.reason})` : '';
@@ -2050,7 +2078,7 @@ if ($('btnImportS4')) {
           headers: getHeaders(),
           body: JSON.stringify({ files: filePayloads }),
         });
-        const job = await uploadRes.json();
+        const job = (await parseJsonResponse(uploadRes)) || {};
         if (!uploadRes.ok) {
           throw new Error((job && job.error && job.error.message) || 'Batch document processing failed');
         }
@@ -2302,7 +2330,7 @@ if ($('btnCancelS4')) {
         method: 'POST',
         headers: getHeaders(),
       });
-      const data = await res.json();
+      const data = (await parseJsonResponse(res)) || {};
       if (!res.ok) {
         throw new Error((data && data.error && data.error.message) || 'Failed to cancel job');
       }
@@ -2332,7 +2360,7 @@ if ($('btnResumeS4')) {
         method: 'POST',
         headers: getHeaders(),
       });
-      const data = await res.json();
+      const data = (await parseJsonResponse(res)) || {};
       if (!res.ok) {
         throw new Error((data && data.error && data.error.message) || 'Failed to resume job');
       }
@@ -2600,8 +2628,8 @@ async function loadAlertsQueue(page = 1) {
       method: 'GET',
       headers: getHeaders(),
     });
-    if (!res.ok) throw new Error('Failed to load review queue');
-    const data = await res.json();
+    const data = await parseJsonResponse(res);
+    if (!data) return;
     state.alertsList = data.rows || [];
     state.alertsTotal = data.total || 0;
     state.alertsTotalPages = data.totalPages || 1;
@@ -2730,8 +2758,8 @@ async function loadCheckHistory(page = 1) {
       method: 'GET',
       headers: getHeaders(),
     });
-    if (!res.ok) throw new Error('Failed to load check history');
-    const data = await res.json();
+    const data = await parseJsonResponse(res);
+    if (!data) return;
     state.historyList = data.rows || [];
     state.historyTotal = data.total || 0;
     state.historyTotalPages = data.totalPages || 1;
@@ -2975,8 +3003,9 @@ async function loadActivityLog(page = 1) {
 
     let unifiedCount = chain && chain.entries !== undefined ? Number(chain.entries) : 0;
 
-    if (logRes.ok) {
-      const data = await logRes.json();
+    const logParsed = await parseJsonResponse(logRes);
+    if (logParsed) {
+      const data = logParsed;
       state.activityList = data.rows || [];
       state.activityTotal = data.total || 0;
       state.activityTotalPages = data.totalPages || 1;
@@ -3099,12 +3128,35 @@ if ($('btnExportActivityCsv')) {
 // ============================================================================
 async function loadTopSummary() {
   try {
-    const res = await fetch('/fraud/summary', {
+    let res = await fetch('/fraud/summary', {
       method: 'GET',
       headers: getHeaders(),
     });
-    if (!res.ok) return;
-    const data = await res.json();
+    let data = await parseJsonResponse(res);
+
+    // If /fraud/summary returned non-JSON (e.g. gateway redirect or HTML error), try OData function fallback
+    if (!data) {
+      const odataRes = await fetch('/fraud/getSummary()', {
+        method: 'GET',
+        headers: getHeaders(),
+      });
+      const odataParsed = await parseJsonResponse(odataRes);
+      if (odataParsed) {
+        const val = odataParsed.value !== undefined ? odataParsed.value : odataParsed;
+        if (typeof val === 'string') {
+          try {
+            data = JSON.parse(val);
+          } catch {
+            data = null;
+          }
+        } else if (val && typeof val === 'object') {
+          data = val;
+        }
+      }
+    }
+
+    if (!data) return;
+
     state.topSummary = {
       uploaded: Number(data.uploaded || 0),
       savedToLedger: Number(data.savedToLedger || 0),
@@ -3118,7 +3170,7 @@ async function loadTopSummary() {
     };
     renderTopSummary();
   } catch (err) {
-    console.error('Failed to load top summary:', err);
+    console.warn('Top summary unavailable:', err && err.message ? err.message : err);
   }
 }
 
@@ -3245,8 +3297,8 @@ async function loadLedgerView(page = 1) {
       method: 'GET',
       headers: getHeaders(),
     });
-    if (!res.ok) throw new Error('Failed to load ledger');
-    const data = await res.json();
+    const data = await parseJsonResponse(res);
+    if (!data) return;
     state.ledgerList = data.rows || [];
     state.ledgerTotal = Number(data.total || 0);
     state.ledgerTotalPages = Number(data.totalPages || 1);

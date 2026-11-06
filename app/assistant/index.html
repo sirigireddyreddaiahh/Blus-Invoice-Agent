@@ -78,7 +78,13 @@
           headers: { 'Content-Type': 'application/json', 'Accept': 'application/json' },
           body: JSON.stringify({ message: text })
         });
-        const data = await res.json().catch(() => ({}));
+        const textResp = await res.text().catch(() => '');
+        let data = {};
+        try {
+          if (textResp && !textResp.trim().startsWith('<')) {
+            data = JSON.parse(textResp);
+          }
+        } catch {}
         const reply = data.value !== undefined ? data.value : 'The assistant is not configured.';
         b.textContent = reply;
 
