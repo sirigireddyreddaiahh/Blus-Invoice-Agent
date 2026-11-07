@@ -6,7 +6,7 @@
       "source": "^/fraud/(.*)$",
       "target": "/fraud/$1",
       "destination": "srv-api",
-      "authenticationType": "xsuaa",
+      "authenticationType": "none",
       "csrfProtection": false
     },
     {
