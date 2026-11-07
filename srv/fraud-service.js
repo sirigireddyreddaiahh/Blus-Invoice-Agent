@@ -27,7 +27,7 @@ const { createBatchJob, getJob, cancelJob, resumeJob } = require('./lib/queue');
 const { getUnifiedChecksTotal, getS4ResultsQuery, getReviewQueueQuery, getCheckHistoryQuery, getActivityLogsQuery, searchLedgerDatabaseQuery, getLedgerQuery, getSummaryQuery, cleanRuleText, getRuleName } = require('./lib/pagination');
 const { processDocumentBatch } = require('./lib/document-processor');
 const { checkSapMatchForInvoice, querySapSandboxInvoices, getSapConfig, SAP_SOURCE_LABEL } = require('./lib/sap');
-const { AGENT_TOOLS, LEDGER_TOOLS, CREDENTIAL_REFUSAL_MSG, TERM_MEANINGS, toDisplayStatusTerm, sanitizeChatOutput, isCredentialOrServerSettingQuestion, runReadOnlyAgentQuery, setSessionLastCheck, markSessionCheckSaved, last_check, classifyChatIntent, buildIntentReply, formatFixedInvoiceCheckText } = require('./lib/agent-tools');
+const { AGENT_TOOLS, LEDGER_TOOLS, CREDENTIAL_REFUSAL_MSG, TERM_MEANINGS, toDisplayStatusTerm, sanitizeChatOutput, isCredentialOrServerSettingQuestion, runReadOnlyAgentQuery, setSessionLastCheck, markSessionCheckSaved, last_check, classifyChatIntent, buildIntentReply, formatFixedInvoiceCheckText, handleScopedChatQuestion } = require('./lib/agent-tools');
 const { FAILED_TO_READ_REASON, AI_ASSIST_LABEL, hasReadableFields, tryExtractWithGeminiAssist } = require('./lib/ai-extract');
 
 const s4Invoices = require('../data/s4-invoices.json');
@@ -1173,6 +1173,7 @@ class FraudService extends cds.ApplicationService {
           docTypeLabel: docClass.label || 'Supplier Invoice',
           status: enriched.status,
           verdict: enriched.verdict,
+          activeResults: enriched.activeResults,
           reasons: (enriched.activeResults || []).filter(r => r.tier !== 'PASS' && r.tier !== 'SKIPPED').map(r => `${getRuleName(r.id)}: ${cleanRuleText(r.text)}`),
           explanation: cleanRuleText(enriched.explanation),
           missingFields: checkMissingFields,
@@ -1337,6 +1338,7 @@ class FraudService extends cds.ApplicationService {
         docTypeLabel: 'Supplier Invoice',
         status: enriched.status,
         verdict: enriched.verdict,
+        activeResults: enriched.activeResults,
         reasons: (enriched.activeResults || []).filter(r => r.tier !== 'PASS' && r.tier !== 'SKIPPED').map(r => `${getRuleName(r.id)}: ${cleanRuleText(r.text)}`),
         explanation: cleanRuleText(enriched.explanation),
         missingFields: [],
@@ -2061,94 +2063,18 @@ class FraudService extends cds.ApplicationService {
       }
       const user = getUserId(req);
       const rawQ = String(questionText || '').trim();
-      let q = rawQ
-        .replace(/\bchekc\b/gi, 'check')
-        .replace(/\bdetils\b/gi, 'details')
-        .replace(/\binoive\b/gi, 'invoice')
-        .replace(/\bhlo\b/gi, 'hello')
-        .replace(/\bhli\b/gi, 'hi');
 
-      // PART 3.4: Never show or send SAP_API_KEY, SAP_USER, SAP_PASSWORD, GEMINI_API_KEY, host names with credentials, or any server setting
-      if (isCredentialOrServerSettingQuestion(q)) {
-        const isTel = /[\u0C00-\u0C7F]/.test(q) || /à°¤à±†à°²à±à°—ు/i.test(q);
-        return isTel ? "నేను ఆధారాలను లేదా సర్వర్ సెట్టింగ్‌లను భాగస్వామ్యం చేయలేను." : CREDENTIAL_REFUSAL_MSG;
-      }
-
-      const isTel = /[\u0C00-\u0C7F]/.test(q) || /\btelugu\b/i.test(q);
-
-      // Greetings handling
-      if (isGreetingMessage(q)) {
-        if (isTel) {
-          return "నమస్కారం! నేను బ్లూస్ ఇన్‌వాయిస్ ఏజెంట్‌ని. ఇన్‌వాయిస్‌లను డూప్లికేట్ మరియు స్ప్లిట్ బిల్లుల కోసం తనిఖీ చేయడంలో మరియు లెడ్జర్‌ను శోధించడంలో నేను మీకు సహాయపడగలను. నేను మీకు ఎలా సహాయపడగలను?";
-        }
-        return "Hello! I'm Blus Invoice Agent. Upload an invoice and I'll check it for duplicates and split invoices.";
-      }
-
-      // Unclear or short input handling (Part 5.4: one clarifying question in user's language, mentioning last check if one exists)
-      if (/^(tell answer|tell|give answer|ok|answer|\?|details)$/i.test(q.toLowerCase())) {
-        const lcRes = await last_check(user);
-        const lc = lcRes && lcRes.lastCheck;
-        if (lc && lc.invoiceNo && lc.invoiceNo !== '—') {
-          const dispStatus = toDisplayStatusTerm(lc.verdict || lc.status, lc.status, lc.docType, Array.isArray(lc.missingFields) && lc.missingFields.length > 0);
-          if (isTel) {
-            return `మీరు చివరి ఇన్‌వాయిస్ ${lc.invoiceNo} (${dispStatus}) తనిఖీ ఫలితాన్ని వివరించమంటారా?`;
-          }
-          return `Do you want me to explain the last check result for invoice ${lc.invoiceNo} (${dispStatus})?`;
-        }
-        if (isTel) {
-          return "మీరు చివరి ఇన్‌వాయిస్ తనిఖీ ఫలితాన్ని వివరించమంటారా?";
-        }
-        return 'Do you want me to explain the last check result?';
-      }
-
-      // PART 1.2: Direct questions about what PASS, HOLD, REJECT, INCOMPLETE, NOT AN INVOICE, COULD NOT READ mean
-      const termMeaningMatch = q.match(/^(?:what\s+(?:does|is)\s+(?:the\s+meaning\s+of\s+)?|meaning\s+of\s+|define\s+)(PASS|HOLD|REJECT|INCOMPLETE|NOT\s+AN\s+INVOICE|COULD\s+NOT\s+READ)(?:\s+mean)?[?.!]*$/i);
-      if (termMeaningMatch) {
-        const termKey = termMeaningMatch[1].toUpperCase().replace(/\s+/g, ' ');
-        if (TERM_MEANINGS[termKey]) {
-          return `${termKey}: ${TERM_MEANINGS[termKey]}`;
-        }
-      }
-
-      let checkRecord = null;
-      let parsedResult = {};
-      let activeResults = [];
-      if (checkId) {
-        checkRecord = await cds.run(SELECT.one.from(E.Checks).where({ ID: checkId }));
-      }
-      if (!checkRecord) {
-        checkRecord = await cds.run(SELECT.one.from(E.Checks).orderBy('createdAt desc'));
-      }
-      if (checkRecord && checkRecord.resultJson) {
-        try {
-          parsedResult = JSON.parse(checkRecord.resultJson);
-          activeResults = parsedResult.activeResults || (parsedResult.results || []).filter(r => ACTIVE_RULE_IDS.includes(r.id));
-        } catch {}
-      }
-
-      // STEP 1 & 2: CLASSIFY INTENT AND ROUTE BEFORE ANY GEMINI CALL
-      const intent = classifyChatIntent(q);
-      const intentRes = await buildIntentReply(intent, q, {
-        checkRecord,
-        parsedResult,
-        activeResults,
-        sessionKey: user,
-      });
-      if (intentRes && intentRes.handled) {
-        return sanitizeChatOutput(redactServerCredentials(intentRes.reply));
-      }
-
-      // PART 3.2: If the user asks about SAP:
-      if (/\bsap\b/i.test(q)) {
-        const isTel = /[\u0C00-\u0C7F]/.test(q) || /\btelugu\b/i.test(q);
+      // Explicit SAP sandbox query when user asks about SAP (and not asking for credentials)
+      if (/\bsap\b/i.test(rawQ) && !isCredentialOrServerSettingQuestion(rawQ)) {
+        const isTel = /[\u0C00-\u0C7F]/.test(rawQ) || /\btelugu\b/i.test(rawQ);
         const sapForceUnset = Boolean(req && req.headers && req.headers['x-sap-api-key-unset'] === 'true');
         const sapMode = String(process.env.SAP_MODE || 'live').trim().toLowerCase();
         const sapCfg = getSapConfig();
         if (sapForceUnset || !sapCfg.isConfigured || sapMode !== 'live') {
           return isTel ? 'SAP కాన్ఫిగర్ చేయబడలేదు' : 'SAP not configured';
         }
-        const refMatch = q.match(/\b([0-9]{6,16}|INV[A-Za-z0-9/_-]*|[A-Z]{2,5}[/-][A-Za-z0-9/_-]+)\b/i);
-        const refTerm = refMatch ? refMatch[1] : ((checkRecord && checkRecord.invoiceNo) || '');
+        const refMatch = rawQ.match(/\b([0-9]{6,16}|INV[A-Za-z0-9/_-]*|[A-Z]{2,5}[/-][A-Za-z0-9/_-]+)\b/i);
+        const refTerm = refMatch ? refMatch[1] : '';
         const sapRes = await querySapSandboxInvoices({ reference: refTerm, top: 5, timeoutMs: 5000 });
         if (!sapRes.ok) {
           return `SAP unavailable (${SAP_SOURCE_LABEL}).`;
@@ -2166,76 +2092,12 @@ class FraudService extends cds.ApplicationService {
         return redactServerCredentials(`Not found in ${SAP_SOURCE_LABEL}.`);
       }
 
-      // PART 3: Read-only Chat Agent tools (find_by_invoice, find_by_gstin, find_by_date, find_by_supplier, list_ledger, last_check, get_review_queue)
-      const agentOut = await runReadOnlyAgentQuery(q, { fallbackCheckRecord: checkRecord, sessionKey: user });
-      if (agentOut && agentOut.handled) {
-        return sanitizeChatOutput(redactServerCredentials(agentOut.reply));
-      }
-
-      const status = (checkRecord && checkRecord.status) || parsedResult.status || 'PASS';
-      const verdict = toVerdictLabel(status, activeResults);
-      const displayTerm = toDisplayStatusTerm(verdict, status, parsedResult.docType, parsedResult.isIncomplete);
-
-      console.log(`[CHAT_AUDIT] User: ${user}, Time: ${new Date().toISOString()}, Verdict: ${verdict}, Rules: ${ACTIVE_RULE_IDS.join(',')}`);
-
-      const { apiKey, modelName, allowInvoiceData } = readEnvConfig(req);
-      if (!apiKey) {
-        return 'The assistant is not configured.';
-      }
-
-      const outgoingRequest = buildInvoiceOutgoingRequest({
-        checkRecord,
-        parsedResult,
-        activeResults,
-        question: q,
-        allowInvoiceData,
+      // STEP 1 to STEP 6: Scoped chat routing & answer logic (classifies scope BEFORE any DB read)
+      const scopedResult = await handleScopedChatQuestion(rawQ, {
+        sessionKey: user,
+        checkId: checkId || null,
       });
-
-      const systemInstruction = `You are Blus Invoice Agent, an enterprise AI assistant for accounts payable, duplicate invoice checks, and ledger database reviews.
-Write in clean, natural text (do not use LaTeX symbols).
-Never mention "SAP BTP" or "BTP" anywhere in your response.
-
-TERMS & PLAIN NAMES RULES (CRITICAL):
-- NEVER use the word "Blocked" in your response. Use only: PASS, HOLD, REJECT, INCOMPLETE, NOT AN INVOICE, COULD NOT READ.
-- Meanings in plain words:
-  * PASS: "Passed all checks. Can be saved to the ledger."
-  * HOLD: "Needs a review. Not saved to the ledger until cleared."
-  * REJECT: "Duplicate or split pattern found. Not saved to the ledger until reviewed."
-  * INCOMPLETE: "Required details are missing."
-  * NOT AN INVOICE: "This is not a supplier invoice."
-  * COULD NOT READ: "The file could not be read."
-- NEVER output rule codes AP-02, AP-03, AP-09, or AP-11. Always use plain names: "Duplicate check", "GSTIN check", "Repeat bill check", "Split invoice check".
-
-LANGUAGE & MULTI-LINGUAL RULES (CRITICAL):
-- Reply in the EXACT same language that the user writes in (for example, if the user writes in Telugu, reply in Telugu; if in English, reply in English; if mixed, reply in the dominant language).
-- If the user explicitly asks for an explanation or translation in a specific language (for example "explain in Telugu", "explain that invoice in telugu", "explain in Hindi"), reply entirely in that requested language!
-
-SCOPE & GENERAL QUESTIONS RULES:
-- NEVER refuse a normal question! Never output "I can only answer questions about invoice reviews and ledger database" or any refusal string.
-- If the user asks a general question unrelated to invoices (e.g. "what is GST", "what is a ledger", weather, general knowledge): answer briefly and helpfully in the user's language, and then offer to check an invoice for them (e.g., "Would you like me to check an invoice for you?").
-- If the user asks about an invoice in the current check: explain each field, the status (${displayTerm}), and each active check result (Duplicate check, GSTIN check, Repeat bill check, Split invoice check) in plain words without rule codes.
-- Fields missing from an invoice must be described as "not shown on invoice" (or in the user's language, e.g. "ఇన్‌వాయిస్‌లో చూపబడలేదు"). NEVER invent values!
-- If the user asks about financial or AP terms (ledger, duplicate, GSTIN, PO, supplier invoice, split invoice, HOLD, REJECT): explain their meanings clearly in simple language.
-- CREDENTIAL SECURITY: Never display, quote or describe SAP_API_KEY, SAP_USER, SAP_PASSWORD, host credentials, API keys, secrets, or server settings. If asked, reply in the user's language: "I cannot share credentials or server settings." (or in Telugu: "నేను ఆధారాలను లేదా సర్వర్ సెట్టింగ్‌లను భాగస్వామ్యం చేయలేను.").
-
-Grounding Context:
-${JSON.stringify(outgoingRequest.grounding, null, 2)}`;
-
-      try {
-        let reply = await callGeminiText(apiKey, modelName, systemInstruction, outgoingRequest.question);
-        reply = reply.replace(/\s*\bon\s+SAP\s+BTP\b/gi, '').replace(/\bSAP\s+BTP\b/gi, 'Blus Invoice Agent');
-        const isBankQuestion = /\b(bank|account|acct|ifsc|beneficiary|branch|neft|rtgs|iban|ap-?05)\b/i.test(q);
-        if (!allowInvoiceData || (isBankQuestion && (!/\bAP-05\b/i.test(reply) || !/\bIFSC\b/i.test(reply) || !/\bAccount\b/i.test(reply)))) {
-          const supplement = buildLocalInvoiceSupplement({ checkRecord, parsedResult, question: q });
-          if (supplement) {
-            reply = `${reply}\n\n${supplement}`;
-          }
-        }
-        return sanitizeChatOutput(redactServerCredentials(stripProhibitedWords(reply)));
-      } catch (e) {
-        console.error('Gemini assistant error:', e.message);
-        return 'I could not get an answer right now. Please try again.';
-      }
+      return sanitizeChatOutput(redactServerCredentials(scopedResult.reply));
     };
 
     this.on('askInvoice', async req => {
