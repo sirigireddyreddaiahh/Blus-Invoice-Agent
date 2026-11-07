@@ -19,6 +19,7 @@ const {
 } = require('./srv/lib/export');
 
 const {
+  normalizeRow,
   getS4ResultsQuery,
   getReviewQueueQuery,
   getCheckHistoryQuery,
@@ -108,10 +109,11 @@ async function fetchHistoryChunk(filters = {}, offset = 0, limit = 500) {
 
   const whereSql = whereClauses.length ? `WHERE ${whereClauses.join(' AND ')}` : '';
   const queryParams = [...params, limit, offset];
-  return await cds.run(
+  const rows = await cds.run(
     `SELECT * FROM ap_Checks ${whereSql} ORDER BY createdAt desc LIMIT ? OFFSET ?`,
     queryParams
   );
+  return (rows || []).map(r => normalizeRow(r, 'ap.Checks'));
 }
 
 async function fetchS4Chunk(filters = {}, offset = 0, limit = 500) {
@@ -149,10 +151,11 @@ async function fetchS4Chunk(filters = {}, offset = 0, limit = 500) {
 
   const whereSql = whereClauses.length ? `WHERE ${whereClauses.join(' AND ')}` : '';
   const queryParams = [...params, limit, offset];
-  return await cds.run(
+  const rows = await cds.run(
     `SELECT * FROM ap_Checks ${whereSql} ORDER BY createdAt asc LIMIT ? OFFSET ?`,
     queryParams
   );
+  return (rows || []).map(r => normalizeRow(r, 'ap.Checks'));
 }
 
 async function handleExportHistoryCsv(req, res) {
@@ -246,10 +249,11 @@ async function fetchLedgerChunk(filters = {}, offset = 0, limit = 500) {
     params.push(likeTerm, likeTerm, likeTerm);
   }
   const whereSql = whereClauses.length ? `WHERE ${whereClauses.join(' AND ')}` : '';
-  return await cds.run(
+  const rows = await cds.run(
     `SELECT * FROM ap_Posted ${whereSql} ORDER BY postedAt desc, invoiceDate desc LIMIT ? OFFSET ?`,
     [...params, limit, offset]
   );
+  return (rows || []).map(r => normalizeRow(r, 'ap.Posted'));
 }
 
 async function handleExportLedgerCsv(req, res) {

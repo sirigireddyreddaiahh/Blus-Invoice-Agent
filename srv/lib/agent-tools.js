@@ -4,6 +4,7 @@ const path = require('path');
 const cds = require('@sap/cds');
 const U = require('../rules/util');
 const {
+  normalizeRow,
   cleanRuleText,
   getRuleName,
   getReviewQueueQuery,
@@ -255,16 +256,16 @@ async function find_by_invoice(invoiceNo, page = 1) {
   }
 
   const offset = (safePage - 1) * MAX_TOOL_ROWS;
-  const countRes = await runParameterizedReadOnly(
+  const countRes = (await runParameterizedReadOnly(
     `SELECT count(*) as count FROM ap_Posted WHERE lower(trim(invoiceNo)) = lower(trim(?))`,
     [inv]
-  );
+  ) || []).map(r => normalizeRow(r, 'ap.Posted'));
   const total = (countRes && countRes[0] && Number(countRes[0].count)) || 0;
 
-  const rawRows = await runParameterizedReadOnly(
+  const rawRows = (await runParameterizedReadOnly(
     `SELECT * FROM ap_Posted WHERE lower(trim(invoiceNo)) = lower(trim(?)) ORDER BY postedAt desc, invoiceDate desc LIMIT ? OFFSET ?`,
     [inv, MAX_TOOL_ROWS, offset]
-  );
+  ) || []).map(r => normalizeRow(r, 'ap.Posted'));
   const vendors = loadMastersVendors();
   const rows = (rawRows || []).map(r => mapLedgerRow(r, vendors));
 
@@ -291,16 +292,16 @@ async function find_by_gstin(gstin, page = 1) {
   }
 
   const offset = (safePage - 1) * MAX_TOOL_ROWS;
-  const countRes = await runParameterizedReadOnly(
+  const countRes = (await runParameterizedReadOnly(
     `SELECT count(*) as count FROM ap_Posted WHERE lower(trim(supplierGstin)) = lower(trim(?))`,
     [g]
-  );
+  ) || []).map(r => normalizeRow(r, 'ap.Posted'));
   const total = (countRes && countRes[0] && Number(countRes[0].count)) || 0;
 
-  const rawRows = await runParameterizedReadOnly(
+  const rawRows = (await runParameterizedReadOnly(
     `SELECT * FROM ap_Posted WHERE lower(trim(supplierGstin)) = lower(trim(?)) ORDER BY postedAt desc, invoiceDate desc LIMIT ? OFFSET ?`,
     [g, MAX_TOOL_ROWS, offset]
-  );
+  ) || []).map(r => normalizeRow(r, 'ap.Posted'));
   const vendors = loadMastersVendors();
   const rows = (rawRows || []).map(r => mapLedgerRow(r, vendors));
 
@@ -355,16 +356,16 @@ async function find_by_date(dateFrom, dateTo, dateField = 'invoiceDate', page = 
   const whereSql = clauses.length ? `WHERE ${clauses.join(' AND ')}` : '';
   const offset = (safePage - 1) * MAX_TOOL_ROWS;
 
-  const countRes = await runParameterizedReadOnly(
+  const countRes = (await runParameterizedReadOnly(
     `SELECT count(*) as count FROM ap_Posted ${whereSql}`,
     params
-  );
+  ) || []).map(r => normalizeRow(r, 'ap.Posted'));
   const total = (countRes && countRes[0] && Number(countRes[0].count)) || 0;
 
-  const rawRows = await runParameterizedReadOnly(
+  const rawRows = (await runParameterizedReadOnly(
     `SELECT * FROM ap_Posted ${whereSql} ORDER BY postedAt desc, invoiceDate desc LIMIT ? OFFSET ?`,
     [...params, MAX_TOOL_ROWS, offset]
-  );
+  ) || []).map(r => normalizeRow(r, 'ap.Posted'));
   const vendors = loadMastersVendors();
   const rows = (rawRows || []).map(r => mapLedgerRow(r, vendors));
 
@@ -395,16 +396,16 @@ async function find_by_supplier(name, page = 1) {
   const likeTerm = `%${n}%`;
   const offset = (safePage - 1) * MAX_TOOL_ROWS;
 
-  const countRes = await runParameterizedReadOnly(
+  const countRes = (await runParameterizedReadOnly(
     `SELECT count(*) as count FROM ap_Posted WHERE lower(supplierName) LIKE lower(?)`,
     [likeTerm]
-  );
+  ) || []).map(r => normalizeRow(r, 'ap.Posted'));
   const total = (countRes && countRes[0] && Number(countRes[0].count)) || 0;
 
-  const rawRows = await runParameterizedReadOnly(
+  const rawRows = (await runParameterizedReadOnly(
     `SELECT * FROM ap_Posted WHERE lower(supplierName) LIKE lower(?) ORDER BY postedAt desc, invoiceDate desc LIMIT ? OFFSET ?`,
     [likeTerm, MAX_TOOL_ROWS, offset]
-  );
+  ) || []).map(r => normalizeRow(r, 'ap.Posted'));
   const vendors = loadMastersVendors();
   const rows = (rawRows || []).map(r => mapLedgerRow(r, vendors));
 
@@ -426,13 +427,13 @@ async function list_ledger(page = 1) {
   const safePage = Math.max(1, parseInt(pg, 10) || 1);
   const offset = (safePage - 1) * MAX_TOOL_ROWS;
 
-  const countRes = await runParameterizedReadOnly(`SELECT count(*) as count FROM ap_Posted`, []);
+  const countRes = (await runParameterizedReadOnly(`SELECT count(*) as count FROM ap_Posted`, []) || []).map(r => normalizeRow(r, 'ap.Posted'));
   const total = (countRes && countRes[0] && Number(countRes[0].count)) || 0;
 
-  const rawRows = await runParameterizedReadOnly(
+  const rawRows = (await runParameterizedReadOnly(
     `SELECT * FROM ap_Posted ORDER BY postedAt desc, invoiceDate desc LIMIT ? OFFSET ?`,
     [MAX_TOOL_ROWS, offset]
-  );
+  ) || []).map(r => normalizeRow(r, 'ap.Posted'));
   const vendors = loadMastersVendors();
   const rows = (rawRows || []).map(r => mapLedgerRow(r, vendors));
 
@@ -505,10 +506,10 @@ async function last_check(sessionKey = 'default') {
 
   if (!record) {
     // Fallback to most recent check in ap_Checks if present
-    const latestRows = await runParameterizedReadOnly(
+    const latestRows = (await runParameterizedReadOnly(
       `SELECT * FROM ap_Checks ORDER BY createdAt desc LIMIT ?`,
       [1]
-    );
+    ) || []).map(r => normalizeRow(r, 'ap.Checks'));
     if (latestRows && latestRows.length > 0) {
       const c = latestRows[0];
       let pj = {};
@@ -649,10 +650,10 @@ async function get_review_queue({ status = 'ALL', page = 1, query = '' } = {}) {
   let rows = (data.rows || []).slice(0, MAX_TOOL_ROWS);
   const q = String(query || '').trim();
   if (q) {
-    const alertHits = await runParameterizedReadOnly(
+    const alertHits = (await runParameterizedReadOnly(
       `SELECT * FROM ap_Alerts WHERE lower(trim(invoiceNo)) = lower(trim(?)) OR lower(supplierName) LIKE lower(?) ORDER BY createdAt desc LIMIT ?`,
       [q, `%${q}%`, MAX_TOOL_ROWS]
-    );
+    ) || []).map(r => normalizeRow(r, 'ap.Alerts'));
     rows = (alertHits || []).map(a => ({
       ID: a.ID,
       check_ID: a.check_ID,

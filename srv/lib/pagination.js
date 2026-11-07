@@ -8,6 +8,39 @@ const RULE_NAME_MAP = {
   'AP-11': 'Split invoice check',
 };
 
+/**
+ * Maps every key of a raw SQL row to the camelCase element name from the CDS model.
+ * Builds the map from cds.model.definitions[entityName].elements, comparing keys case-insensitively.
+ * Keys that are not found stay unchanged.
+ */
+function normalizeRow(row, entityName) {
+  if (Array.isArray(row)) {
+    return row.map(r => normalizeRow(r, entityName));
+  }
+  if (!row || typeof row !== 'object') return row;
+  const model = cds.model || (cds.db && cds.db.model);
+  const def = model && model.definitions && (
+    model.definitions[entityName] ||
+    model.definitions[String(entityName || '').replace('_', '.')] ||
+    model.definitions[`ap.${entityName}`]
+  );
+  const elements = (def && def.elements) || {};
+  const keyMap = { count: 'count' };
+  for (const [elName, elDef] of Object.entries(elements)) {
+    keyMap[elName.toLowerCase()] = elName;
+    if (elDef && elDef.type === 'cds.Association') {
+      const fk = `${elName}_ID`;
+      keyMap[fk.toLowerCase()] = fk;
+    }
+  }
+  const out = {};
+  for (const [k, v] of Object.entries(row)) {
+    const mapped = keyMap[k.toLowerCase()];
+    out[mapped || k] = v;
+  }
+  return out;
+}
+
 function cleanRuleText(text) {
   let s = String(text || '')
     .replace(/â€¢/g, '•')
@@ -69,6 +102,9 @@ async function getS4ResultsQuery({ jobId = '', page = 1, limit = 50, status = 'A
       SELECT.one.from('ap.Jobs').orderBy('createdAt desc')
     );
   }
+  if (job) {
+    job = normalizeRow(job, 'ap.Jobs');
+  }
 
   const counts = {
     total: job ? (job.total || 0) : 0,
@@ -117,16 +153,16 @@ async function getS4ResultsQuery({ jobId = '', page = 1, limit = 50, status = 'A
   const whereSql = whereClauses.length ? `WHERE ${whereClauses.join(' AND ')}` : '';
 
   // Total matching rows for this filter
-  const countRes = await cds.run(`SELECT count(*) as count FROM ap_Checks ${whereSql}`, params);
+  const countRes = (await cds.run(`SELECT count(*) as count FROM ap_Checks ${whereSql}`, params) || []).map(r => normalizeRow(r, 'ap.Checks'));
   const filteredTotal = (countRes && countRes[0] && Number(countRes[0].count)) || 0;
   const totalPages = Math.ceil(filteredTotal / l);
 
   const offset = (p - 1) * l;
   const pageParams = [...params, l, offset];
-  const checks = await cds.run(
+  const checks = (await cds.run(
     `SELECT * FROM ap_Checks ${whereSql} ORDER BY createdAt asc LIMIT ? OFFSET ?`,
     pageParams
-  );
+  ) || []).map(r => normalizeRow(r, 'ap.Checks'));
 
   const rows = (checks || []).map(c => {
     let parsed = {};
@@ -221,12 +257,16 @@ async function getReviewQueueQuery({ page = 1, limit = 50, status = 'ALL' } = {}
     : `SELECT count(*) as count FROM ap_Alerts WHERE decision = 'OPEN'`;
   const openParams = (s === 'HOLD' || s === 'REJECT') ? [s] : [];
 
-  const [countRes, openRes, holdRes, rejectRes] = await Promise.all([
+  const [rawCountRes, rawOpenRes, rawHoldRes, rawRejectRes] = await Promise.all([
     cds.run(`SELECT count(*) as count FROM ap_Alerts ${whereSql}`, params),
     cds.run(openSql, openParams),
     cds.run(`SELECT count(*) as count FROM ap_Alerts WHERE decision = 'OPEN' AND tier = 'HOLD'`),
     cds.run(`SELECT count(*) as count FROM ap_Alerts WHERE decision = 'OPEN' AND tier = 'REJECT'`),
   ]);
+  const countRes = (rawCountRes || []).map(r => normalizeRow(r, 'ap.Alerts'));
+  const openRes = (rawOpenRes || []).map(r => normalizeRow(r, 'ap.Alerts'));
+  const holdRes = (rawHoldRes || []).map(r => normalizeRow(r, 'ap.Alerts'));
+  const rejectRes = (rawRejectRes || []).map(r => normalizeRow(r, 'ap.Alerts'));
 
   const rawHold = (holdRes && holdRes[0] && Number(holdRes[0].count)) || 0;
   const rawReject = (rejectRes && rejectRes[0] && Number(rejectRes[0].count)) || 0;
@@ -242,16 +282,16 @@ async function getReviewQueueQuery({ page = 1, limit = 50, status = 'ALL' } = {}
 
   const offset = (p - 1) * l;
   const pageParams = [...params, l, offset];
-  const alerts = await cds.run(
+  const alerts = (await cds.run(
     `SELECT * FROM ap_Alerts ${whereSql} ORDER BY createdAt desc LIMIT ? OFFSET ?`,
     pageParams
-  );
+  ) || []).map(r => normalizeRow(r, 'ap.Alerts'));
 
   // If invoiceNo or supplierName is missing on old records, load associated check
   const missingCheckIds = (alerts || []).filter(a => !a.invoiceNo && a.check_ID).map(a => a.check_ID);
   const checkMap = new Map();
   if (missingCheckIds.length > 0) {
-    const checks = await cds.run(SELECT.from('ap.Checks').where({ ID: { in: missingCheckIds } }));
+    const checks = (await cds.run(SELECT.from('ap.Checks').where({ ID: { in: missingCheckIds } })) || []).map(r => normalizeRow(r, 'ap.Checks'));
     for (const c of checks || []) {
       checkMap.set(c.ID, c);
     }
@@ -297,7 +337,7 @@ async function getReviewQueueQuery({ page = 1, limit = 50, status = 'ALL' } = {}
  * Canonical server-side count of check records in ap_Checks, shared by Check History and Activity Log.
  */
 async function getUnifiedChecksTotal(whereSql = '', params = []) {
-  const countRes = await cds.run(`SELECT count(*) as count FROM ap_Checks ${whereSql}`, params);
+  const countRes = (await cds.run(`SELECT count(*) as count FROM ap_Checks ${whereSql}`, params) || []).map(r => normalizeRow(r, 'ap.Checks'));
   return (countRes && countRes[0] && Number(countRes[0].count)) || 0;
 }
 
@@ -354,13 +394,16 @@ async function getCheckHistoryQuery({ page = 1, limit = 50, status = 'ALL', from
   const holdQ = buildStatusCountSql('HOLD');
   const rejectQ = buildStatusCountSql('REJECT');
 
-  const [total, baseTotal, passRes, holdRes, rejectRes] = await Promise.all([
+  const [total, baseTotal, rawPassRes, rawHoldRes, rawRejectRes] = await Promise.all([
     getUnifiedChecksTotal(whereSql, params),
     getUnifiedChecksTotal(baseWhereSql, baseParams),
     cds.run(passQ.sql, passQ.params),
     cds.run(holdQ.sql, holdQ.params),
     cds.run(rejectQ.sql, rejectQ.params),
   ]);
+  const passRes = (rawPassRes || []).map(r => normalizeRow(r, 'ap.Checks'));
+  const holdRes = (rawHoldRes || []).map(r => normalizeRow(r, 'ap.Checks'));
+  const rejectRes = (rawRejectRes || []).map(r => normalizeRow(r, 'ap.Checks'));
 
   const counts = {
     total: s && s !== 'ALL' ? total : baseTotal,
@@ -373,10 +416,10 @@ async function getCheckHistoryQuery({ page = 1, limit = 50, status = 'ALL', from
 
   const offset = (p - 1) * l;
   const pageParams = [...params, l, offset];
-  const checks = await cds.run(
+  const checks = (await cds.run(
     `SELECT * FROM ap_Checks ${whereSql} ORDER BY createdAt desc LIMIT ? OFFSET ?`,
     pageParams
-  );
+  ) || []).map(r => normalizeRow(r, 'ap.Checks'));
 
   return {
     page: p,
@@ -407,10 +450,10 @@ async function getActivityLogsQuery({ page = 1, limit = 50, action = 'ALL', view
     const total = checksTotal;
     const totalPages = Math.ceil(total / l);
     const offset = (p - 1) * l;
-    const checks = await cds.run(
+    const checks = (await cds.run(
       `SELECT * FROM ap_Checks ORDER BY createdAt desc LIMIT ? OFFSET ?`,
       [l, offset]
-    );
+    ) || []).map(r => normalizeRow(r, 'ap.Checks'));
 
     const rows = (checks || []).map((c, idx) => {
       const fileOrSource = c.fileName || c.source || 'S4';
@@ -462,16 +505,16 @@ async function getActivityLogsQuery({ page = 1, limit = 50, action = 'ALL', view
 
   const whereSql = whereClauses.length ? `WHERE ${whereClauses.join(' AND ')}` : '';
 
-  const countRes = await cds.run(`SELECT count(*) as count FROM ap_AuditLog ${whereSql}`, params);
+  const countRes = (await cds.run(`SELECT count(*) as count FROM ap_AuditLog ${whereSql}`, params) || []).map(r => normalizeRow(r, 'ap.AuditLog'));
   const total = (countRes && countRes[0] && Number(countRes[0].count)) || 0;
   const totalPages = Math.ceil(total / l);
 
   const offset = (p - 1) * l;
   const pageParams = [...params, l, offset];
-  const logs = await cds.run(
+  const logs = (await cds.run(
     `SELECT * FROM ap_AuditLog ${whereSql} ORDER BY idx desc LIMIT ? OFFSET ?`,
     pageParams
-  );
+  ) || []).map(r => normalizeRow(r, 'ap.AuditLog'));
 
   return {
     page: p,
@@ -512,16 +555,16 @@ async function searchLedgerDatabaseQuery({ query = '', page = 1, limit = 50 } = 
   }
 
   const whereSql = whereClauses.length ? `WHERE ${whereClauses.join(' AND ')}` : '';
-  const countRes = await cds.run(`SELECT count(*) as count FROM ap_Posted ${whereSql}`, params);
+  const countRes = (await cds.run(`SELECT count(*) as count FROM ap_Posted ${whereSql}`, params) || []).map(r => normalizeRow(r, 'ap.Posted'));
   const total = (countRes && countRes[0] && Number(countRes[0].count)) || 0;
   const totalPages = Math.ceil(total / l);
 
   const offset = (p - 1) * l;
   const pageParams = [...params, l, offset];
-  const rawRows = await cds.run(
+  const rawRows = (await cds.run(
     `SELECT * FROM ap_Posted ${whereSql} ORDER BY postedAt desc, invoiceDate desc LIMIT ? OFFSET ?`,
     pageParams
-  );
+  ) || []).map(r => normalizeRow(r, 'ap.Posted'));
 
   const rows = (rawRows || []).map(r => ({
     ...r,
@@ -560,16 +603,16 @@ async function getLedgerQuery({ page = 1, limit = 50, search = '', query = '' } 
   }
 
   const whereSql = whereClauses.length ? `WHERE ${whereClauses.join(' AND ')}` : '';
-  const countRes = await cds.run(`SELECT count(*) as count FROM ap_Posted ${whereSql}`, params);
+  const countRes = (await cds.run(`SELECT count(*) as count FROM ap_Posted ${whereSql}`, params) || []).map(r => normalizeRow(r, 'ap.Posted'));
   const total = (countRes && countRes[0] && Number(countRes[0].count)) || 0;
   const totalPages = Math.ceil(total / l);
 
   const offset = (p - 1) * l;
   const pageParams = [...params, l, offset];
-  const rawRows = await cds.run(
+  const rawRows = (await cds.run(
     `SELECT * FROM ap_Posted ${whereSql} ORDER BY postedAt desc, invoiceDate desc LIMIT ? OFFSET ?`,
     pageParams
-  );
+  ) || []).map(r => normalizeRow(r, 'ap.Posted'));
 
   const rows = (rawRows || []).map(r => {
     const numTotal = r.total !== undefined && r.total !== null ? Number(r.total) : 0;
@@ -645,12 +688,12 @@ async function getSummaryQuery({ fromDate = '', toDate = '', forceMismatch = fal
 
   const [
     checksTotal,
-    passRes,
-    holdRes,
-    rejectRes,
-    postedRes,
-    failedLogs,
-    alertDistinctChecksRes,
+    rawPassRes,
+    rawHoldRes,
+    rawRejectRes,
+    rawPostedRes,
+    rawFailedLogs,
+    rawAlertDistinctChecksRes,
   ] = await Promise.all([
     getUnifiedChecksTotal(checkWhere, checkParams),
     cds.run(passQ.sql, passQ.params),
@@ -660,13 +703,19 @@ async function getSummaryQuery({ fromDate = '', toDate = '', forceMismatch = fal
     cds.run(`SELECT * FROM ap_AuditLog WHERE action = 'READ_FAILED' ORDER BY idx desc LIMIT 50`),
     cds.run(`SELECT count(DISTINCT check_ID) as count FROM ap_Alerts`),
   ]);
+  const passRes = (rawPassRes || []).map(r => normalizeRow(r, 'ap.Checks'));
+  const holdRes = (rawHoldRes || []).map(r => normalizeRow(r, 'ap.Checks'));
+  const rejectRes = (rawRejectRes || []).map(r => normalizeRow(r, 'ap.Checks'));
+  const postedRes = (rawPostedRes || []).map(r => normalizeRow(r, 'ap.Posted'));
+  const failedLogs = (rawFailedLogs || []).map(r => normalizeRow(r, 'ap.AuditLog'));
+  const alertDistinctChecksRes = (rawAlertDistinctChecksRes || []).map(r => normalizeRow(r, 'ap.Alerts'));
 
   const passed = (passRes && passRes[0] && Number(passRes[0].count)) || 0;
   const held = (holdRes && holdRes[0] && Number(holdRes[0].count)) || 0;
   const rejected = (rejectRes && rejectRes[0] && Number(rejectRes[0].count)) || 0;
   const savedToLedger = (postedRes && postedRes[0] && Number(postedRes[0].count)) || 0;
 
-  const failedCountRes = await cds.run(`SELECT count(*) as count FROM ap_AuditLog WHERE action = 'READ_FAILED'`);
+  const failedCountRes = (await cds.run(`SELECT count(*) as count FROM ap_AuditLog WHERE action = 'READ_FAILED'`) || []).map(r => normalizeRow(r, 'ap.AuditLog'));
   const failedToRead = (failedCountRes && failedCountRes[0] && Number(failedCountRes[0].count)) || 0;
 
   const failedFiles = (failedLogs || []).map(row => {
@@ -686,7 +735,7 @@ async function getSummaryQuery({ fromDate = '', toDate = '', forceMismatch = fal
   const uploaded = checksTotal;
   const alertDistinctChecks = (alertDistinctChecksRes && alertDistinctChecksRes[0] && Number(alertDistinctChecksRes[0].count)) || 0;
 
-  const otherStatusRes = await cds.run(`SELECT count(*) as count FROM ap_Checks WHERE status NOT IN ('PASS', 'HOLD', 'REJECT')`);
+  const otherStatusRes = (await cds.run(`SELECT count(*) as count FROM ap_Checks WHERE status NOT IN ('PASS', 'HOLD', 'REJECT')`) || []).map(r => normalizeRow(r, 'ap.Checks'));
   const otherStatus = (otherStatusRes && otherStatusRes[0] && Number(otherStatusRes[0].count)) || 0;
 
   // Part 5 Consistency Check:
@@ -725,6 +774,7 @@ async function getSummaryQuery({ fromDate = '', toDate = '', forceMismatch = fal
 
 module.exports = {
   RULE_NAME_MAP,
+  normalizeRow,
   cleanRuleText,
   getRuleName,
   formatLedgerSourceLabel,
