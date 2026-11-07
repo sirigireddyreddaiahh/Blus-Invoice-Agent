@@ -1,0 +1,18 @@
+COLUMN TABLE ap_Checks (
+  ID NVARCHAR(36) NOT NULL,
+  createdAt TIMESTAMP,
+  createdBy NVARCHAR(255),
+  modifiedAt TIMESTAMP,
+  modifiedBy NVARCHAR(255),
+  source NVARCHAR(10),
+  jobId NVARCHAR(36),
+  fileName NVARCHAR(255),
+  supplierName NVARCHAR(120),
+  supplierGstin NVARCHAR(15),
+  invoiceNo NVARCHAR(60),
+  invoiceDate DATE,
+  total DECIMAL(15, 2),
+  status NVARCHAR(10),
+  resultJson NCLOB,
+  PRIMARY KEY(ID)
+)

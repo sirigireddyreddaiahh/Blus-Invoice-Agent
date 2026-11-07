@@ -1,0 +1,9 @@
+COLUMN TABLE ap_CheckResults (
+  ID NVARCHAR(36) NOT NULL,
+  check_ID NVARCHAR(36),
+  ruleId NVARCHAR(20),
+  title NVARCHAR(120),
+  tier NVARCHAR(10),
+  "TEXT" NVARCHAR(1000),
+  PRIMARY KEY(ID)
+)

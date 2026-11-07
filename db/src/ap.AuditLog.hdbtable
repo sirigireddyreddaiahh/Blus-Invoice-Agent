@@ -1,0 +1,10 @@
+COLUMN TABLE ap_AuditLog (
+  idx INTEGER NOT NULL,
+  ts NVARCHAR(30),
+  action NVARCHAR(40),
+  checkId NVARCHAR(36),
+  detail NVARCHAR(1000),
+  prevHash NVARCHAR(64),
+  hash NVARCHAR(64),
+  PRIMARY KEY(idx)
+)

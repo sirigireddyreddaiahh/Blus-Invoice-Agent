@@ -1,0 +1,17 @@
+VIEW FraudService_Checks AS SELECT
+  Checks_0.ID,
+  Checks_0.createdAt,
+  Checks_0.createdBy,
+  Checks_0.modifiedAt,
+  Checks_0.modifiedBy,
+  Checks_0.source,
+  Checks_0.jobId,
+  Checks_0.fileName,
+  Checks_0.supplierName,
+  Checks_0.supplierGstin,
+  Checks_0.invoiceNo,
+  Checks_0.invoiceDate,
+  Checks_0.total,
+  Checks_0.status,
+  Checks_0.resultJson
+FROM ap_Checks AS Checks_0

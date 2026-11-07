@@ -1,0 +1,8 @@
+VIEW FraudService_CheckResults AS SELECT
+  CheckResults_0.ID,
+  CheckResults_0.check_ID,
+  CheckResults_0.ruleId,
+  CheckResults_0.title,
+  CheckResults_0.tier,
+  CheckResults_0."TEXT"
+FROM ap_CheckResults AS CheckResults_0

@@ -1,0 +1,19 @@
+COLUMN TABLE ap_Alerts (
+  ID NVARCHAR(36) NOT NULL,
+  createdAt TIMESTAMP,
+  createdBy NVARCHAR(255),
+  modifiedAt TIMESTAMP,
+  modifiedBy NVARCHAR(255),
+  check_ID NVARCHAR(36),
+  ruleId NVARCHAR(20),
+  title NVARCHAR(120),
+  tier NVARCHAR(10),
+  "TEXT" NVARCHAR(1000),
+  decision NVARCHAR(12),
+  comment NVARCHAR(1000),
+  decidedBy NVARCHAR(100),
+  decidedAt NVARCHAR(30),
+  invoiceNo NVARCHAR(60),
+  supplierName NVARCHAR(120),
+  PRIMARY KEY(ID)
+)

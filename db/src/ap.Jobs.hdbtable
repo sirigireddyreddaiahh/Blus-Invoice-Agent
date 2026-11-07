@@ -1,0 +1,20 @@
+COLUMN TABLE ap_Jobs (
+  ID NVARCHAR(36) NOT NULL,
+  jobId NVARCHAR(36),
+  status NVARCHAR(12),
+  total INTEGER,
+  processed INTEGER,
+  lastIndex INTEGER,
+  passCount INTEGER,
+  holdCount INTEGER,
+  rejectCount INTEGER,
+  error NVARCHAR(500),
+  errorsJson NCLOB,
+  sourceBatch NCLOB,
+  startedAt NVARCHAR(30),
+  finishedAt NVARCHAR(30),
+  createdAt NVARCHAR(30),
+  createdBy NVARCHAR(100),
+  resultJson NCLOB,
+  PRIMARY KEY(ID)
+)

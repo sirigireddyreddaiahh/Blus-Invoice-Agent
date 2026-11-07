@@ -1,0 +1,18 @@
+VIEW FraudService_Alerts AS SELECT
+  Alerts_0.ID,
+  Alerts_0.createdAt,
+  Alerts_0.createdBy,
+  Alerts_0.modifiedAt,
+  Alerts_0.modifiedBy,
+  Alerts_0.check_ID,
+  Alerts_0.ruleId,
+  Alerts_0.title,
+  Alerts_0.tier,
+  Alerts_0."TEXT",
+  Alerts_0.decision,
+  Alerts_0.comment,
+  Alerts_0.decidedBy,
+  Alerts_0.decidedAt,
+  Alerts_0.invoiceNo,
+  Alerts_0.supplierName
+FROM ap_Alerts AS Alerts_0

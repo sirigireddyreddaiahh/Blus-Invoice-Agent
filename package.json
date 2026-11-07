@@ -10,6 +10,7 @@
     "test": "node --test test/acceptance.test.js"
   },
   "dependencies": {
+    "@cap-js/hana": "^3.1.2",
     "@cap-js/sqlite": "^3.1.2",
     "@google/genai": "^2.32.0",
     "@napi-rs/canvas": "^1.1.0",
@@ -62,6 +63,11 @@
               "Auditor"
             ]
           }
+        }
+      },
+      "[production]": {
+        "db": {
+          "kind": "hana"
         }
       }
     }

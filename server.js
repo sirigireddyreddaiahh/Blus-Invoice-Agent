@@ -345,7 +345,12 @@ async function main() {
   // Connect to DB and deploy schema
   cds.model = await cds.load(['db/schema.cds', 'srv/fraud-service.cds']);
   const db = await cds.connect.to('db');
-  await cds.deploy(cds.model).to(db);
+  if (db.kind !== 'hana') {
+    await cds.deploy(cds.model).to(db);
+  } else {
+    cds.db = cds.services.db = db;
+    if (!db.model) db.model = cds.compile.for.nodejs(cds.model);
+  }
   try {
     await db.run('CREATE INDEX IF NOT EXISTS idx_posted_gstin_fy_inv ON ap_Posted (supplierGstin, fiscalYear, invoiceNo)');
     await db.run('CREATE INDEX IF NOT EXISTS idx_posted_gstin_amt_date ON ap_Posted (supplierGstin, total, invoiceDate)');

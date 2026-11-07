@@ -1,0 +1,9 @@
+VIEW FraudService_AuditLog AS SELECT
+  AuditLog_0.idx,
+  AuditLog_0.ts,
+  AuditLog_0.action,
+  AuditLog_0.checkId,
+  AuditLog_0.detail,
+  AuditLog_0.prevHash,
+  AuditLog_0.hash
+FROM ap_AuditLog AS AuditLog_0

@@ -1,0 +1,15 @@
+VIEW FraudService_Posted AS SELECT
+  Posted_0.ID,
+  Posted_0.invoiceNo,
+  Posted_0.supplierGstin,
+  Posted_0.fiscalYear,
+  Posted_0.invoiceDate,
+  Posted_0.total,
+  Posted_0.supplierName,
+  Posted_0.description,
+  Posted_0.irn,
+  Posted_0.blocked,
+  Posted_0.recurringPo,
+  Posted_0.postedAt,
+  Posted_0.source
+FROM ap_Posted AS Posted_0

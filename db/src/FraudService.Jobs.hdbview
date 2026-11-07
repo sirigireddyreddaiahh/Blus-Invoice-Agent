@@ -1,0 +1,19 @@
+VIEW FraudService_Jobs AS SELECT
+  Jobs_0.ID,
+  Jobs_0.jobId,
+  Jobs_0.status,
+  Jobs_0.total,
+  Jobs_0.processed,
+  Jobs_0.lastIndex,
+  Jobs_0.passCount,
+  Jobs_0.holdCount,
+  Jobs_0.rejectCount,
+  Jobs_0.error,
+  Jobs_0.errorsJson,
+  Jobs_0.sourceBatch,
+  Jobs_0.startedAt,
+  Jobs_0.finishedAt,
+  Jobs_0.createdAt,
+  Jobs_0.createdBy,
+  Jobs_0.resultJson
+FROM ap_Jobs AS Jobs_0

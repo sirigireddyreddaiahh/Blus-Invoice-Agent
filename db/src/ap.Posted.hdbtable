@@ -1,0 +1,16 @@
+COLUMN TABLE ap_Posted (
+  ID NVARCHAR(36) NOT NULL,
+  invoiceNo NVARCHAR(60),
+  supplierGstin NVARCHAR(15),
+  fiscalYear NVARCHAR(10),
+  invoiceDate DATE,
+  total DECIMAL(15, 2),
+  supplierName NVARCHAR(120),
+  description NVARCHAR(255),
+  irn NVARCHAR(64),
+  blocked BOOLEAN,
+  recurringPo BOOLEAN,
+  postedAt NVARCHAR(30),
+  source NVARCHAR(20),
+  PRIMARY KEY(ID)
+)
