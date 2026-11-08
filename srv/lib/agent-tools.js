@@ -58,8 +58,7 @@ function resetChatModelStats() {
 }
 
 function getLlmEnvConfig() {
-  const rawAllow = String(process.env.ALLOW_INVOICE_DATA_TO_LLM || 'false').trim().toLowerCase();
-  const allowInvoiceData = rawAllow === 'true';
+  const allowInvoiceData = process.env.ALLOW_INVOICE_DATA_TO_LLM === 'true';
   const apiKey = String(process.env.GEMINI_API_KEY || '').trim();
   const rawModel = String(process.env.GEMINI_MODEL || '').trim().replace(/^models\//, '');
   const modelName = rawModel || DEFAULT_GEMINI_FALLBACK_MODEL;
