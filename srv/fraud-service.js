@@ -27,7 +27,7 @@ const { createBatchJob, getJob, cancelJob, resumeJob } = require('./lib/queue');
 const { getUnifiedChecksTotal, getS4ResultsQuery, getReviewQueueQuery, getCheckHistoryQuery, getActivityLogsQuery, searchLedgerDatabaseQuery, getLedgerQuery, getSummaryQuery, cleanRuleText, getRuleName } = require('./lib/pagination');
 const { processDocumentBatch } = require('./lib/document-processor');
 const { checkSapMatchForInvoice, querySapSandboxInvoices, getSapConfig, SAP_SOURCE_LABEL } = require('./lib/sap');
-const { AGENT_TOOLS, LEDGER_TOOLS, CREDENTIAL_REFUSAL_MSG, TERM_MEANINGS, toDisplayStatusTerm, sanitizeChatOutput, isCredentialOrServerSettingQuestion, runReadOnlyAgentQuery, setSessionLastCheck, markSessionCheckSaved, last_check, classifyChatIntent, buildIntentReply, formatFixedInvoiceCheckText, handleScopedChatQuestion } = require('./lib/agent-tools');
+const { AGENT_TOOLS, LEDGER_TOOLS, CREDENTIAL_REFUSAL_MSG, TERM_MEANINGS, getLlmEnvConfig, toDisplayStatusTerm, sanitizeChatOutput, isCredentialOrServerSettingQuestion, runReadOnlyAgentQuery, setSessionLastCheck, markSessionCheckSaved, last_check, classifyChatIntent, buildIntentReply, formatFixedInvoiceCheckText, handleScopedChatQuestion, evaluateInvoiceLedgerDuplicateStatus } = require('./lib/agent-tools');
 const { FAILED_TO_READ_REASON, AI_ASSIST_LABEL, hasReadableFields, tryExtractWithGeminiAssist } = require('./lib/ai-extract');
 
 const s4Invoices = require('../data/s4-invoices.json');
@@ -1140,6 +1140,12 @@ class FraudService extends cds.ApplicationService {
           })
         : null;
 
+      const dupInfo = evaluateInvoiceLedgerDuplicateStatus(inv, {
+        ledgerRows: posted,
+        activeResults: enriched.activeResults,
+        status: enriched.status,
+      });
+
       let savedToLedger = Boolean(databaseMatch && databaseMatch.matched && databaseMatch.reason === 'Same invoice number');
       // After an invoice gets PASS, insert it into the ledger so future uploads are compared against it
       if (runCheck && enriched.status === 'PASS' && enriched.verdict === 'Passed checks') {
@@ -1194,6 +1200,9 @@ class FraudService extends cds.ApplicationService {
         lookupSource: lookupInfo.source,
         similarInvoices: lookupInfo.pastPosted,
         databaseMatch,
+        duplicateCase: dupInfo.caseCode,
+        ledgerStatus: dupInfo.ledgerStatus,
+        chatReply: dupInfo.chatReply,
         sapMatch,
         pdfText: text,
         pdfMeta: inv.pdfMeta,
@@ -1305,6 +1314,12 @@ class FraudService extends cds.ApplicationService {
         sapMatch,
       });
 
+      const dupInfo = evaluateInvoiceLedgerDuplicateStatus(inv, {
+        ledgerRows: posted,
+        activeResults: enriched.activeResults,
+        status: enriched.status,
+      });
+
       let savedToLedger = Boolean(databaseMatch && databaseMatch.matched && databaseMatch.reason === 'Same invoice number');
       // After an invoice gets PASS, insert it into the ledger so future uploads are compared against it
       if (enriched.status === 'PASS') {
@@ -1350,6 +1365,9 @@ class FraudService extends cds.ApplicationService {
         source: effectiveSource,
         ...enriched,
         databaseMatch,
+        duplicateCase: dupInfo.caseCode,
+        ledgerStatus: dupInfo.ledgerStatus,
+        chatReply: dupInfo.chatReply,
         sapMatch,
         dataQuality,
         lookupSource: lookupInfo.source,
@@ -1803,47 +1821,20 @@ class FraudService extends cds.ApplicationService {
     const verifiedModelsCache = new Map();
 
     const readEnvConfig = (req) => {
-      const envVars = {};
-      try {
-        const envPath = path.join(__dirname, '../.env');
-        if (fs.existsSync(envPath)) {
-          const lines = fs.readFileSync(envPath, 'utf8').split('\n');
-          for (const line of lines) {
-            const trimmed = line.trim();
-            if (trimmed && !trimmed.startsWith('#')) {
-              const eq = trimmed.indexOf('=');
-              if (eq !== -1) {
-                envVars[trimmed.slice(0, eq).trim()] = trimmed.slice(eq + 1).trim();
-              }
-            }
-          }
-        }
-      } catch {}
-
+      const cfg = getLlmEnvConfig();
       const hdrs = (req && req.headers) || (req && req._ && req._.req && req._.req.headers) || (req && req.http && req.http.req && req.http.req.headers) || {};
       if (hdrs['x-gemini-api-key-unset'] === 'true' || (req && req.headers && req.headers['x-gemini-api-key-unset'] === 'true')) {
         return {
           apiKey: '',
-          modelName: 'gemini-3.5-flash-lite',
+          modelName: cfg.fallbackModelName,
           allowInvoiceData: false,
         };
       }
 
-      const rawKey = (process.env.GEMINI_API_KEY && process.env.GEMINI_API_KEY.trim())
-        || (process.env.API_KEY && process.env.API_KEY.trim())
-        || envVars.GEMINI_API_KEY
-        || '';
-      const rawModel = (process.env.GEMINI_MODEL && process.env.GEMINI_MODEL.trim())
-        || envVars.GEMINI_MODEL
-        || 'gemini-3.5-flash-lite';
-      const rawAllow = (process.env.ALLOW_INVOICE_DATA_TO_LLM && process.env.ALLOW_INVOICE_DATA_TO_LLM.trim())
-        || envVars.ALLOW_INVOICE_DATA_TO_LLM
-        || '';
-
       return {
-        apiKey: String(rawKey || '').trim(),
-        modelName: String(rawModel || 'gemini-3.5-flash-lite').trim() || 'gemini-3.5-flash-lite',
-        allowInvoiceData: rawAllow ? String(rawAllow).trim() !== 'false' : true,
+        apiKey: cfg.apiKey,
+        modelName: cfg.modelName,
+        allowInvoiceData: cfg.allowInvoiceData,
       };
     };
 
@@ -1928,7 +1919,7 @@ class FraudService extends cds.ApplicationService {
         if (/401|403|API_KEY_INVALID|Missing API key/i.test(msg)) {
           throw primaryErr;
         }
-        const fallbackModel = String(process.env.GEMINI_MODEL || 'gemini-3.8-flash').trim().replace(/^models\//, '');
+        const fallbackModel = getLlmEnvConfig().fallbackModelName;
         if (modelName.replace(/^models\//, '') !== fallbackModel) {
           return await callGeminiSingle(apiKey, fallbackModel, systemInstruction, promptText);
         }

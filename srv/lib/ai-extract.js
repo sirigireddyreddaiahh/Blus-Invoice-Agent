@@ -1,5 +1,6 @@
 'use strict';
 const { GoogleGenAI } = require('@google/genai');
+const { getLlmEnvConfig } = require('./agent-tools');
 
 const FAILED_TO_READ_REASON = 'No readable text found. Try a clearer scan or a Fiori CSV export.';
 const AI_ASSIST_LABEL = 'Read with AI assist';
@@ -20,7 +21,7 @@ function resetExternalCallCount() {
 }
 
 function isAllowInvoiceDataToLlm() {
-  return String(process.env.ALLOW_INVOICE_DATA_TO_LLM || '').trim().toLowerCase() === 'true';
+  return getLlmEnvConfig().allowInvoiceData;
 }
 
 function hasReadableFields(text, fields = {}) {
@@ -62,7 +63,8 @@ async function tryExtractWithGeminiAssist({ buf, fileName = 'invoice.pdf', kind 
     if (mockExtractorFn) {
       rawJson = await mockExtractorFn({ buf, fileName, kind });
     } else {
-      const apiKey = String(process.env.GEMINI_API_KEY || process.env.API_KEY || '').trim();
+      const cfg = getLlmEnvConfig();
+      const apiKey = cfg.apiKey;
       if (!apiKey) {
         return {
           ok: false,
@@ -74,7 +76,7 @@ async function tryExtractWithGeminiAssist({ buf, fileName = 'invoice.pdf', kind 
       const mimeType = kind === 'PNG'
         ? 'image/png'
         : (kind === 'JPG' ? 'image/jpeg' : 'application/pdf');
-      const modelName = String(process.env.GEMINI_MODEL || 'gemini-3.8-flash').trim().replace(/^models\//, '');
+      const modelName = cfg.modelName;
 
       const ai = new GoogleGenAI({
         apiKey,
