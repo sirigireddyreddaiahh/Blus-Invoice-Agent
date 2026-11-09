@@ -352,6 +352,38 @@ async function generateHistoryExcelBuffer(rows) {
   return Buffer.from(arrayBuffer);
 }
 
+const ACTIVITY_EXPORT_HEADERS = [
+  'Entry #',
+  'Time',
+  'Action',
+  'File or source',
+  'Result / Detail',
+  'By',
+];
+
+function extractActivityRowCells(r) {
+  const s = String(r.detail || '');
+  const uMatch = s.match(/\[user=([^\]]*)\]/);
+  const fMatch = s.match(/\[file=([^\]]*)\]/);
+  const rMatch = s.match(/\[result=([^\]]*)\]/);
+  const clean = s
+    .replace(/\[(?:user|file|result)=[^\]]*\]/g, '')
+    .replace(/\b(sandbox|demo data)\b/gi, '')
+    .trim();
+  const user = r.createdBy || (uMatch ? uMatch[1] : 'System');
+  const fileOrSource = r.fileName || (fMatch ? fMatch[1] : '—');
+  const resultText = clean || (rMatch ? rMatch[1] : '—');
+
+  return [
+    r.idx !== undefined && r.idx !== null ? `#${r.idx}` : '',
+    r.ts || '',
+    r.action || 'CHECK',
+    fileOrSource,
+    resultText,
+    user,
+  ];
+}
+
 function extractLedgerRowCells(r) {
   const s = String(r.source || '').trim().toUpperCase();
   let sourceLabel = 'Import';
@@ -375,10 +407,12 @@ module.exports = {
   HISTORY_EXPORT_HEADERS,
   S4_EXPORT_HEADERS,
   LEDGER_EXPORT_HEADERS,
+  ACTIVITY_EXPORT_HEADERS,
   cleanRuleText,
   extractHistoryRowCells,
   extractS4RowCells,
   extractLedgerRowCells,
+  extractActivityRowCells,
   filterCheckRows,
   escapeCsvCell,
   getStatusCellStyle,

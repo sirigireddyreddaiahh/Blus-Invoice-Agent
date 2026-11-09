@@ -8,9 +8,11 @@ const {
   HISTORY_EXPORT_HEADERS,
   S4_EXPORT_HEADERS,
   LEDGER_EXPORT_HEADERS,
+  ACTIVITY_EXPORT_HEADERS,
   extractHistoryRowCells,
   extractS4RowCells,
   extractLedgerRowCells,
+  extractActivityRowCells,
   streamCsv,
   streamExcel,
   generateHistoryCsv,
@@ -292,6 +294,40 @@ async function handleExportLedgerExcel(req, res) {
   }
 }
 
+async function fetchActivityChunk(filters = {}, offset = 0, limit = 500) {
+  if (Array.isArray(filters.rows)) {
+    return filters.rows.slice(offset, offset + limit);
+  }
+  const action = String(filters.action || 'ALL').trim();
+  const view = String(filters.view || 'ALL').trim().toUpperCase();
+  const out = await getActivityLogsQuery({
+    page: Math.floor(offset / limit) + 1,
+    limit,
+    action,
+    view,
+  });
+  return (out && Array.isArray(out.rows)) ? out.rows : [];
+}
+
+async function handleExportActivityExcel(req, res) {
+  try {
+    const filters = { ...(req.query || {}), ...(req.body || {}) };
+    await streamExcel({
+      res,
+      filename: 'blus-invoice-agent-activity-log.xlsx',
+      sheetName: 'Activity Log',
+      headers: ACTIVITY_EXPORT_HEADERS,
+      totalColIndex: -1,
+      extractCells: extractActivityRowCells,
+      fetchChunk: (offset, limit) => fetchActivityChunk(filters, offset, limit),
+    });
+  } catch (err) {
+    if (!res.headersSent) {
+      res.status(500).json({ error: { message: err.message || 'Activity Log Excel export failed' } });
+    }
+  }
+}
+
 async function main() {
   const PORT = process.env.PORT || 3000;
   const app = express();
@@ -383,6 +419,9 @@ async function main() {
   app.post('/fraud/exportLedgerCsv', handleExportLedgerCsv);
   app.get('/fraud/exportLedgerExcel', handleExportLedgerExcel);
   app.post('/fraud/exportLedgerExcel', handleExportLedgerExcel);
+
+  app.get('/fraud/exportActivityExcel', handleExportActivityExcel);
+  app.post('/fraud/exportActivityExcel', handleExportActivityExcel);
 
   // Server-side paginated query endpoints
   app.get('/fraud/s4Results', async (req, res) => {

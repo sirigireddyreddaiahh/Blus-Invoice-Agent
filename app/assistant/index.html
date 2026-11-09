@@ -86,7 +86,114 @@
           }
         } catch {}
         const reply = data.value !== undefined ? data.value : 'The assistant is not configured.';
-        b.textContent = reply;
+        b.textContent = '';
+        const lines = String(reply || '').split('\n');
+        let idx = 0;
+        while (idx < lines.length) {
+          const tLine = lines[idx].trim();
+          if (tLine.startsWith('|') && tLine.endsWith('|') && tLine.split('|').length >= 3) {
+            const tblLines = [];
+            while (idx < lines.length && lines[idx].trim().startsWith('|') && lines[idx].includes('|')) {
+              tblLines.push(lines[idx]);
+              idx++;
+            }
+            const splitCells = (l) => l.trim().replace(/^\|/, '').replace(/\|$/, '').split('|').map(c => c.trim());
+            const isSep = (l) => /^\|?\s*:?-{2,}:?(?:\s*\|\s*:?-{2,}:?)+\s*\|?$/.test(l.trim());
+            if (tblLines.length >= 2) {
+              const headers = splitCells(tblLines[0]);
+              const startRow = isSep(tblLines[1]) ? 2 : 1;
+              const wrap = document.createElement('div');
+              wrap.className = 'chat-table-wrap';
+              const scrollBox = document.createElement('div');
+              scrollBox.className = 'chat-table-scroll';
+              const tbl = document.createElement('table');
+              tbl.className = 'chat-grid-table';
+              const thead = document.createElement('thead');
+              const trH = document.createElement('tr');
+              const numCols = new Set();
+              const colSums = {};
+              headers.forEach((h, cIdx) => {
+                const th = document.createElement('th');
+                th.textContent = h;
+                if (/total|amount|inr|value|cost/i.test(h)) {
+                  numCols.add(cIdx);
+                  colSums[cIdx] = 0;
+                  th.className = 'chat-col-num';
+                }
+                trH.appendChild(th);
+              });
+              thead.appendChild(trH);
+              tbl.appendChild(thead);
+              const tbody = document.createElement('tbody');
+              let rowCount = 0;
+              let hasNum = false;
+              for (let r = startRow; r < tblLines.length; r++) {
+                if (isSep(tblLines[r])) continue;
+                const cells = splitCells(tblLines[r]);
+                if (!cells.length || !cells.some(Boolean)) continue;
+                rowCount++;
+                const tr = document.createElement('tr');
+                headers.forEach((_, cIdx) => {
+                  const td = document.createElement('td');
+                  const val = cells[cIdx] !== undefined ? cells[cIdx] : '—';
+                  td.textContent = val;
+                  if (numCols.has(cIdx)) {
+                    td.className = 'chat-col-num';
+                    const num = Number(String(val).replace(/[^0-9.-]+/g, ''));
+                    if (!Number.isNaN(num) && String(val).replace(/[^0-9]+/g, '').length > 0) {
+                      colSums[cIdx] = (colSums[cIdx] || 0) + num;
+                      hasNum = true;
+                    }
+                  }
+                  tr.appendChild(td);
+                });
+                tbody.appendChild(tr);
+              }
+              tbl.appendChild(tbody);
+              if (rowCount > 0 && headers.length >= 2) {
+                const tfoot = document.createElement('tfoot');
+                const trF = document.createElement('tr');
+                trF.className = 'grand-total-row';
+                if (numCols.size > 0 && hasNum) {
+                  const firstNum = Math.min(...Array.from(numCols));
+                  if (firstNum > 0) {
+                    const tdL = document.createElement('td');
+                    tdL.colSpan = firstNum;
+                    tdL.textContent = `Grand Total (${rowCount} ${rowCount === 1 ? 'row' : 'rows'})`;
+                    trF.appendChild(tdL);
+                  }
+                  for (let c = firstNum; c < headers.length; c++) {
+                    const td = document.createElement('td');
+                    if (numCols.has(c)) {
+                      td.className = 'chat-col-num';
+                      td.textContent = Number(colSums[c] || 0).toLocaleString('en-IN', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+                    } else {
+                      td.textContent = c === 0 ? 'Grand Total' : '';
+                    }
+                    trF.appendChild(td);
+                  }
+                } else {
+                  const tdL = document.createElement('td');
+                  tdL.colSpan = headers.length - 1;
+                  tdL.textContent = 'Grand Total';
+                  const tdR = document.createElement('td');
+                  tdR.className = 'chat-col-num';
+                  tdR.textContent = `${rowCount} ${rowCount === 1 ? 'record' : 'records'}`;
+                  trF.append(tdL, tdR);
+                }
+                tfoot.appendChild(trF);
+                tbl.appendChild(tfoot);
+              }
+              scrollBox.appendChild(tbl);
+              wrap.appendChild(scrollBox);
+              b.appendChild(wrap);
+              continue;
+            }
+          }
+          if (idx > 0) b.appendChild(document.createTextNode('\n'));
+          b.appendChild(document.createTextNode(lines[idx]));
+          idx++;
+        }
 
         if (/subject:|dear\s|vendor|email/i.test(reply) || /email/i.test(text)) {
           const wrap = document.createElement('div');

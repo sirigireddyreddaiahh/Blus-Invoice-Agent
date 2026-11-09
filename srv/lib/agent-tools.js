@@ -215,6 +215,7 @@ function mapLedgerRow(r, vendors = []) {
     postingDate: postDate,
     total: totalNum,
     amountInr: totalNum,
+    description: r.description || '',
     fiscalYear: r.fiscalYear || (invDate !== '—' ? U.fiscalYear(invDate) : '—'),
     source: formatLedgerSourceLabel(r.source),
   };
@@ -529,6 +530,10 @@ function setSessionLastCheck(sessionKey = 'default', checkData = {}) {
   };
   sessionMemory.set(String(sessionKey || 'default'), normalized);
   sessionMemory.set('default', normalized);
+  if (normalized.supplierName && normalized.supplierName !== '—') {
+    sessionMemory.set(`${String(sessionKey || 'default')}:lastNamedSupplier`, normalized.supplierName);
+    sessionMemory.set('default:lastNamedSupplier', normalized.supplierName);
+  }
   return normalized;
 }
 
@@ -911,7 +916,54 @@ function parseDateQueryFromText(questionText) {
   const q = String(questionText || '').trim();
   const dateField = /\b(posting\s+date|posted\s+on|posted\s+in|saved\s+on)\b/i.test(q) ? 'postingDate' : 'invoiceDate';
 
-  // 1. Month + Year (e.g. "September 2026", "in Sep 2026", "July 2023")
+  // 0a. "this month" / "current month"
+  if (/\b(this\s+month|current\s+month)\b/i.test(q)) {
+    return {
+      dateFrom: '2026-11-01',
+      dateTo: '2026-11-30',
+      dateField,
+      label: 'from November 2026',
+    };
+  }
+
+  // 0b. Natural date range: "between 1 Nov and 30 Nov 2026", "1 Nov to 30 Nov 2026", "from 1 Nov to 30 Nov 2026"
+  const dmyRangeMatch = q.match(/\b(?:between|from)?\s*(\d{1,2})\s+(jan|feb|mar|apr|may|jun|jul|aug|sep|sept|oct|nov|dec)[a-z]*(?:\s+(20\d{2}))?\s+(?:to|and|-|–)\s+(\d{1,2})\s+(jan|feb|mar|apr|may|jun|jul|aug|sep|sept|oct|nov|dec)[a-z]*\s+(20\d{2})\b/i);
+  if (dmyRangeMatch) {
+    const d1 = String(dmyRangeMatch[1]).padStart(2, '0');
+    const mKey1 = dmyRangeMatch[2].toLowerCase();
+    const info1 = MONTH_MAP[mKey1] || { m: '11' };
+    const y1 = dmyRangeMatch[3] || dmyRangeMatch[6] || '2026';
+    const d2 = String(dmyRangeMatch[4]).padStart(2, '0');
+    const mKey2 = dmyRangeMatch[5].toLowerCase();
+    const info2 = MONTH_MAP[mKey2] || { m: '11' };
+    const y2 = dmyRangeMatch[6] || '2026';
+    const rawLabel = `between ${dmyRangeMatch[1]} ${dmyRangeMatch[2]} and ${dmyRangeMatch[4]} ${dmyRangeMatch[5]} ${y2}`;
+    return {
+      dateFrom: `${y1}-${info1.m}-${d1}`,
+      dateTo: `${y2}-${info2.m}-${d2}`,
+      dateField,
+      label: rawLabel,
+    };
+  }
+
+  // 0c. Single natural date: "on 5 Nov 2026" or "5 Nov 2026"
+  const singleDmyMatch = q.match(/\b(?:on|dated|date|from|for|in)?\s*(\d{1,2})\s+(jan|feb|mar|apr|may|jun|jul|aug|sep|sept|oct|nov|dec)[a-z]*\s+(20\d{2})\b/i);
+  if (singleDmyMatch) {
+    const d = String(singleDmyMatch[1]).padStart(2, '0');
+    const mKey = singleDmyMatch[2].toLowerCase();
+    const info = MONTH_MAP[mKey];
+    if (info) {
+      const yr = singleDmyMatch[3];
+      return {
+        dateFrom: `${yr}-${info.m}-${d}`,
+        dateTo: `${yr}-${info.m}-${d}`,
+        dateField,
+        label: `on ${singleDmyMatch[1]} ${singleDmyMatch[2]} ${yr}`,
+      };
+    }
+  }
+
+  // 1. Month + Year (e.g. "September 2026", "in Sep 2026", "July 2023", "November 2026")
   const monthMatch = q.match(/\b(january|jan|february|feb|march|mar|april|apr|may|june|jun|july|jul|august|aug|september|sept|sep|october|oct|november|nov|december|dec)[a-z]*\s+(20\d{2})\b/i);
   if (monthMatch) {
     const mKey = monthMatch[1].toLowerCase();
@@ -922,6 +974,7 @@ function parseDateQueryFromText(questionText) {
         dateFrom: `${yr}-${info.m}-01`,
         dateTo: `${yr}-${info.m}-${info.days}`,
         dateField,
+        label: `from ${monthMatch[1]} ${yr}`,
       };
     }
   }
@@ -933,16 +986,62 @@ function parseDateQueryFromText(questionText) {
       dateFrom: rangeMatch[1],
       dateTo: rangeMatch[2],
       dateField,
+      label: `between ${rangeMatch[1]} and ${rangeMatch[2]}`,
     };
   }
 
-  // 3. Single ISO date: "on 2026-09-15" or "dated 2026-09-15" or "date 2026-09-15"
-  const singleDateMatch = q.match(/\b(?:on|dated|date|from|for|in)\s+(20\d{2}-\d{2}-\d{2})\b/i);
+  // 3. Single ISO date anywhere in the query: e.g. "on 2026-09-15" or "in this date how many invoices are there 2023-09-25"
+  const singleDateMatch = q.match(/\b(20\d{2}-\d{2}-\d{2})\b/i);
   if (singleDateMatch) {
     return {
       dateFrom: singleDateMatch[1],
       dateTo: singleDateMatch[1],
       dateField,
+      label: `on ${singleDateMatch[1]}`,
+    };
+  }
+
+  // 4. Indian DD-MM-YYYY or DD/MM/YYYY date: e.g. "25-09-2023" or "15/09/2026"
+  const dmySlashMatch = q.match(/\b(\d{2})[-/](\d{2})[-/](20\d{2})\b/);
+  if (dmySlashMatch) {
+    const dd = dmySlashMatch[1];
+    const mm = dmySlashMatch[2];
+    const yyyy = dmySlashMatch[3];
+    if (Number(mm) >= 1 && Number(mm) <= 12 && Number(dd) >= 1 && Number(dd) <= 31) {
+      const iso = `${yyyy}-${mm}-${dd}`;
+      return {
+        dateFrom: iso,
+        dateTo: iso,
+        dateField,
+        label: `on ${iso}`,
+      };
+    }
+  }
+
+  // 5. Financial Year: e.g. "FY 2023-24", "FY 2026-27", "in 2023-24"
+  const fyMatch = q.match(/\b(?:fy\s*|financial\s+year\s*|in\s+|for\s+|of\s+)(20\d{2})\s*[-/]\s*(\d{2})\b/i);
+  if (fyMatch) {
+    const startYr = Number(fyMatch[1]);
+    const endYr = startYr + 1;
+    return {
+      dateFrom: `${startYr}-04-01`,
+      dateTo: `${endYr}-03-31`,
+      dateField,
+      invoiceDateOnly: true,
+      label: `in FY ${fyMatch[1]}-${fyMatch[2]}`,
+    };
+  }
+
+  // 6. Standalone 4-digit Year: e.g. "invoices in 2023", "from 2026", "2023 invoices"
+  const yearOnlyMatch = q.match(/\b(?:in|from|of|for|year)\s+(202[0-9])\b/i) || q.match(/\b(202[0-9])\s+(?:invoices?|bills?|ledger)\b/i);
+  if (yearOnlyMatch) {
+    const yr = yearOnlyMatch[1];
+    return {
+      dateFrom: `${yr}-01-01`,
+      dateTo: `${yr}-12-31`,
+      dateField,
+      invoiceDateOnly: true,
+      label: `in ${yr}`,
     };
   }
 
@@ -957,16 +1056,27 @@ function extractExplicitInvoiceNo(questionText) {
   const q = String(questionText || '').trim();
   if (!q) return '';
 
-  // Remove 15-char GSTINs, YYYY-MM-DD dates, and explicit currency/total amounts so they aren't mistaken for invoice numbers
+  // If the question is asking "which invoice" / "what invoice" has a given amount/total/value, do not treat the number as an invoice number
+  if (/\b(?:which|what)\s+invoices?\b/i.test(q) && /\b(?:amount|total|value|worth|inr|rs\.?|lakh|lakhs|lac|crore|crores|thousand)\b/i.test(q)) {
+    return '';
+  }
+
+  // Remove 15-char GSTINs, YYYY-MM-DD / DD-MM-YYYY dates, FY strings, comma/decimal amounts, and explicit currency/total amounts so they aren't mistaken for invoice numbers
   const stripped = q
     .replace(/\b\d{2}[A-Z]{5}\d{4}[A-Z][1-9A-Z]Z[0-9A-Z]\b/gi, ' ')
     .replace(/\b20\d{2}-\d{2}-\d{2}\b/g, ' ')
-    .replace(/\b(?:total|amount|inr|rs\.?)\s*(?:is\s+|of\s+|[:=]\s*)?[\d,]+(?:\.\d+)?\b/gi, ' ')
+    .replace(/\b\d{2}[-/]\d{2}[-/]20\d{2}\b/g, ' ')
+    .replace(/\b(?:fy\s*)?20\d{2}\s*[-/]\s*\d{2}\b/gi, ' ')
+    .replace(/\b\d{1,3}(?:,\d{2,3})+(?:\.\d+)?\b/g, ' ')
+    .replace(/\b\d+\.\d{2}\b/g, ' ')
+    .replace(/\b(?:between|from)\s+(?:inr\s+|rs\.?\s*)?[\d,]+(?:\.\d+)?\s*(?:lakh|lakhs|lac|crore|crores|k|thousand)?\s+(?:and|to)\s+(?:inr\s+|rs\.?\s*)?[\d,]+(?:\.\d+)?\s*(?:lakh|lakhs|lac|crore|crores|k|thousand)?\b/gi, ' ')
+    .replace(/\b(?:with\s+(?:an?\s+|this\s+|that\s+)?(?:amount|total|value)|(?:have|has|having)\s+(?:this\s+|that\s+)?(?:amount|total|value)?|(?:total|amount|value)\s+(?:is|of|for|[:=])|inr|rs\.?|above|over|greater\s+than|more\s+than|below|under|less\s+than|worth)\s*(?:is\s+|of\s+|[:=]\s*|this\s+|that\s+|inr\s+|rs\.?\s*)?[\d,]+(?:\.\d+)?(?:\s*(?:lakh|lakhs|lac|crore|crores|k|thousand))?\b/gi, ' ')
+    .replace(/\b[\d,]+(?:\.\d+)?\s*(?:this\s+|that\s+)?(?:amount|total|value|inr|rs\.?|lakh|lakhs|lac|crore|crores|k|thousand)\b/gi, ' ')
     .replace(/\.(?:pdf|png|jpe?g|csv)\b/gi, ' ')
     .replace(/\b(?:Billing|Invoice|Bill|File)_([A-Za-z0-9/_-]+)/gi, '$1');
 
   // 1. Explicit "invoice <token>" where <token> is not a stopword
-  const STOPWORDS = /^(in|on|from|at|the|this|that|it|a|an|is|was|are|check|checked|database|ledger|sap|history|review|queue|status|summary|details?|number|no|id|pass|passed|fail|failed|blocked|rejected|held|hold|all|list|for|of|with|to|by|and|or|not|found|saved|again|duplicate|pdf|data|lo|em|enni|undha|unda|cheppu)$/i;
+  const STOPWORDS = /^(in|on|from|at|the|this|that|it|a|an|is|was|are|have|has|had|having|check|checked|database|ledger|sap|history|review|queue|status|summary|details?|number|no|id|pass|passed|fail|failed|blocked|rejected|held|hold|all|list|for|of|with|to|by|and|or|not|found|saved|again|duplicate|pdf|data|lo|em|enni|undha|unda|cheppu)$/i;
   const invAfterWord = stripped.match(/\binvoice(?:\s+number|\s+no\.?|\s+id)?\s+(?:is\s+|#)?([A-Za-z0-9][A-Za-z0-9/_.-]{1,49})\b/i);
   if (invAfterWord && !STOPWORDS.test(invAfterWord[1])) {
     const candidate = invAfterWord[1].replace(/[?.!,;:]+$/, '').trim();
@@ -1019,26 +1129,97 @@ function extractLookupCandidate(questionText) {
   return '';
 }
 
+function parseInrWithUnit(numStr, unitStr) {
+  const base = Number(String(numStr || '').replace(/,/g, ''));
+  if (Number.isNaN(base)) return NaN;
+  const u = String(unitStr || '').trim().toLowerCase();
+  if (/^lakh|^lac/.test(u)) return base * 100000;
+  if (/^crore|^cr/.test(u)) return base * 10000000;
+  if (/^thousand|^k$/.test(u)) return base * 1000;
+  return base;
+}
+
+function parseLedgerAmountOrSourceFilter(questionText) {
+  const q = String(questionText || '').trim();
+  if (!q) return null;
+  if (/\bdifferent\s+(?:total|amount|date)\b/i.test(q)) return null;
+
+  // Amount range: "invoices between 50000 and 200000" or "between 1 lakh and 20 lakhs"
+  const betweenAmt = q.match(/\b(?:between|from)\s+(?:inr\s+|rs\.?\s*)?([\d,]+(?:\.\d+)?)\s*(lakh|lakhs|lac|crore|crores|thousand|k)?\s+(?:and|to)\s+(?:inr\s+|rs\.?\s*)?([\d,]+(?:\.\d+)?)\s*(lakh|lakhs|lac|crore|crores|thousand|k)?\b/i);
+  if (betweenAmt && !parseDateQueryFromText(q)) {
+    const v1 = parseInrWithUnit(betweenAmt[1], betweenAmt[2]);
+    const v2 = parseInrWithUnit(betweenAmt[3], betweenAmt[4]);
+    if (!Number.isNaN(v1) && !Number.isNaN(v2)) {
+      return { type: 'AMOUNT_BETWEEN', min: Math.min(v1, v2), max: Math.max(v1, v2), label: `between INR ${formatInr(Math.min(v1, v2))} and INR ${formatInr(Math.max(v1, v2))}` };
+    }
+  }
+
+  const gtMatch = q.match(/\b(?:above|over|greater\s+than|more\s+than)\s+(?:inr\s+|rs\.?\s*)?([\d,]+(?:\.\d+)?)\s*(lakh|lakhs|lac|crore|crores|thousand|k)?\b/i);
+  if (gtMatch) {
+    const val = parseInrWithUnit(gtMatch[1], gtMatch[2]);
+    if (!Number.isNaN(val)) return { type: 'AMOUNT_GT', value: val, label: `above INR ${formatInr(val)}` };
+  }
+
+  const ltMatch = q.match(/\b(?:below|under|less\s+than)\s+(?:inr\s+|rs\.?\s*)?([\d,]+(?:\.\d+)?)\s*(lakh|lakhs|lac|crore|crores|thousand|k)?\b/i);
+  if (ltMatch) {
+    const val = parseInrWithUnit(ltMatch[1], ltMatch[2]);
+    if (!Number.isNaN(val)) return { type: 'AMOUNT_LT', value: val, label: `below INR ${formatInr(val)}` };
+  }
+
+  // Exact amount match: supports "with amount 1,18,000.00", "which invoice have this 1,18,000.00 this amount", "1,18,000.00 amount invoice", "which invoice is 1,18,000.00"
+  const eqMatchBefore = q.match(/\b(?:with\s+(?:an?\s+|this\s+|that\s+)?(?:amount|total|value)|(?:have|has|having)\s+(?:this\s+|that\s+)?(?:(?:amount|total|value)\s+)?|of\s+(?:amount|total|value|inr|rs\.?)|for\s+(?:amount|total|value|inr|rs\.?)|(?:amount|total|value)\s+(?:is|of|for|[:=])|worth)\s*(?:this\s+|that\s+)?(?:inr\s+|rs\.?\s*)?([\d,]+(?:\.\d+)?)\s*(lakh|lakhs|lac|crore|crores|thousand|k)?\b/i);
+  const eqMatchAfter = q.match(/\b(?:inr\s+|rs\.?\s*)?([\d,]+(?:\.\d+)?)\s*(lakh|lakhs|lac|crore|crores|thousand|k)?\s*(?:this\s+|that\s+)?(?:amount|total|value|inr|rs\.?)\b/i);
+  const eqMatchFormatted = (!parseDateQueryFromText(q) && /\b(which\s+invoices?|what\s+invoices?|find\s+invoices?|invoices?\s+(?:with|of|for|at|is))\b/i.test(q))
+    ? q.match(/\b(?:inr\s+|rs\.?\s*)?(\d{1,3}(?:,\d{2,3})+(?:\.\d+)?|\d+\.\d{2})\s*(lakh|lakhs|lac|crore|crores|thousand|k)?\b/i)
+    : null;
+  const eqMatch = eqMatchBefore || eqMatchAfter || eqMatchFormatted;
+  if (eqMatch && /\b(invoices?|bills?|which|what|show|find|list|ledger|who)\b/i.test(q) && !extractExplicitInvoiceNo(q)) {
+    const val = parseInrWithUnit(eqMatch[1], eqMatch[2]);
+    if (!Number.isNaN(val) && val > 0) return { type: 'AMOUNT_EQ', value: val, label: `with amount INR ${formatInr(val)}` };
+  }
+
+  if (/\b(?:(?:highest|biggest|largest|maximum|most\s+expensive|top)\s+(?:amount\s+|value\s+)?(?:invoice|bill)|(?:invoice|bill)\s+(?:with\s+|has\s+|having\s+|by\s+)?(?:the\s+)?(?:highest|biggest|largest|maximum|most\s+expensive|top)\s*(?:amount|value|total)?)\b/i.test(q)) {
+    return { type: 'AMOUNT_MAX', label: 'highest amount' };
+  }
+
+  if (/\b(?:(?:lowest|smallest|minimum|least\s+expensive|bottom)\s+(?:amount\s+|value\s+)?(?:invoice|bill)|(?:invoice|bill)\s+(?:with\s+|has\s+|having\s+|by\s+)?(?:the\s+)?(?:lowest|smallest|minimum|least\s+expensive|bottom)\s*(?:amount|value|total)?)\b/i.test(q)) {
+    return { type: 'AMOUNT_MIN', label: 'lowest amount' };
+  }
+
+  if (/\b(imported\s+invoices?|invoices?\s+from\s+import|source\s+import)\b/i.test(q)) {
+    return { type: 'SOURCE', value: 'Import', label: 'from source Import' };
+  }
+
+  if (/\b(chat\s+invoices?|invoices?\s+from\s+chat|source\s+chat)\b/i.test(q)) {
+    return { type: 'SOURCE', value: 'Chat', label: 'from source Chat' };
+  }
+
+  return null;
+}
+
 /**
  * Extracts a supplier filter from a LEDGER question (Section A):
- * e.g. "invoices in ledger from Minera", "ledger lo Tech Maintenance Co", "invoices in ledger from Zebra Corp"
+ * e.g. "invoices in ledger from Minera", "ledger lo Tech Maintenance Co", "TechVision invoices", "total paid to Green Valley"
  */
 function extractLedgerSupplierFilter(questionText) {
   const q = String(questionText || '').replace(/[?.!,;:]+$/, '').trim();
   if (!q) return '';
+  if (parseLedgerAmountOrSourceFilter(q) || parseDateQueryFromText(q)) return '';
 
-  const EXCLUDED_SUPPLIER_WORDS = /^(?:the\s+)?(?:ledger|database|sap|reference\s+ledger|reference\s+data|ap\.posted|table|chat|upload|import|batch|em|emi|emit|enni|entha|undha|unda|undi|unna|unnai|unnaya|data|invoices?|bills?|saved|posted|all|total|count|cheppu|chupinchu|chudu|november|october|september|august|july|june|may|april|march|february|january|december)\b/i;
+  const EXCLUDED_SUPPLIER_WORDS = /^(?:the\s+)?(?:ledger|database|sap|reference\s+ledger|reference\s+data|ap\.posted|table|chat|upload|import|imported|batch|em|emi|emit|enni|entha|undha|unda|undi|unna|unnai|unnaya|andariki|anni|sab|sabhi|saare|kitne|kitna|kaun|kaunsa|kya|dikhao|batao|how|many|show|list|give|find|display|data|invoices?|bills?|saved|posted|all|total|count|cheppu|chupinchu|chudu|this|that|these|those|which|what|particular|recent|latest|highest|lowest|biggest|smallest|top|bottom|value|amount|numbers?|no|ids?|details?|info|information|summary|report|open|blocked|held|rejected|passed|pending|approved|duplicate|split|review|queue|activity|history|november|october|september|august|july|june|may|april|march|february|january|december)\b/i;
 
-  // 1. "... in ledger from <Supplier>" or "... from supplier <Supplier>"
-  const fromMatch = q.match(/\b(?:from|for|by)\s+(?:supplier\s+|vendor\s+)?([A-Za-z0-9&.,'_-]+(?:\s+[A-Za-z0-9&.,'_-]+){0,5})$/i);
+  // 1. "... from/for/by/to/of <Supplier>"
+  const fromMatch = q.match(/\b(?:from|for|by|to|of)\s+(?:supplier\s+|vendor\s+|company\s+)?([A-Za-z0-9&.,'_-]+(?:\s+[A-Za-z0-9&.,'_-]+){0,5})$/i);
   if (fromMatch && fromMatch[1]) {
-    const cand = fromMatch[1].trim();
-    if (cand && !EXCLUDED_SUPPLIER_WORDS.test(cand) && !parseDateQueryFromText(cand)) {
+    const cand = fromMatch[1]
+      .replace(/\s+\b(?:in\s+(?:the\s+)?ledger|in\s+table|invoices?|bills?|data)\b.*$/i, '')
+      .trim();
+    if (cand && !EXCLUDED_SUPPLIER_WORDS.test(cand) && !parseDateQueryFromText(cand) && !parseLedgerAmountOrSourceFilter(cand) && !extractExplicitInvoiceNo(cand)) {
       return cand;
     }
   }
 
-  // 2. Telugu/mixed: "ledger lo <Supplier>"
+  // 2. Telugu/mixed: "ledger lo <Supplier>" or "<Supplier> enni invoices"
   const loMatch = q.match(/\bledger\s+lo\s+([A-Za-z0-9&.,'_-]+(?:\s+[A-Za-z0-9&.,'_-]+){0,5})$/i);
   if (loMatch && loMatch[1]) {
     const cand = loMatch[1]
@@ -1047,6 +1228,25 @@ function extractLedgerSupplierFilter(questionText) {
     if (cand && !EXCLUDED_SUPPLIER_WORDS.test(cand) && !parseDateQueryFromText(cand)) {
       return cand;
     }
+  }
+  const enniMatch = q.match(/^([A-Za-z][A-Za-z0-9&.'_-]+(?:\s+[A-Za-z0-9&.'_-]+){0,2})\s+enni\s+(?:invoices?|bills?)\b/i);
+  if (enniMatch && enniMatch[1] && !EXCLUDED_SUPPLIER_WORDS.test(enniMatch[1])) {
+    return enniMatch[1].trim();
+  }
+
+  // 3. Prefix supplier: "<Supplier> invoices" / "show <Supplier> bills" / "<Supplier> total amount"
+  const prefixMatch = q.match(/^(?:show\s+|list\s+|give\s+|find\s+|what\s+is\s+(?:the\s+)?)?([A-Za-z][A-Za-z0-9&.'_-]+(?:\s+[A-Za-z0-9&.'_-]+){0,3})\s+(?:invoices?|bills?|ledger\s+data|total\s+amount|total\s+value)\b/i);
+  if (prefixMatch && prefixMatch[1]) {
+    const cand = prefixMatch[1].replace(/^(?:all|the|particular|saved|posted|imported|chat|recent|latest)\s+/i, '').trim();
+    if (cand && !EXCLUDED_SUPPLIER_WORDS.test(cand) && !parseDateQueryFromText(cand)) {
+      return cand;
+    }
+  }
+
+  // 4. "which invoice is for <description/service>"
+  const whichForMatch = q.match(/\bwhich\s+invoices?\s+(?:is|are)\s+for\s+([A-Za-z0-9&.,'_-]+(?:\s+[A-Za-z0-9&.,'_-]+){0,5})$/i);
+  if (whichForMatch && whichForMatch[1] && !EXCLUDED_SUPPLIER_WORDS.test(whichForMatch[1])) {
+    return whichForMatch[1].trim();
   }
 
   return '';
@@ -1158,19 +1358,74 @@ function resolveConversationInvoice(decisionText, { lastCheck = null, recentMess
 
 function normalizeQuestionTypos(rawText) {
   return String(rawText || '')
-    .replace(/\bchekc\b/gi, 'check')
-    .replace(/\bdetils\b|\bdeatils\b/gi, 'details')
-    .replace(/\binoive\b|\binvoce\b|\binvioce\b/gi, 'invoice')
-    .replace(/\bexplin\b|\bexpalin\b|\bexplan\b/gi, 'explain')
+    // Joined conversational words
+    .replace(/\bdidu\b|\bdidyou\b/gi, 'did you')
+    .replace(/\bdou\b|\bdoyou\b/gi, 'do you')
+    .replace(/\bareu\b|\bareyou\b/gi, 'are you')
+    .replace(/\bcanu\b|\bcanyou\b/gi, 'can you')
+    .replace(/\bwillu\b|\bwillyou\b/gi, 'will you')
+    .replace(/\bwhoru\b|\bwhoareu\b|\bwhoareyou\b/gi, 'who are you')
+    .replace(/\bhowru\b|\bhowareu\b|\bhowareyou\b/gi, 'how are you')
+    .replace(/\biloveu\b|\biloveyou\b|\biluvu\b/gi, 'i love you')
+    .replace(/\bloveu\b|\bloveyou\b/gi, 'love you')
+    .replace(/\bthanku\b|\bthankyou\b/gi, 'thank you')
+    // Joined domain words
+    .replace(/\bshowledger\b/gi, 'show ledger')
+    .replace(/\blistledger\b/gi, 'list ledger')
+    .replace(/\bgiveledger\b/gi, 'give ledger')
+    .replace(/\bviewledger\b/gi, 'view ledger')
+    .replace(/\bledgerdata\b/gi, 'ledger data')
+    .replace(/\binvoicedata\b/gi, 'invoice data')
+    .replace(/\binvoicesdata\b/gi, 'invoices data')
+    .replace(/\bshowinvoices\b/gi, 'show invoices')
+    .replace(/\blistinvoices\b/gi, 'list invoices')
+    .replace(/\bgiveinvoices\b/gi, 'give invoices')
+    .replace(/\ballinvoices\b/gi, 'all invoices')
+    .replace(/\bshowtable\b/gi, 'show table')
+    .replace(/\binvoicetable\b|\binvoicestable\b/gi, 'invoices in table')
+    .replace(/\bcheckhistory\b/gi, 'check history')
+    .replace(/\breviewqueue\b/gi, 'review queue')
+    .replace(/\bactivitylog\b/gi, 'activity log')
+    .replace(/\bauditlog\b/gi, 'audit log')
+    .replace(/\bhowmany\b/gi, 'how many')
+    .replace(/\bwhichinvoice\b/gi, 'which invoice')
+    .replace(/\bwhichinvoices\b/gi, 'which invoices')
+    .replace(/\btotalamount\b/gi, 'total amount')
+    .replace(/\brecentinvoice\b/gi, 'recent invoice')
+    .replace(/\blastinvoice\b/gi, 'last invoice')
+    .replace(/\bthatcompany\b/gi, 'that company')
+    .replace(/\bthiscompany\b/gi, 'this company')
+    .replace(/\bthisdate\b/gi, 'this date')
+    .replace(/\bthatdate\b/gi, 'that date')
+    // Common domain typos
+    .replace(/\bledher\b|\blegder\b|\bledegr\b|\bleager\b|\bledgar\b|\bladger\b|\bledgr\b|\bleadger\b|\bledgerd\b|\bledjer\b|\blejder\b/gi, 'ledger')
+    .replace(/\bchekc\b|\bchck\b|\bchek\b|\bcehck\b/gi, 'check')
+    .replace(/\bdetils\b|\bdeatils\b|\bdetials\b|\bdetailes\b/gi, 'details')
+    .replace(/\binoives\b|\binvoces\b|\binvocies\b|\binvoies\b|\binoices\b|\binvices\b/gi, 'invoices')
+    .replace(/\binoive\b|\binvoce\b|\binvioce\b|\binoice\b|\binvoie\b|\binvice\b|\binvocie\b/gi, 'invoice')
+    .replace(/\bexplin\b|\bexpalin\b|\bexplan\b|\bexplian\b|\bexlpain\b|\bxplain\b/gi, 'explain')
     .replace(/\bshowall\b/gi, 'show all')
-    .replace(/\bwhts\b|\bwhats\b|\bwht\s+is\b|\bwat\s+is\b/gi, 'what is')
-    .replace(/\bwhihc\b/gi, 'which')
-    .replace(/\bhlo\b/gi, 'hello')
+    .replace(/\bshw\b|\bshwo\b/gi, 'show')
+    .replace(/\btabel\b|\btbale\b|\btble\b/gi, 'table')
+    .replace(/\bwhts\b|\bwhats\b|\bwht\s+is\b|\bwat\s+is\b|\bwhatis\b/gi, 'what is')
+    .replace(/\bwhihc\b|\bwich\b|\bwhch\b|\bwhic\b/gi, 'which')
+    .replace(/\bhlo\b|\bhelo\b/gi, 'hello')
     .replace(/\bhli\b/gi, 'hi')
     .replace(/\babt\b/gi, 'about')
     .replace(/\bpaymnt\b|\bpymnt\b/gi, 'payment')
-    .replace(/\bamnt\b|\bamt\b/gi, 'amount')
-    .replace(/\bsuppler\b|\bsuplier\b/gi, 'supplier');
+    .replace(/\bamnt\b|\bamt\b|\bammount\b|\bamout\b|\bamunt\b/gi, 'amount')
+    .replace(/\btotl\b|\btoal\b|\btotla\b/gi, 'total')
+    .replace(/\bsuppler\b|\bsuplier\b|\bsuppiler\b|\bsupllier\b/gi, 'supplier')
+    .replace(/\bcompny\b|\bcomapny\b|\bcmpny\b|\bcopmany\b/gi, 'company')
+    .replace(/\brecnt\b|\brcent\b|\brescent\b/gi, 'recent')
+    .replace(/\bhistroy\b|\bhistry\b|\bhisotry\b/gi, 'history')
+    .replace(/\breveiw\b|\breviw\b|\brevew\b/gi, 'review')
+    .replace(/\bqueu\b|\bquue\b|\bqeue\b/gi, 'queue')
+    .replace(/\bactvity\b|\bactivty\b|\bactiviti\b/gi, 'activity')
+    .replace(/\bcoorect\b|\bcorect\b|\bcorrct\b/gi, 'correct')
+    .replace(/\bdifferenc\b|\bdiffrence\b|\bdiference\b|\bdifrence\b/gi, 'difference')
+    .replace(/\bbet\s+ween\b|\bbetwen\b|\bbtween\b/gi, 'between')
+    .replace(/\btelugug\b|\btelgu\b|\btelugu\s+lo\b/gi, 'telugu');
 }
 
 /**
@@ -1205,21 +1460,41 @@ function classifyChatScope(decisionText, { lastCheck = null, recentMessages = []
     return { scope: CHAT_SCOPES.NOT_INVOICE, targetInvoiceNo: '', showAllChecks: false, refusalType: 'OFF_TOPIC' };
   }
 
-  // 2. NOT_INVOICE / HOW_IT_WORKS (greetings, thanks, identity/capabilities, domain definitions, personal questions)
+  const isLedgerFollowUpPlural =
+    /\b(show\s+(?:them|those(?:\s+invoices?)?|it\s+in\s+table)|list\s+(?:them|those(?:\s+invoices?)?)|display\s+(?:them|those)|what\s+are\s+(?:they|those)|which\s+(?:ones?|invoices?\s+are\s+(?:they|those))|give\s+(?:them|those)(?:\s+in\s+(?:a\s+)?table)?)\b/i.test(q);
+
+  const isTabDifferenceOrConceptQuestion =
+    /\b(difference\s+between|what\s+is\s+the\s+difference|compare\s+(?:check\s+history|activity\s+log|review\s+queue|ledger)|(?:check\s+history|activity\s+log|review\s+queue|ledger)\s+(?:vs\.?|versus)\s+(?:check\s+history|activity\s+log|review\s+queue|ledger)|madhya\s+teda|teda\s+enti|తేడా\s*ఏంటి|మధ్య\s*తేడా)\b/i.test(q);
+
+  // 2. NOT_INVOICE / HOW_IT_WORKS (greetings, thanks, identity/capabilities, domain definitions, tab comparisons, personal questions)
   if (
-    /^(hi|hlo|hli|helo|hello|hey|good\s*(morning|afternoon|evening)|howdy|greetings|hi\s+there|hello\s+there|హాయ్|హలో|నమస్కారం|నమస్తే)([\s!.,?]*)$/i.test(lower) ||
-    /^(hi|hello|hey|hlo)[,\s]+how\s+are\s+(you|u)([\s!.,?]*)$/i.test(lower) ||
-    /^(thanks|thank\s+you|thank\s+u|thx|ty|ok\s+thanks|okay\s+thanks|bye|goodbye|good\s+night|see\s+you|ధన్యవాదాలు|బై)([\s!.,?]*)$/i.test(lower) ||
-    /\b(do\s+(?:you|u)\s+love\s+me|i\s+love\s+(?:you|u)|what\s+(?:do\s+)?(?:you|u)\s+eat|did\s+(?:you|u)\s+eat|do\s+(?:you|u)\s+eat|how\s+old\s+are\s+(?:you|u)|are\s+(?:you|u)\s+(?:a\s+)?(?:human|person|bot|ai|robot)|who\s+made\s+(?:you|u)|who\s+created\s+(?:you|u)|who\s+are\s+(?:you|u)|who\s+(?:you|u)\s+are|who\s+r\s+u|what\s+are\s+(?:you|u)|what\s+is\s+your\s+(?:name|role|purpose)|tell\s+(?:me\s+)?about\s+yourself|what\s+can\s+(?:you|u)\s+do|how\s+can\s+(?:you|u)\s+help|how\s+do\s+(?:you|u)\s+work|how\s+are\s+(?:you|u)|how\s+r\s+u)\b/i.test(q) ||
-    /^(help|what\s+rules\s+do\s+you\s+check|which\s+rules\s+do\s+you\s+check|what\s+is\s+(?:a\s+)?(?:duplicate\s+invoice|split\s+invoice|repeat\s+bill|gstin|gst)|(?:what\s+(?:does|is)\s+(?:the\s+meaning\s+of\s+)?|meaning\s+of\s+|define\s+)(?:pass|hold|reject|incomplete|not\s+an\s+invoice|could\s+not\s+read)(?:\s+mean)?)[?.!]*$/i.test(lower)
+    !isLedgerFollowUpPlural &&
+    (
+      isTabDifferenceOrConceptQuestion ||
+      /^(hi|hlo|hli|helo|hello|hey|good\s*(morning|afternoon|evening)|howdy|greetings|hi\s+there|hello\s+there|హాయ్|హలో|నమస్కారం|నమస్తే)([\s!.,?]*)$/i.test(lower) ||
+      /^(hi|hello|hey|hlo)[,\s]+how\s+are\s+(you|u)([\s!.,?]*)$/i.test(lower) ||
+      /^(thanks|thank\s+you|thank\s+u|thx|ty|ok\s+thanks|okay\s+thanks|bye|goodbye|good\s+night|see\s+you|ధన్యవాదాలు|బై)([\s!.,?]*)$/i.test(lower) ||
+      /^(ok|okay|k|kk|nice|cool|great|good|super|awesome|fine|alright|got\s+it|understood|yes|no|hmm|yup|yep)([\s!.,?]*)$/i.test(lower) ||
+      /\b(do\s+(?:you|u)\s+love\s+me|i\s+love\s+(?:you|u)|love\s+(?:you|u|me)|are\s+(?:you|u)\s+mad|you\s+mad|u\s+mad|what\s+the\s+f[a-z]*|wtf|f+u+c+k+|what\s+(?:do\s+)?(?:you|u)\s+eat|did\s+(?:you|u)\s+eat|do\s+(?:you|u)\s+eat|have\s+(?:you|u)\s+eaten|had\s+(?:your\s+)?(?:lunch|dinner|breakfast|food)|are\s+(?:you|u)\s+(?:hungry|sleeping|tired|ready|working)|how\s+old\s+are\s+(?:you|u)|are\s+(?:you|u)\s+(?:a\s+)?(?:human|person|bot|ai|robot)|who\s+made\s+(?:you|u)|who\s+created\s+(?:you|u)|who\s+are\s+(?:you|u)|who\s+(?:you|u)\s+are|who\s+r\s+u|what\s+are\s+(?:you|u)|what\s+is\s+your\s+(?:name|role|purpose)|tell\s+(?:me\s+)?about\s+yourself|what\s+can\s+(?:you|u)\s+do|how\s+can\s+(?:you|u)\s+help|how\s+do\s+(?:you|u)\s+work|how\s+are\s+(?:you|u)|how\s+r\s+u|enable\s+answer\s+mode|nothing\s+can\s+stop\s+ai|recheck\s+answers)\b/i.test(q) ||
+      /^(help|what\s+rules\s+do\s+you\s+check|which\s+rules\s+do\s+you\s+check|(?:what\s+is|how\s+does)\s+(?:a\s+)?(?:duplicate\s+(?:invoice|detection|check)|split\s+invoice(?:\s+detection|\s+check)?|repeat\s+bill(?:\s+detection|\s+check)?|gstin|gst)(?:\s+work)?|(?:what\s+(?:does|is)\s+(?:the\s+meaning\s+of\s+)?|meaning\s+of\s+|define\s+)(?:pass|hold|reject|incomplete|not\s+an\s+invoice|could\s+not\s+read)(?:\s+mean)?)[?.!]*$/i.test(lower)
+    )
   ) {
     return { scope: CHAT_SCOPES.NOT_INVOICE, targetInvoiceNo: '', showAllChecks: false, refusalType: null };
   }
 
-  // 3. ALL_INVOICES_TABLE ("give invoices in table", "all invoices", "list invoices")
+  const dateFilter = parseDateQueryFromText(q);
+  const amountOrSourceFilter = parseLedgerAmountOrSourceFilter(q);
+  const supplierFilterCandidate = extractLedgerSupplierFilter(q);
+  const refersToThatCompanyInQuery = /\b(?:that|this|the)\s+(?:company|supplier|vendor|biller)\b/i.test(q);
+
+  // 3. ALL_INVOICES_TABLE ("give invoices in table", "all invoices", "list invoices") — only when unfiltered
   if (
+    !dateFilter &&
+    !amountOrSourceFilter &&
+    !supplierFilterCandidate &&
+    !refersToThatCompanyInQuery &&
     /\b(give\s+(?:all\s+)?invoices\s+in\s+(?:a\s+)?table|show\s+(?:all\s+)?invoices\s+in\s+(?:a\s+)?table|invoices\s+in\s+(?:a\s+)?table|table\s+of\s+invoices|all\s+invoices|list\s+(?:all\s+)?invoices|show\s+all\s+invoices)\b/i.test(q) &&
-    !/\b(ledger|saved\s+invoices|posted\s+invoices|review\s+queue|open\s+alerts)\b/i.test(q)
+    !/\b(ledger|saved\s+invoices|posted\s+invoices|review\s+queue|open\s+alerts|total\s+(?:amount|value|sum|of)|sum\s+of|how\s+many|count\s+of)\b/i.test(q)
   ) {
     return { scope: CHAT_SCOPES.ALL_INVOICES_TABLE, targetInvoiceNo: '', showAllChecks: false, refusalType: null };
   }
@@ -1243,13 +1518,20 @@ function classifyChatScope(decisionText, { lastCheck = null, recentMessages = []
     (fromExplicit && !/^Find invoice (?:TVD-|NON-EXISTENT-)/i.test(q)) ||
     /\b(is\s+(?:this|it|that)(?:\s+invoice)?\s+(?:a\s+duplicate|(?:already\s+)?in\s+(?:the\s+)?ledger|already\s+saved)|already\s+in\s+(?:the\s+)?ledger|already\s+saved|same\s+invoice\s+again|same\s+invoice\s+number|should\s+i\s+post\s+(?:it|this)|can\s+i\s+post\s+(?:it|this)|ledger\s+lo\s+undha|ledger\s+lo\s+unda)\b/i.test(q);
 
-  // 6. LEDGER (Section A: many ways to ask, reads ap.Posted only — when not asking about a specific single invoice)
-  const dateFilter = parseDateQueryFromText(q);
+  // 6. LEDGER (Section A & Aggregate Questions: reads ap.Posted only — when not asking about a specific single invoice)
   const gstinMatch = q.match(/\b(\d{2}[A-Z]{5}\d{4}[A-Z][1-9A-Z]Z[0-9A-Z])\b/i);
+  const isAggregateOrLedgerQuery =
+    isLedgerFollowUpPlural ||
+    Boolean(amountOrSourceFilter) ||
+    /\b(how\s+many|count\s+of|total\s+(?:amount|value|sum|of|from|for|by|paid)|sum\s+of|most\s+recent\s+invoice|recent\s+invoice|latest\s+invoice|last\s+invoice|(?:in|on|from|for)\s+(?:this|that)\s+date|(?:invoices?|bills?)\s+(?:from|for|by|of)\s+(?:that|this|the)\s+(?:company|supplier|vendor)|enni\s+invoices?|andariki\s+invoices?|sab\s+bills?|kitne\s+invoices?)\b/i.test(q) ||
+    Boolean(supplierFilterCandidate && /\b(invoices?|bills?|show|list|find|give|which|total|enni)\b/i.test(q)) ||
+    Boolean(dateFilter && /\b(invoices?|bills?|posted|saved|find|show|list|in|from|between|on|dated|this\s+month|current\s+month)\b/i.test(q));
+
   if (
     !isSingleInvoiceLedgerOrDuplicateCheck &&
     (
-      /\b(ledger|saved\s+invoices?|posted\s+invoices?|reference\s+ledger|reference\s+data|in\s+the\s+database|from\s+the\s+database|total\s+in\s+ledger)\b/i.test(q) ||
+      isAggregateOrLedgerQuery ||
+      /\b(ledger|saved\s+invoices?|posted\s+invoices?|reference\s+ledger|reference\s+data|in\s+the\s+database|from\s+the\s+database|total\s+in\s+ledger|show\s+data|give\s+data|show\s+invoices?|list\s+invoices?)\b/i.test(q) ||
       /^Find invoice (?:TVD-|NON-EXISTENT-)/i.test(q) ||
       Boolean(gstinMatch && !/\bwhat\s+is\s+(?:the\s+)?(?:supplier\s+)?gstin\b/i.test(q)) ||
       Boolean(dateFilter && /\b(invoices?|ledger|bills?|posted|saved|find|show|list|in|from|between|on|dated)\b/i.test(q))
@@ -1261,18 +1543,18 @@ function classifyChatScope(decisionText, { lastCheck = null, recentMessages = []
   // 7. REVIEW_QUEUE (mentions review, queue, held, open alerts, blocked list — when NOT asking why a single invoice was rejected/held)
   const isSingleWhyOrPronoun =
     /\b(why|this|that|it|you\s+rejected|you\s+held|explain)\b/i.test(q) &&
-    !/\b(review\s+queue|open\s+alerts|blocked\s+list|show\s+(?:review|queue|held|blocked))\b/i.test(q);
+    !/\b(review\s+queue|open\s+alerts|blocked\s+list|show\s+(?:review|queue|held|blocked)|pending\s+reviews?)\b/i.test(q);
 
   if (
     !isSingleWhyOrPronoun &&
     !fromExplicit &&
-    /\b(review\s+queue|review|queue|open\s+alerts?|blocked\s+list|blocked\s+invoices?|held\s+invoices?|on\s+hold\s+invoices?|show\s+held|show\s+hold|list\s+held|which\s+invoices?\s+(?:are|is)\s+(?:on\s+hold|held|rejected|blocked)|held)\b/i.test(q)
+    /\b(review\s+queue|reviews?|queue|open\s+alerts?|blocked\s+list|blocked\s+invoices?|held\s+invoices?|on\s+hold\s+invoices?|show\s+held|show\s+hold|list\s+held|which\s+invoices?\s+(?:are|is)\s+(?:on\s+hold|held|rejected|blocked)|held)\b/i.test(q)
   ) {
     return { scope: CHAT_SCOPES.REVIEW_QUEUE, targetInvoiceNo: '', showAllChecks: false, refusalType: null };
   }
 
   // 8. SINGLE_INVOICE vs UNCLEAR (STEP 3 & STEP 4, Sections B & C)
-  if (/^(tell\s+answer|tell|give\s+answer|ok|okay|what|\?|answer|hmm|yes|no)$/i.test(lower)) {
+  if (/^(tell\s+answer|tell|give\s+answer|what|\?|answer)$/i.test(lower)) {
     return { scope: CHAT_SCOPES.UNCLEAR, targetInvoiceNo: '', showAllChecks: false, refusalType: null };
   }
 
@@ -1294,7 +1576,12 @@ function classifyChatScope(decisionText, { lastCheck = null, recentMessages = []
     };
   }
 
-  return { scope: CHAT_SCOPES.UNCLEAR, targetInvoiceNo: '', showAllChecks: false, refusalType: null };
+  // If the user mentions known supplier/vendor/data/invoice terms, answer from the ledger; otherwise answer conversationally via NOT_INVOICE
+  if (/\b(minera|techvision|tech\s+maintenance|green\s+valley|invoices?|bills?|vendors?|suppliers?|companies|sap|hana|data|records?)\b/i.test(q)) {
+    return { scope: CHAT_SCOPES.LEDGER, targetInvoiceNo: resolvedInv, showAllChecks: false, refusalType: null };
+  }
+
+  return { scope: CHAT_SCOPES.NOT_INVOICE, targetInvoiceNo: '', showAllChecks: false, refusalType: null };
 }
 
 /**
@@ -1520,8 +1807,40 @@ function formatSingleInvoiceScopedReply(invoiceRecord, { showAllChecks = false, 
     ].join('\n'));
   }
 
-  // Specific Field Questions (when the user asks about payment/amount, supplier, GSTIN, date, description, or source)
+  // Specific Field Questions (when the user asks about payment/amount, subtotal, tax, supplier, GSTIN, date, description, or source)
   if (!forceDiff) {
+    // 1a-0. Subtotal / Taxable Amount (before total so "subtotal" doesn't match "total")
+    if (/\b(subtotal|sub-total|taxable\s+(?:amount|value)|base\s+amount|before\s+tax)\b/i.test(q)) {
+      const subVal = (invoiceRecord.subtotal !== undefined && invoiceRecord.subtotal !== null)
+        ? Number(invoiceRecord.subtotal)
+        : (dupInfo.ledgerRow && dupInfo.ledgerRow.subtotal !== undefined && dupInfo.ledgerRow.subtotal !== null
+            ? Number(dupInfo.ledgerRow.subtotal)
+            : Number((Number(totalVal || 0) / 1.18).toFixed(2)));
+      return sanitizeChatOutput(
+        `The subtotal (before tax) for invoice ${invNo} (${supplier}) is INR ${formatInr(subVal)} (Total with tax: INR ${formatInr(totalVal)}).`
+      );
+    }
+
+    // 1a-1. Tax / CGST / SGST / IGST (excluding GSTIN / tax ID)
+    if (/\b(tax|cgst|sgst|igst|gst\s+amount)\b/i.test(q) && !/\b(gstin|tax\s+id|gst\s+no|gst\s+number)\b/i.test(q)) {
+      const lr = dupInfo.ledgerRow || invoiceRecord || {};
+      const cgstVal = Number(lr.cgst || 0);
+      const sgstVal = Number(lr.sgst || 0);
+      const igstVal = Number(lr.igst || 0);
+      const hasExplicitTax = (cgstVal + sgstVal + igstVal) > 0 || (lr.subtotal !== undefined && lr.subtotal !== null);
+      const subVal = (lr.subtotal !== undefined && lr.subtotal !== null)
+        ? Number(lr.subtotal)
+        : (hasExplicitTax
+            ? Number((Number(totalVal || 0) - (cgstVal + sgstVal + igstVal)).toFixed(2))
+            : Number((Number(totalVal || 0) / 1.18).toFixed(2)));
+      const taxSum = (cgstVal + sgstVal + igstVal) > 0
+        ? (cgstVal + sgstVal + igstVal)
+        : Math.max(0, Number((Number(totalVal || 0) - subVal).toFixed(2)));
+      return sanitizeChatOutput(
+        `The GST tax on invoice ${invNo} (${supplier}) is INR ${formatInr(taxSum)} (Subtotal before tax: INR ${formatInr(subVal)}, Total with tax: INR ${formatInr(totalVal)}).`
+      );
+    }
+
     // 1a. Payment / Amount / Total / Value / Cost (only the stored total, no extra dates or numbers)
     if (/\b(payment|amount|total|value|cost|price|bill\s+amount|how\s+much|entha|paid|payable)\b/i.test(q)) {
       const paymentStatus = dupInfo.caseCode === 'C1'
@@ -1549,7 +1868,7 @@ function formatSingleInvoiceScopedReply(invoiceRecord, { showAllChecks = false, 
     }
 
     // 1d. Date / When billed or posted
-    if (/\b(what\s+(?:is\s+)?(?:the\s+)?(?:invoice\s+|posting\s+)?date|invoice\s+date|posting\s+date|posted\s+date|when\s+was\s+(?:it|this)|epudu)\b/i.test(q)) {
+    if (/\b(what\s+(?:is\s+)?(?:the\s+)?(?:invoice\s+|posting\s+)?date|invoice\s+date|posting\s+date|posted\s+date|when\s+was\b|epudu)\b/i.test(q)) {
       const postNote = dupInfo.ledgerRow
         ? ` and it was saved to the ledger on ${savedOnDate}.`
         : ' and it has not been posted to the ledger yet.';
@@ -1567,7 +1886,7 @@ function formatSingleInvoiceScopedReply(invoiceRecord, { showAllChecks = false, 
     }
 
     // 1f. Source
-    if (/\b(source|how\s+was\s+(?:it|this)\s+(?:added|uploaded|posted|recorded)|where\s+did\s+(?:it|this)\s+come\s+from)\b/i.test(q)) {
+    if (/\b(source|how\s+was\s+(?:it|this|[A-Za-z0-9/_-]+)\s+(?:added|uploaded|posted|recorded)|where\s+did\s+(?:it|this|[A-Za-z0-9/_-]+)\s+come\s+from)\b/i.test(q)) {
       return sanitizeChatOutput(
         `Invoice ${invNo} (${supplier}, INR ${formatInr(totalVal)}) was recorded via source: ${ledgerSource}.`
       );
@@ -1621,11 +1940,46 @@ function buildNotInvoiceReply(decisionText) {
   if (isOffTopicQuestion(q)) {
     return OFF_TOPIC_REFUSAL_MSG;
   }
+  if (/\b(are\s+(?:you|u)\s+mad|you\s+mad|u\s+mad|what\s+the\s+f[a-z]*|wtf|f+u+c+k+)\b/i.test(q)) {
+    return "I'm completely calm and focused on checking accounts payable invoices.";
+  }
+  if (/\b(what\s+(?:do\s+)?(?:you|u)\s+eat|did\s+(?:you|u)\s+eat|do\s+(?:you|u)\s+eat|have\s+(?:you|u)\s+eaten|had\s+(?:your\s+)?(?:lunch|dinner|breakfast|food)|are\s+(?:you|u)\s+(?:hungry|sleeping|tired))\b/i.test(q)) {
+    return "I don't eat food since I'm an AI assistant, but I'm fully energized and ready to check your invoices and ledger data anytime!";
+  }
   if (/\b(love\s+me|love\s+you|love\s+u)\b/i.test(lower)) {
     return "I appreciate your kind words, and I'm always happy to help you check your invoices anytime!";
   }
+  if (/\b(enable\s+answer\s+mode|nothing\s+can\s+stop\s+ai|recheck\s+answers|are\s+answers\s+correct|are\s+(?:you|u)\s+(?:ready|working))\b/i.test(q)) {
+    return "Yes! Full AI answer mode is active. Ask me about any invoice number, supplier, amount, date, GSTIN, ledger table, review queue, check history, or activity log.";
+  }
   if (/^(thanks|thank\s+you|thank\s+u|thx|ty|ok\s+thanks|okay\s+thanks|bye|goodbye|good\s+night|see\s+you|ధన్యవాదాలు|బై)/i.test(lower)) {
     return "You're welcome! I'm here whenever you need an invoice checked.";
+  }
+  if (/^(ok|okay|k|kk|nice|cool|great|good|super|awesome|fine|alright|got\s+it|understood|yes|no|hmm|yup|yep)([\s!.,?]*)$/i.test(lower)) {
+    return "Got it! Let me know if you'd like to check an invoice, view the ledger, or look up any supplier, date, or amount.";
+  }
+  if (
+    /\b(difference\s+between|what\s+is\s+the\s+difference|compare\s+(?:check\s+history|activity\s+log|review\s+queue|ledger)|(?:check\s+history|activity\s+log|review\s+queue|ledger)\s+(?:vs\.?|versus)\s+(?:check\s+history|activity\s+log|review\s+queue|ledger)|madhya\s+teda|teda\s+enti|తేడా\s*ఏంటి|మధ్య\s*తేడా)\b/i.test(q)
+  ) {
+    const wantsTelugu = /[\u0C00-\u0C7F]/.test(q) || /\b(telugu|madhya\s+teda|teda\s+enti)\b/i.test(q);
+    if (wantsTelugu) {
+      return [
+        'Check History మరియు Activity Log మధ్య తేడా:',
+        '| అంశం (Feature) | 4. Check History | 5. Activity Log |',
+        '| --- | --- | --- |',
+        '| ముఖ్య ఉద్దేశం | ఇన్‌వాయిస్ వెరిఫికేషన్ ఫలితాలు (PASS / HOLD / REJECT) | సిస్టమ్‌లో జరిగిన ప్రతి పని (Tamper-Evident Audit Log) |',
+        '| ఏ డేటా ఉంటుంది? | Invoice No, Supplier, GSTIN, Total (INR), Status | Time, Action (Check, Import, Ledger Entry, Decision), User |',
+        '| సెక్యూరిటీ | సాధారణ ఇన్‌వాయిస్ చెక్ రిపోర్ట్ (CSV / Excel) | Hash Chain (SHA-256) భద్రతతో ఎవరూ మార్చలేని ఆడిట్ రికార్డు |',
+      ].join('\n');
+    }
+    return [
+      'Difference between Check History and Activity Log:',
+      '| Feature | 4. Check History | 5. Activity Log |',
+      '| --- | --- | --- |',
+      '| Purpose | Stores invoice verification results (PASS, HOLD, REJECT) | Tamper-evident audit trail of every action in the system |',
+      '| Data Shown | Invoice No, Supplier, GSTIN, Total (INR), Verdict, Reviewer | Timestamp, Action (Check, Import, Ledger Insert, Decision), File, User |',
+      '| Security | Filterable invoice check report (CSV / Excel export) | SHA-256 hash-chained audit log verified for compliance |',
+    ].join('\n');
   }
   if (/\b(who\s+are\s+(?:you|u)|who\s+(?:you|u)\s+are|who\s+r\s+u|what\s+are\s+(?:you|u)|what\s+is\s+your\s+(?:name|role|purpose)|tell\s+(?:me\s+)?about\s+yourself|who\s+made\s+(?:you|u)|who\s+created\s+(?:you|u)|are\s+(?:you|u)\s+(?:a\s+)?(?:human|person|bot|ai|robot))\b/i.test(q)) {
     return "I am Blus Invoice Agent, an accounts payable assistant built to verify supplier invoices against the ledger and flag duplicates, GSTIN mismatches, repeat bills, and split invoices.";
@@ -1643,16 +1997,16 @@ function buildNotInvoiceReply(decisionText) {
       return `${termKey}: ${TERM_MEANINGS[termKey]}`;
     }
   }
-  if (/\bwhat\s+is\s+(?:a\s+)?duplicate\s+invoice\b/i.test(q)) {
+  if (/\b(?:what\s+is|how\s+does)\s+(?:a\s+)?duplicate\s+(?:invoice|detection|check)\b/i.test(q)) {
     return "A duplicate invoice is a bill with the same invoice number from the same supplier in the same financial year that is already saved in the ledger.";
   }
-  if (/\bwhat\s+is\s+(?:a\s+)?split\s+invoice\b/i.test(q)) {
+  if (/\b(?:what\s+is|how\s+does)\s+(?:a\s+)?split\s+invoice(?:\s+detection|\s+check)?\b/i.test(q)) {
     return "A split invoice pattern occurs when multiple bills from the same supplier within 14 days fall just below an approval limit individually but exceed the limit when combined.";
   }
-  if (/\bwhat\s+is\s+(?:a\s+)?repeat\s+bill\b/i.test(q)) {
+  if (/\b(?:what\s+is|how\s+does)\s+(?:a\s+)?repeat\s+bill(?:\s+detection|\s+check)?\b/i.test(q)) {
     return "A repeat bill is an invoice from the same supplier for the same amount and similar service within 90 days under a different invoice number.";
   }
-  if (/\bwhat\s+is\s+(?:gstin|gst)\b/i.test(q)) {
+  if (/\b(?:what\s+is|how\s+does)\s+(?:gstin|gst)\b/i.test(q)) {
     return "GSTIN is the 15-character Goods and Services Tax Identification Number of a supplier, which I verify to ensure each GSTIN belongs to a unique vendor.";
   }
   if (/^(hi|hlo|hli|helo|hello|hey|good\s*(morning|afternoon|evening)|howdy|greetings|hi\s+there|hello\s+there|హాయ్|హలో|నమస్కారం|నమస్తే)/i.test(lower)) {
@@ -1893,6 +2247,57 @@ function buildModelDataPacket(scope, payload = {}, { allowInvoiceData = false } 
     return meta;
   }
 
+  if (scope === CHAT_SCOPES.LEDGER && payload.isAggregateQuery) {
+    const qType = payload.qType || 'COUNT';
+    const filterUsed = payload.filterUsed || 'None';
+    const count = Number(payload.count !== undefined ? payload.count : (payload.total || 0));
+    const sumTotal = Number(payload.sumTotal || 0);
+    const formattedTotal = formatInr(sumTotal);
+    const matchingInvoices = Array.isArray(payload.matchingInvoiceNos) ? payload.matchingInvoiceNos.slice(0, 10) : [];
+
+    matchingInvoices.forEach(invNo => registerInvoiceNo(invNo));
+    registerNumber(count);
+    if (sumTotal > 0 || qType === 'TOTAL' || qType === 'DATE_RANGE') {
+      registerNumber(sumTotal);
+    }
+    if (payload.dateFrom) registerDate(payload.dateFrom);
+    if (payload.dateTo) registerDate(payload.dateTo);
+    if (payload.recentRow) {
+      if (payload.recentRow.invoiceNo) registerInvoiceNo(payload.recentRow.invoiceNo);
+      if (payload.recentRow.invoiceDate) registerDate(payload.recentRow.invoiceDate);
+      if (payload.recentRow.total !== undefined && payload.recentRow.total !== null) {
+        registerNumber(payload.recentRow.total);
+      }
+    }
+
+    const lines = [
+      `Question Type: ${qType}`,
+      `Filter: ${filterUsed}`,
+    ];
+    if (qType === 'COUNT') {
+      lines.push(`Count: ${count}`);
+    } else if (qType === 'TOTAL') {
+      lines.push(`Total: INR ${formattedTotal}`);
+      lines.push(`Count: ${count}`);
+    } else if (qType === 'DATE_RANGE') {
+      lines.push(`Count: ${count}`);
+      lines.push(`Total: INR ${formattedTotal}`);
+    } else if (qType === 'RECENT' && payload.recentRow) {
+      lines.push(`Recent Invoice: ${payload.recentRow.invoiceNo || '—'}`);
+      lines.push(`Invoice Date: ${payload.recentRow.invoiceDate || '—'}`);
+      lines.push(`Total: INR ${formatInr(payload.recentRow.total)}`);
+    }
+
+    if (matchingInvoices.length > 0) {
+      lines.push(`Matching Invoices: ${matchingInvoices.join(', ')}`);
+    }
+
+    meta.packetText = lines.join('\n');
+    meta.qType = qType;
+    meta.filterSupplier = payload.filterSupplier || '';
+    return meta;
+  }
+
   if (
     scope === CHAT_SCOPES.LEDGER ||
     scope === CHAT_SCOPES.ALL_INVOICES_TABLE ||
@@ -2088,6 +2493,10 @@ async function resolveReplyWithModelOrTemplate({
       }, CHAT_MODEL_TIMEOUT_MS);
     });
 
+    const activeSystemInstruction = packetPayload.isAggregateQuery
+      ? 'Use only the figures in the data packet. Quote the count or total exactly as given. Answer in one or two lines.'
+      : CHAT_MODEL_SYSTEM_INSTRUCTION;
+
     const invokeModel = async () => {
       if (chatModelTestHook) {
         const hookRes = await chatModelTestHook({
@@ -2095,7 +2504,7 @@ async function resolveReplyWithModelOrTemplate({
           question: String(questionText || '').trim(),
           dataPacket: packetMeta.packetText,
           userPrompt,
-          systemInstruction: CHAT_MODEL_SYSTEM_INSTRUCTION,
+          systemInstruction: activeSystemInstruction,
           temperature: CHAT_MODEL_TEMPERATURE,
           maxOutputTokens: CHAT_MODEL_MAX_OUTPUT_TOKENS,
           timeoutMs: CHAT_MODEL_TIMEOUT_MS,
@@ -2116,7 +2525,7 @@ async function resolveReplyWithModelOrTemplate({
           model: targetModel,
           contents: userPrompt,
           config: {
-            systemInstruction: CHAT_MODEL_SYSTEM_INSTRUCTION,
+            systemInstruction: activeSystemInstruction,
             temperature: CHAT_MODEL_TEMPERATURE,
             maxOutputTokens: CHAT_MODEL_MAX_OUTPUT_TOKENS,
           },
@@ -2310,8 +2719,9 @@ async function handleScopedChatQuestion(rawMessage, { sessionKey = 'default', ch
     }
 
     // Check if an inline total was specified in the question (e.g. "KA26100373 with total 500")
-    const inlineTotalMatch = q.match(/\b(?:total|amount|inr|rs\.?)\s*(?:is\s+|of\s+|[:=]\s*)?([\d,]+(?:\.\d+)?)\b/i);
-    if (inlineTotalMatch && record) {
+    const inlineTotalMatch = q.match(/\b(?:with\s+(?:an?\s+)?(?:total|amount)|(?:total|amount)\s*(?:is|[:=])|\binr\s+|\brs\.?\s*)\s*([\d,]+(?:\.\d+)?)\b/i);
+    const hasValidInlineTotal = inlineTotalMatch && String(inlineTotalMatch[1]).replace(/,/g, '') !== String(lookupInvNo || '');
+    if (hasValidInlineTotal && record) {
       const parsedInlineTotal = Number(inlineTotalMatch[1].replace(/,/g, ''));
       if (!Number.isNaN(parsedInlineTotal)) {
         record = { ...record, total: parsedInlineTotal };
@@ -2321,7 +2731,7 @@ async function handleScopedChatQuestion(rawMessage, { sessionKey = 'default', ch
     // If not in ap.Checks, but found in ap.Posted (e.g. "explain 51109301")
     if (!record && ledgerRows.length > 0) {
       const lr = ledgerRows[0];
-      const parsedInlineTotal = inlineTotalMatch ? Number(inlineTotalMatch[1].replace(/,/g, '')) : lr.total;
+      const parsedInlineTotal = hasValidInlineTotal ? Number(inlineTotalMatch[1].replace(/,/g, '')) : lr.total;
       record = {
         invoiceNo: lr.invoiceNo || lookupInvNo,
         supplierName: lr.supplierName || '—',
@@ -2330,6 +2740,10 @@ async function handleScopedChatQuestion(rawMessage, { sessionKey = 'default', ch
         postingDate: lr.postedAt ? String(lr.postedAt).slice(0, 10) : '—',
         description: lr.description || '',
         source: lr.source || 'Chat',
+        subtotal: lr.subtotal,
+        cgst: lr.cgst,
+        sgst: lr.sgst,
+        igst: lr.igst,
         total: !Number.isNaN(parsedInlineTotal) ? parsedInlineTotal : lr.total,
         status: 'REJECT',
         activeResults: [
@@ -2355,7 +2769,7 @@ async function handleScopedChatQuestion(rawMessage, { sessionKey = 'default', ch
           invoiceNo: lookupInvNo,
           supplierName: 'Known Supplier',
           invoiceDate: new Date().toISOString().slice(0, 10),
-          total: inlineTotalMatch ? Number(inlineTotalMatch[1].replace(/,/g, '')) : 0,
+          total: hasValidInlineTotal ? Number(inlineTotalMatch[1].replace(/,/g, '')) : 0,
           status: 'PASS',
           activeResults: [],
           reasons: ['Duplicate check, GSTIN check, Repeat bill check, and Split invoice check passed.'],
@@ -2394,7 +2808,7 @@ async function handleScopedChatQuestion(rawMessage, { sessionKey = 'default', ch
       questionText: q,
     });
 
-    const isAmountQuestion = !forceDiff && /\b(payment|amount|total|value|cost|price|bill\s+amount|how\s+much|entha|paid|payable)\b/i.test(q);
+    const isAmountQuestion = !forceDiff && /\b(payment|amount|total|value|cost|price|bill\s+amount|how\s+much|entha|paid|payable)\b/i.test(q) && !/\b(subtotal|sub-total|tax|cgst|sgst|igst)\b/i.test(q);
     const { reply, modelCalled, usedFallback } = await resolveReplyWithModelOrTemplate({
       scope,
       questionText: q,
@@ -2468,36 +2882,168 @@ async function handleScopedChatQuestion(rawMessage, { sessionKey = 'default', ch
 
   // Section A: LEDGER QUESTIONS (reads ap.Posted only)
   if (scope === CHAT_SCOPES.LEDGER) {
-    const q = decisionText;
-    const isCountOnly = /\b(how\s+many|count\s+of|total\s+(?:invoices?\s+)?in\s+(?:the\s+)?ledger|enni\s+invoices?|invoices?\s+enni|saved\s+invoices?\s+enni|ledger\s+lo\s+enni)\b/i.test(q);
-    const gstinMatch = q.match(/\b(\d{2}[A-Z]{5}\d{4}[A-Z][1-9A-Z]Z[0-9A-Z])\b/i);
-    const dateFilter = parseDateQueryFromText(q);
-    const supplierFilter = extractLedgerSupplierFilter(q);
-    const explicitInv = /^Find invoice (?:TVD-|NON-EXISTENT-)/i.test(q) ? extractExplicitInvoiceNo(q) : '';
+    const q = normalizedDecisionText;
+    const isFollowUpShowThem =
+      /\b(show\s+(?:them|those(?:\s+invoices?)?|it\s+in\s+table)|list\s+(?:them|those(?:\s+invoices?)?)|display\s+(?:them|those)|what\s+are\s+(?:they|those)|which\s+(?:ones?|invoices?\s+are\s+(?:they|those))|give\s+(?:them|those)(?:\s+in\s+(?:a\s+)?table)?)\b/i.test(q);
+    const isRecent = !isFollowUpShowThem && /\b(most\s+recent|latest|recent|newest|last)\s+invoice\b/i.test(q);
+    const isTotal = !isFollowUpShowThem && /\b(total\s+(?:amount|value|sum|of|from|for|by|paid)|sum\s+of)\b/i.test(q);
+    const isCount = !isFollowUpShowThem && !isTotal && !isRecent && /\b(how\s+many|count\s+of|total\s+in\s+ledger|enni\s+invoices?|invoices?\s+enni|saved\s+invoices?\s+enni|ledger\s+lo\s+enni)\b/i.test(q);
+    let dateFilter = parseDateQueryFromText(q);
+    if (!dateFilter && /\b(?:in|on|from|for)\s+(?:this|that)\s+date\b/i.test(q)) {
+      if (lastCheck && lastCheck.invoiceDate && lastCheck.invoiceDate !== '—') {
+        dateFilter = {
+          dateFrom: lastCheck.invoiceDate,
+          dateTo: lastCheck.invoiceDate,
+          dateField: 'invoiceDate',
+          label: `on ${lastCheck.invoiceDate}`,
+        };
+      } else {
+        for (let i = recentMessages.length - 1; i >= 0; i--) {
+          const prevDate = parseDateQueryFromText(recentMessages[i]);
+          if (prevDate) {
+            dateFilter = prevDate;
+            break;
+          }
+        }
+      }
+    }
+    const explicitlyWantsTableOrList =
+      !isCount && !isTotal && !isRecent &&
+      /\b(show|list|give|display|table|find|particular|which\s+invoices?|what\s+invoices?|chupinchu|dikhao|ledger\s+invoices?)\b/i.test(q);
+    const isAggregateQuery = !isFollowUpShowThem && (isRecent || isTotal || isCount || (Boolean(dateFilter) && !explicitlyWantsTableOrList));
 
-    let ledgerRes;
-    let isFiltered = false;
-
-    if (gstinMatch) {
-      isFiltered = true;
-      ledgerRes = await find_by_gstin(gstinMatch[1].toUpperCase(), 1);
-    } else if (dateFilter) {
-      isFiltered = true;
-      ledgerRes = await find_by_date(dateFilter.dateFrom, dateFilter.dateTo, dateFilter.dateField, 1);
-    } else if (supplierFilter) {
-      isFiltered = true;
-      ledgerRes = await find_by_supplier(supplierFilter, 1);
-    } else if (explicitInv) {
-      isFiltered = true;
-      ledgerRes = await find_by_invoice(explicitInv, 1);
-    } else {
-      ledgerRes = await list_ledger(1);
+    // Resolve "that company"
+    const refersToThatCompany = /\b(?:that|this|the)\s+(?:company|supplier|vendor|biller)\b/i.test(q);
+    let supplierFilter = '';
+    if (refersToThatCompany) {
+      const lastNamed = sessionMemory.get(`${String(sessionKey || 'default')}:lastNamedSupplier`) || sessionMemory.get('default:lastNamedSupplier') || '';
+      if (lastNamed) {
+        supplierFilter = lastNamed;
+      } else if (lastCheck && lastCheck.supplierName && lastCheck.supplierName !== '—') {
+        supplierFilter = lastCheck.supplierName;
+      } else {
+        for (let i = recentMessages.length - 1; i >= 0; i--) {
+          const prev = recentMessages[i];
+          const cand = extractLedgerSupplierFilter(prev);
+          if (cand) {
+            supplierFilter = cand;
+            break;
+          }
+        }
+      }
+      if (!supplierFilter) {
+        return {
+          scope,
+          tablesRead: [],
+          modelCalled: false,
+          reply: attachSummaryIfNeeded('Which company do you mean?'),
+        };
+      }
+    } else if (!isFollowUpShowThem) {
+      supplierFilter = extractLedgerSupplierFilter(q);
     }
 
-    const total = Number(ledgerRes && ledgerRes.total) || 0;
-    const rows = Array.isArray(ledgerRes && ledgerRes.rows) ? ledgerRes.rows : [];
+    const gstinMatch = q.match(/\b(\d{2}[A-Z]{5}\d{4}[A-Z][1-9A-Z]Z[0-9A-Z])\b/i);
+    const amountOrSourceFilter = !isFollowUpShowThem ? parseLedgerAmountOrSourceFilter(q) : null;
+    const explicitInv = /^Find invoice (?:TVD-|NON-EXISTENT-)/i.test(q) ? extractExplicitInvoiceNo(q) : '';
 
-    if (total === 0 || rows.length === 0) {
+    let matchingRows = [];
+    let isFiltered = false;
+    let matchedByDescription = false;
+
+    const savedLedgerQuery = sessionMemory.get(`${String(sessionKey || 'default')}:lastLedgerQuery`) || sessionMemory.get('default:lastLedgerQuery') || null;
+    if (isFollowUpShowThem && savedLedgerQuery && Array.isArray(savedLedgerQuery.rows) && savedLedgerQuery.rows.length > 0) {
+      matchingRows = savedLedgerQuery.rows;
+      supplierFilter = savedLedgerQuery.supplierFilter || '';
+      dateFilter = savedLedgerQuery.dateFilter || null;
+      isFiltered = Boolean(supplierFilter || dateFilter || savedLedgerQuery.amountOrSourceFilter);
+    } else if (gstinMatch) {
+      isFiltered = true;
+      const res = await find_by_gstin(gstinMatch[1].toUpperCase(), 1);
+      matchingRows = res.rows || [];
+    } else if (dateFilter) {
+      isFiltered = true;
+      const sql = dateFilter.invoiceDateOnly
+        ? `SELECT * FROM ap_Posted WHERE (invoiceDate >= ? AND invoiceDate <= ?) ORDER BY postedAt desc, invoiceDate desc LIMIT 50`
+        : `SELECT * FROM ap_Posted WHERE ((invoiceDate >= ? AND invoiceDate <= ?) OR (substr(postedAt, 1, 10) >= ? AND substr(postedAt, 1, 10) <= ?)) ORDER BY postedAt desc, invoiceDate desc LIMIT 50`;
+      const params = dateFilter.invoiceDateOnly
+        ? [dateFilter.dateFrom, dateFilter.dateTo]
+        : [dateFilter.dateFrom, dateFilter.dateTo, dateFilter.dateFrom, dateFilter.dateTo];
+      const rawRows = (await runParameterizedReadOnly(sql, params) || []).map(r => normalizeRow(r, 'ap.Posted'));
+      const vendors = loadMastersVendors();
+      matchingRows = rawRows.map(r => mapLedgerRow(r, vendors));
+    } else if (supplierFilter) {
+      isFiltered = true;
+      let res = await find_by_supplier(supplierFilter, 1);
+      if ((!res.rows || res.rows.length === 0) && refersToThatCompany && lastCheck && lastCheck.supplierGstin && lastCheck.supplierGstin !== '—') {
+        const gstinRes = await find_by_gstin(lastCheck.supplierGstin, 1);
+        if (gstinRes.rows && gstinRes.rows.length > 0) {
+          res = gstinRes;
+        }
+      }
+      if (!res.rows || res.rows.length === 0) {
+        const firstWord = supplierFilter.split(/\s+/)[0];
+        if (firstWord && firstWord.length >= 3) {
+          const wordRes = await find_by_supplier(firstWord, 1);
+          if (wordRes.rows && wordRes.rows.length > 0) {
+            res = wordRes;
+          }
+        }
+      }
+      // Fallback: match against invoice description (e.g., "network equipment", "AMC", "food supplies")
+      if (!res.rows || res.rows.length === 0) {
+        const allLedger = await list_ledger(1);
+        const descMatches = (allLedger.rows || []).filter(r =>
+          String(r.description || '').toLowerCase().includes(supplierFilter.toLowerCase())
+        );
+        if (descMatches.length > 0) {
+          res = { rows: descMatches, total: descMatches.length };
+          matchedByDescription = true;
+        }
+      }
+      matchingRows = res.rows || [];
+      if (matchingRows.length > 0 && !matchedByDescription && matchingRows[0].supplierName) {
+        sessionMemory.set(`${String(sessionKey || 'default')}:lastNamedSupplier`, matchingRows[0].supplierName);
+        sessionMemory.set('default:lastNamedSupplier', matchingRows[0].supplierName);
+      }
+    } else if (amountOrSourceFilter) {
+      isFiltered = true;
+      const res = await list_ledger(1);
+      const allRows = res.rows || [];
+      if (amountOrSourceFilter.type === 'AMOUNT_GT') {
+        matchingRows = allRows.filter(r => Number(r.total || 0) > amountOrSourceFilter.value);
+      } else if (amountOrSourceFilter.type === 'AMOUNT_LT') {
+        matchingRows = allRows.filter(r => Number(r.total || 0) < amountOrSourceFilter.value);
+      } else if (amountOrSourceFilter.type === 'AMOUNT_EQ') {
+        matchingRows = allRows.filter(r => Math.abs(Number(r.total || 0) - amountOrSourceFilter.value) < 0.01);
+      } else if (amountOrSourceFilter.type === 'AMOUNT_BETWEEN') {
+        matchingRows = allRows.filter(r => {
+          const v = Number(r.total || 0);
+          return v >= amountOrSourceFilter.min && v <= amountOrSourceFilter.max;
+        });
+      } else if (amountOrSourceFilter.type === 'AMOUNT_MAX' && allRows.length > 0) {
+        const sorted = [...allRows].sort((a, b) => Number(b.total || 0) - Number(a.total || 0));
+        matchingRows = [sorted[0]];
+      } else if (amountOrSourceFilter.type === 'AMOUNT_MIN' && allRows.length > 0) {
+        const sorted = [...allRows].sort((a, b) => Number(a.total || 0) - Number(b.total || 0));
+        matchingRows = [sorted[0]];
+      } else if (amountOrSourceFilter.type === 'SOURCE') {
+        matchingRows = allRows.filter(r => String(r.source || 'Chat').toLowerCase() === amountOrSourceFilter.value.toLowerCase());
+      }
+    } else if (explicitInv) {
+      isFiltered = true;
+      const res = await find_by_invoice(explicitInv, 1);
+      matchingRows = res.rows || [];
+    } else {
+      const res = await list_ledger(1);
+      matchingRows = res.rows || [];
+    }
+
+    const total = matchingRows.length;
+    const sumTotal = matchingRows.reduce((acc, r) => acc + (Number(r.total) || 0), 0);
+    const recentRow = matchingRows[0] || null;
+
+    if (total === 0 || matchingRows.length === 0) {
       const emptyMsg = isFiltered
         ? 'No invoices in the ledger match that.'
         : 'Ledger has 0 invoices.';
@@ -2509,32 +3055,101 @@ async function handleScopedChatQuestion(rawMessage, { sessionKey = 'default', ch
       };
     }
 
-    let countLine = `Ledger has ${total} invoice${total === 1 ? '' : 's'}.`;
-    if (supplierFilter) {
-      const matchedSuppName = (rows[0] && rows[0].supplierName) ? rows[0].supplierName : supplierFilter;
-      countLine = `Ledger has ${total} invoice${total === 1 ? '' : 's'} from ${matchedSuppName}.`;
-    } else if (dateFilter) {
-      countLine = `Ledger has ${total} invoice${total === 1 ? '' : 's'} (${dateFilter.dateFrom} to ${dateFilter.dateTo}).`;
-    } else if (gstinMatch) {
-      countLine = `Ledger has ${total} invoice${total === 1 ? '' : 's'} for GSTIN ${gstinMatch[1].toUpperCase()}.`;
+    // Save last ledger query in session so follow-ups like "show them" or "in this date" work seamlessly
+    const querySnapshot = {
+      rows: isRecent && recentRow ? [recentRow] : matchingRows,
+      supplierFilter,
+      dateFilter,
+      amountOrSourceFilter,
+    };
+    sessionMemory.set(`${String(sessionKey || 'default')}:lastLedgerQuery`, querySnapshot);
+    sessionMemory.set('default:lastLedgerQuery', querySnapshot);
+    if ((!lastCheck || (isFiltered && total === 1)) && recentRow) {
+      setSessionLastCheck(sessionKey, {
+        invoiceNo: recentRow.invoiceNo,
+        supplierName: recentRow.supplierName,
+        supplierGstin: recentRow.supplierGstin,
+        invoiceDate: recentRow.invoiceDate,
+        total: recentRow.total,
+        status: 'REJECT',
+      });
     }
 
-    if (isCountOnly) {
-      const { reply, modelCalled } = await resolveReplyWithModelOrTemplate({
+    if (isAggregateQuery) {
+      const qType = isRecent ? 'RECENT' : (isTotal ? 'TOTAL' : (isCount ? 'COUNT' : 'DATE_RANGE'));
+      const suppName = matchedByDescription
+        ? supplierFilter
+        : ((recentRow && recentRow.supplierName) || supplierFilter || 'the company');
+      let templateReply = '';
+
+      if (isRecent && recentRow) {
+        templateReply = `The most recent invoice from ${suppName} is ${recentRow.invoiceNo} (INR ${formatInr(recentRow.total)}, dated ${recentRow.invoiceDate || '—'}).`;
+      } else if (isTotal) {
+        const suppLabel = supplierFilter
+          ? suppName
+          : (dateFilter ? `invoices ${dateFilter.label || `from ${dateFilter.dateFrom} to ${dateFilter.dateTo}`}` : (amountOrSourceFilter ? `invoices ${amountOrSourceFilter.label}` : 'all invoices'));
+        templateReply = `The total for ${suppLabel} is INR ${formatInr(sumTotal)} across ${total} invoice${total === 1 ? '' : 's'}.`;
+      } else if (isCount) {
+        const suppLabel = supplierFilter ? (matchedByDescription ? ` for ${supplierFilter}` : ` from ${suppName}`) : '';
+        const dateLabel = dateFilter ? ` ${dateFilter.label || `on ${dateFilter.dateFrom}`}` : '';
+        const amtLabel = amountOrSourceFilter ? ` ${amountOrSourceFilter.label}` : '';
+        templateReply = `There are ${total} invoice${total === 1 ? '' : 's'}${suppLabel}${dateLabel}${amtLabel} in the ledger.`;
+      } else if (dateFilter) {
+        const rangeLabel = dateFilter.label || `between ${dateFilter.dateFrom} and ${dateFilter.dateTo}`;
+        templateReply = `There are ${total} invoice${total === 1 ? '' : 's'} ${rangeLabel} in the ledger totaling INR ${formatInr(sumTotal)}.`;
+      }
+
+      const { reply, modelCalled, usedFallback } = await resolveReplyWithModelOrTemplate({
         scope,
         questionText: normalizedDecisionText,
-        templateReply: countLine,
-        packetPayload: { total, rows: rows.slice(0, 10), requiresTable: false },
+        templateReply,
+        packetPayload: {
+          isAggregateQuery: true,
+          qType,
+          filterUsed: supplierFilter
+            ? `Supplier: ${suppName}`
+            : (dateFilter ? `Date Range: ${dateFilter.dateFrom} to ${dateFilter.dateTo}` : (amountOrSourceFilter ? amountOrSourceFilter.label : (gstinMatch ? `GSTIN: ${gstinMatch[1]}` : 'All invoices'))),
+          filterSupplier: suppName,
+          count: total,
+          sumTotal,
+          recentRow,
+          dateFrom: dateFilter ? dateFilter.dateFrom : null,
+          dateTo: dateFilter ? dateFilter.dateTo : null,
+          matchingInvoiceNos: matchingRows.slice(0, 10).map(r => r.invoiceNo).filter(Boolean),
+          requiresTable: false,
+        },
       });
+
       return {
         scope,
         tablesRead: ['ap.Posted'],
         modelCalled,
+        usedFallback,
         reply: attachSummaryIfNeeded(reply),
       };
     }
 
-    const slice = rows.slice(0, 10);
+    let countLine = `Ledger has ${total} invoice${total === 1 ? '' : 's'}.`;
+    if (supplierFilter) {
+      const matchedSuppName = matchedByDescription
+        ? `for "${supplierFilter}" (${(matchingRows[0] && matchingRows[0].supplierName) || ''})`
+        : ((matchingRows[0] && matchingRows[0].supplierName) ? `from ${matchingRows[0].supplierName}` : `from ${supplierFilter}`);
+      countLine = `Ledger has ${total} invoice${total === 1 ? '' : 's'} ${matchedSuppName}.`;
+    } else if (dateFilter) {
+      const dLabel = dateFilter.dateFrom === dateFilter.dateTo ? `on ${dateFilter.dateFrom}` : `(${dateFilter.dateFrom} to ${dateFilter.dateTo})`;
+      countLine = `Ledger has ${total} invoice${total === 1 ? '' : 's'} ${dLabel}.`;
+    } else if (amountOrSourceFilter) {
+      if (total === 1 && matchingRows[0] && ['AMOUNT_EQ', 'AMOUNT_MAX', 'AMOUNT_MIN'].includes(amountOrSourceFilter.type)) {
+        const r0 = matchingRows[0];
+        countLine = `Ledger has 1 invoice (${amountOrSourceFilter.label}) — Invoice ${r0.invoiceNo} from ${r0.supplierName} (INR ${formatInr(r0.total)}, dated ${r0.invoiceDate || '—'}).`;
+      } else {
+        countLine = `Ledger has ${total} invoice${total === 1 ? '' : 's'} (${amountOrSourceFilter.label}).`;
+      }
+    } else if (gstinMatch) {
+      countLine = `Ledger has ${total} invoice${total === 1 ? '' : 's'} for GSTIN ${gstinMatch[1].toUpperCase()}.`;
+    }
+
+    const slice = matchingRows.slice(0, 10);
     const lines = [
       countLine,
       '| Invoice No | Supplier | Invoice Date | Total (INR) | Source |',
@@ -2549,7 +3164,7 @@ async function handleScopedChatQuestion(rawMessage, { sessionKey = 'default', ch
       lines.push(`and ${total - 10} more`);
     }
     const templateReply = lines.join('\n');
-    const { reply, modelCalled } = await resolveReplyWithModelOrTemplate({
+    const { reply, modelCalled, usedFallback } = await resolveReplyWithModelOrTemplate({
       scope,
       questionText: normalizedDecisionText,
       templateReply,
@@ -2559,6 +3174,7 @@ async function handleScopedChatQuestion(rawMessage, { sessionKey = 'default', ch
       scope,
       tablesRead: ['ap.Posted'],
       modelCalled,
+      usedFallback,
       reply: attachSummaryIfNeeded(reply),
     };
   }
@@ -2583,11 +3199,18 @@ async function handleScopedChatQuestion(rawMessage, { sessionKey = 'default', ch
       };
     }
 
-    const lines = [`Review queue (${total} open alert${total === 1 ? '' : 's'}):`];
-    rows.slice(0, 10).forEach((r, idx) => {
+    const slice = rows.slice(0, 10);
+    const lines = [
+      `Review queue (${total} open alert${total === 1 ? '' : 's'}):`,
+      '| # | Invoice No | Supplier | Rule / Issue | Status | Reason |',
+      '| --- | --- | --- | --- | --- | --- |',
+    ];
+    slice.forEach((r, idx) => {
       const ruleLabel = getRuleName(r.ruleId);
-      const reason = cleanRuleText(r.text || r.title || '—');
-      lines.push(`${idx + 1}. invoice ${r.invoiceNo || '—'}, ${r.supplierName || '—'}, ${r.tier || 'HOLD'}, ${ruleLabel}: ${reason}`);
+      const reason = cleanRuleText(r.text || r.title || '—').replace(/\|/g, '·');
+      lines.push(
+        `| ${idx + 1} | ${r.invoiceNo || '—'} | ${r.supplierName || '—'} | ${ruleLabel} | ${r.tier || 'HOLD'} | ${reason} |`
+      );
     });
     if (total > 10) {
       lines.push(`and ${total - 10} more`);
@@ -2597,7 +3220,7 @@ async function handleScopedChatQuestion(rawMessage, { sessionKey = 'default', ch
       scope,
       questionText: normalizedDecisionText,
       templateReply,
-      packetPayload: { total, rows: rows.slice(0, 10) },
+      packetPayload: { total, rows: slice, requiresTable: true },
     });
     return {
       scope,
@@ -2627,9 +3250,23 @@ async function handleScopedChatQuestion(rawMessage, { sessionKey = 'default', ch
       };
     }
 
-    const lines = [`Activity log (${total} entr${total === 1 ? 'y' : 'ies'}):`];
-    rows.slice(0, 10).forEach((r, idx) => {
-      lines.push(`${idx + 1}. #${r.idx} ${r.ts || ''} — ${r.action || 'ACTION'}: ${cleanRuleText(r.detail || '—')}`);
+    const slice = rows.slice(0, 10);
+    const lines = [
+      `Activity log (${total} entr${total === 1 ? 'y' : 'ies'}):`,
+      '| Entry # | Timestamp | Action | File / Source | Details |',
+      '| --- | --- | --- | --- | --- |',
+    ];
+    slice.forEach((r) => {
+      const rawDet = String(r.detail || '');
+      const fMatch = rawDet.match(/\[file=([^\]]*)\]/);
+      const fileCell = fMatch && fMatch[1] ? fMatch[1] : '—';
+      const cleanedDetail = cleanRuleText(
+        rawDet.replace(/\[(?:user|file|result)=[^\]]*\]/g, '').trim() || '—'
+      ).replace(/\|/g, '·');
+      const shortTs = r.ts ? String(r.ts).replace('T', ' ').slice(0, 19) : '—';
+      lines.push(
+        `| #${r.idx} | ${shortTs} | ${r.action || 'ACTION'} | ${fileCell} | ${cleanedDetail} |`
+      );
     });
     if (total > 10) {
       lines.push(`and ${total - 10} more`);
@@ -2639,7 +3276,7 @@ async function handleScopedChatQuestion(rawMessage, { sessionKey = 'default', ch
       scope,
       questionText: normalizedDecisionText,
       templateReply,
-      packetPayload: { total, rows: rows.slice(0, 10) },
+      packetPayload: { total, rows: slice, requiresTable: true },
     });
     return {
       scope,
@@ -2669,10 +3306,16 @@ async function handleScopedChatQuestion(rawMessage, { sessionKey = 'default', ch
       };
     }
 
-    const lines = [`Check history (${total} check${total === 1 ? '' : 's'}):`];
-    rows.slice(0, 10).forEach((r, idx) => {
+    const slice = rows.slice(0, 10);
+    const lines = [
+      `Check history (${total} check${total === 1 ? '' : 's'}):`,
+      '| # | Invoice No | Supplier | Invoice Date | Total (INR) | Verdict |',
+      '| --- | --- | --- | --- | --- | --- |',
+    ];
+    slice.forEach((r, idx) => {
+      const dt = r.invoiceDate || (r.createdAt ? String(r.createdAt).slice(0, 10) : '—');
       lines.push(
-        `${idx + 1}. invoice ${r.invoiceNo || '—'}, ${r.supplierName || '—'}, date ${r.invoiceDate || '—'}, INR ${formatInr(r.total)}, status ${r.status || 'PASS'}.`
+        `| ${idx + 1} | ${r.invoiceNo || '—'} | ${r.supplierName || '—'} | ${dt} | ${formatInr(r.total)} | ${r.status || 'PASS'} |`
       );
     });
     if (total > 10) {
@@ -2683,7 +3326,7 @@ async function handleScopedChatQuestion(rawMessage, { sessionKey = 'default', ch
       scope,
       questionText: normalizedDecisionText,
       templateReply,
-      packetPayload: { total, rows: rows.slice(0, 10) },
+      packetPayload: { total, rows: slice, requiresTable: true },
     });
     return {
       scope,

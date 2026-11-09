@@ -10,7 +10,7 @@
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
   <link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;500;600&family=Plus+Jakarta+Sans:wght@400;500;600;700;800&display=swap" rel="stylesheet">
-  <link rel="stylesheet" href="style.css">
+  <link rel="stylesheet" href="style.css?v=5">
 </head>
 <body>
   <!-- =========================================================
@@ -744,7 +744,8 @@
 
             <div class="btn-row filter-actions" style="margin-top: 0; margin-left: auto;">
               <button type="button" id="btnRefreshActivity">Refresh</button>
-              <button type="button" id="btnExportActivityCsv" class="primary">Download CSV</button>
+              <button type="button" id="btnExportActivityCsv">Download CSV</button>
+              <button type="button" id="btnExportActivityExcel" class="primary">Download Excel</button>
             </div>
           </div>
 
@@ -844,6 +845,6 @@
     <div id="failedReadsDrawerBody" class="drawer-body"></div>
   </aside>
 
-  <script src="app.js?v=3"></script>
+  <script src="app.js?v=5"></script>
 </body>
 </html>

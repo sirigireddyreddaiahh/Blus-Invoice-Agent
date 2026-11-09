@@ -656,7 +656,7 @@ body {
   width: 100%;
   max-width: none;
   margin: 0;
-  padding: 24px 28px;
+  padding: 12px 22px 16px 22px;
   flex: 1;
   min-height: 0;
   overflow-y: auto;
@@ -790,6 +790,291 @@ body {
 .ai-normal-value {
   font-weight: 400;
   color: #1E293B;
+}
+
+/* ChatGPT-Style HTML Card / Artifact Table inside Chat Replies */
+.chat-table-wrap {
+  margin: 10px 0 8px 0;
+  width: 100%;
+  max-width: 100%;
+  max-height: 430px;
+  display: flex;
+  flex-direction: column;
+  border-radius: 10px;
+  border: 1px solid #CBD5E1;
+  background: #FFFFFF;
+  box-shadow: 0 2px 6px rgba(15, 23, 42, 0.05);
+  overflow: hidden;
+}
+
+.chat-table-scroll {
+  width: 100%;
+  max-height: 430px;
+  overflow-y: auto;
+  overflow-x: auto;
+  -webkit-overflow-scrolling: touch;
+  background: #FFFFFF;
+}
+
+.chat-table-wrap.chat-variant-tab .chat-table-scroll {
+  max-height: 394px;
+}
+
+.chat-grid-table {
+  width: 100%;
+  border-collapse: separate;
+  border-spacing: 0;
+  border: none;
+  font-family: var(--font-sans);
+  font-size: 13px;
+  line-height: 1.45;
+  white-space: normal;
+  background: #FFFFFF;
+  font-variant-numeric: tabular-nums;
+}
+
+.chat-grid-table thead tr {
+  background: #F1F5F9;
+}
+
+.chat-grid-table th {
+  position: sticky;
+  top: 0;
+  z-index: 5;
+  background: #F1F5F9;
+  border-right: 1px solid #CBD5E1;
+  border-bottom: 1.5px solid #94A3B8;
+  padding: 9px 12px;
+  text-align: left;
+  font-weight: 700;
+  color: #0F172A;
+  font-size: 12.5px;
+  white-space: nowrap;
+}
+
+.chat-grid-table td {
+  border-right: 1px solid #CBD5E1;
+  border-bottom: 1px solid #CBD5E1;
+  padding: 8px 12px;
+  color: #0F172A;
+  vertical-align: middle;
+  background: #FFFFFF;
+}
+
+.chat-grid-table th:last-child,
+.chat-grid-table td:last-child {
+  border-right: none;
+}
+
+.chat-grid-table tbody tr:nth-child(even) td {
+  background: #F8FAFC;
+}
+
+.chat-grid-table tbody tr:hover td {
+  background: #EFF6FF;
+}
+
+.chat-grid-table th.chat-col-num,
+.chat-grid-table td.chat-col-num {
+  text-align: right;
+  font-family: var(--font-mono);
+  font-variant-numeric: tabular-nums;
+  font-weight: 600;
+  white-space: nowrap;
+}
+
+.chat-grid-table td.chat-col-code {
+  font-family: var(--font-mono);
+  font-weight: 600;
+  color: #0A1CFF;
+  white-space: nowrap;
+}
+
+.chat-grid-table td.chat-col-date {
+  font-family: var(--font-mono);
+  white-space: nowrap;
+}
+
+.chat-grid-table td.chat-col-idx {
+  text-align: center;
+  font-family: var(--font-mono);
+  font-weight: 700;
+  color: #475569;
+  width: 44px;
+  white-space: nowrap;
+}
+
+.chat-grid-table tfoot tr.grand-total-row td {
+  position: sticky;
+  bottom: 0;
+  z-index: 4;
+  background: #F1F5F9 !important;
+  color: #0F172A;
+  font-weight: 700;
+  font-size: 13px;
+  border-top: 2px solid #94A3B8;
+  border-bottom: none;
+  padding: 9px 12px;
+}
+
+/* Distinct Professional Tab-Card Table Variants for Non-Ledger Tabs in Chat */
+.chat-table-wrap.chat-variant-tab {
+  border-radius: 10px;
+  border: 1px solid #CBD5E1;
+  box-shadow: 0 2px 8px rgba(15, 23, 42, 0.06);
+  overflow: hidden;
+  margin: 10px 0 8px 0;
+}
+
+.chat-tab-table-banner {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 7px 14px;
+  font-size: 11.5px;
+  font-weight: 700;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  border-bottom: 1px solid #CBD5E1;
+  flex-shrink: 0;
+}
+
+.chat-tab-banner-title {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.chat-tab-banner-dot {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  display: inline-block;
+}
+
+.chat-tab-banner-meta {
+  font-family: var(--font-mono);
+  font-size: 11px;
+  font-weight: 600;
+  padding: 2px 8px;
+  border-radius: 4px;
+  text-transform: none;
+  letter-spacing: 0;
+}
+
+.chat-table-wrap.chat-variant-tab .chat-grid-table th {
+  font-size: 12px;
+  padding: 9px 12px;
+}
+
+.chat-table-wrap.chat-variant-tab .chat-grid-table td {
+  border-color: #CBD5E1;
+  padding: 8px 12px;
+}
+
+/* Variant 1: Review Queue (Warm Amber/Slate Executive Theme) */
+.chat-table-wrap.chat-variant-review {
+  border-left: 4px solid #D97706;
+}
+.chat-table-wrap.chat-variant-review .chat-tab-table-banner {
+  background: #FFFBEB;
+  color: #92400E;
+  border-bottom-color: #FDE68A;
+}
+.chat-table-wrap.chat-variant-review .chat-tab-banner-dot {
+  background: #D97706;
+}
+.chat-table-wrap.chat-variant-review .chat-tab-banner-meta {
+  background: #FEF3C7;
+  color: #92400E;
+}
+.chat-table-wrap.chat-variant-review .chat-grid-table th {
+  background: #FEF3C7;
+  color: #78350F;
+  border-right-color: #FDE68A;
+  border-bottom-color: #F59E0B;
+}
+
+/* Variant 2: Check History (Deep Indigo Verification Theme) */
+.chat-table-wrap.chat-variant-history {
+  border-left: 4px solid #4F46E5;
+}
+.chat-table-wrap.chat-variant-history .chat-tab-table-banner {
+  background: #EEF2FF;
+  color: #3730A3;
+  border-bottom-color: #C7D2FE;
+}
+.chat-table-wrap.chat-variant-history .chat-tab-banner-dot {
+  background: #4F46E5;
+}
+.chat-table-wrap.chat-variant-history .chat-tab-banner-meta {
+  background: #E0E7FF;
+  color: #3730A3;
+}
+.chat-table-wrap.chat-variant-history .chat-grid-table th {
+  background: #EEF2FF;
+  color: #1E1B4B;
+  border-right-color: #C7D2FE;
+  border-bottom-color: #818CF8;
+}
+
+/* Variant 3: Activity Log (Teal Tamper-Evident Audit Theme) */
+.chat-table-wrap.chat-variant-activity {
+  border-left: 4px solid #0D9488;
+}
+.chat-table-wrap.chat-variant-activity .chat-tab-table-banner {
+  background: #F0FDFA;
+  color: #115E59;
+  border-bottom-color: #99F6E4;
+}
+.chat-table-wrap.chat-variant-activity .chat-tab-banner-dot {
+  background: #0D9488;
+}
+.chat-table-wrap.chat-variant-activity .chat-tab-banner-meta {
+  background: #CCFBF1;
+  color: #115E59;
+}
+.chat-table-wrap.chat-variant-activity .chat-grid-table th {
+  background: #F0FDFA;
+  color: #134E4A;
+  border-right-color: #99F6E4;
+  border-bottom-color: #2DD4BF;
+}
+
+/* Variant 4: Tab Comparison / Guide Table */
+.chat-table-wrap.chat-variant-compare {
+  border-left: 4px solid #0A1CFF;
+}
+.chat-table-wrap.chat-variant-compare .chat-tab-table-banner {
+  background: #EFF6FF;
+  color: #1E3A8A;
+  border-bottom-color: #BFDBFE;
+}
+.chat-table-wrap.chat-variant-compare .chat-tab-banner-dot {
+  background: #0A1CFF;
+}
+.chat-table-wrap.chat-variant-compare .chat-tab-banner-meta {
+  background: #DBEAFE;
+  color: #1E3A8A;
+}
+.chat-table-wrap.chat-variant-compare .chat-grid-table th {
+  background: #EFF6FF;
+  color: #1E3A8A;
+  border-right-color: #BFDBFE;
+  border-bottom-color: #60A5FA;
+}
+
+.chat-action-pill {
+  display: inline-block;
+  font-family: var(--font-mono);
+  font-size: 11.5px;
+  font-weight: 600;
+  padding: 2px 7px;
+  border-radius: 4px;
+  background: #E2E8F0;
+  color: #0F172A;
+  border: 1px solid #CBD5E1;
+  white-space: nowrap;
 }
 
 .chat-greeting-message {
@@ -1056,16 +1341,17 @@ body {
    Other Pages & Shared Cards / Buttons (Enterprise Finance Polish)
    ========================================================================== */
 .page-header {
-  margin-bottom: 16px;
-  padding-bottom: 12px;
+  margin-bottom: 8px;
+  padding-bottom: 6px;
   border-bottom: 1px solid var(--border-subtle);
+  flex-shrink: 0;
 }
 
 .page-header-row {
   display: flex;
   align-items: center;
   justify-content: space-between;
-  gap: 16px;
+  gap: 12px;
   flex-wrap: wrap;
 }
 
@@ -1080,48 +1366,48 @@ body {
 
 .page-header h2 {
   font-family: var(--font-display);
-  font-size: 24px;
+  font-size: 18.5px;
   font-weight: 700;
   letter-spacing: -0.015em;
   color: var(--text-primary);
-  line-height: 1.25;
+  line-height: 1.2;
 }
 
 .page-header p:not(.section-kicker) {
-  font-size: 14px;
+  font-size: 12.5px;
   color: var(--text-muted);
-  margin-top: 2px;
+  margin-top: 1px;
 }
 
 .section-title,
 .card h3 {
   font-family: var(--font-display);
-  font-size: 16px;
+  font-size: 15px;
   font-weight: 600;
   color: var(--text-primary);
 }
 
 .section-subtitle {
-  font-size: 14px;
+  font-size: 12.5px;
   color: var(--text-muted);
-  margin-top: 2px;
+  margin-top: 1px;
 }
 
 .card-section-header {
   display: flex;
   align-items: flex-start;
   justify-content: space-between;
-  gap: 12px;
-  margin-bottom: 14px;
+  gap: 10px;
+  margin-bottom: 8px;
   flex-wrap: wrap;
 }
 
 .card {
-  border-radius: 12px;
+  border-radius: 10px;
   border: 1px solid var(--border-subtle);
   background: #FFFFFF;
-  padding: 20px;
-  margin-bottom: 20px;
+  padding: 12px 14px;
+  margin-bottom: 12px;
   box-shadow: none;
 }
 
@@ -1130,13 +1416,13 @@ body {
   display: inline-flex;
   align-items: center;
   gap: 6px;
-  min-height: 32px;
-  padding: 4px 12px;
+  min-height: 28px;
+  padding: 3px 10px;
   border-radius: 8px;
   border: 1px solid var(--border-subtle);
   background: #F8FAFC;
   color: var(--text-secondary);
-  font-size: 13px;
+  font-size: 12.5px;
   font-weight: 600;
   white-space: nowrap;
 }
@@ -1153,11 +1439,12 @@ body {
   color: #B91C1C;
 }
 
-/* KPI Grids (4 cards or 3 cards in one row) */
+/* KPI Grids (4 cards or 3 cards in one compact row) */
 .kpi-grid {
   display: grid;
-  gap: 12px;
-  margin-bottom: 16px;
+  gap: 8px;
+  margin-bottom: 8px;
+  flex-shrink: 0;
 }
 
 .kpi-grid-4 {
@@ -1171,15 +1458,17 @@ body {
 .kpi-card {
   background: #FFFFFF;
   border: 1px solid var(--border-subtle);
-  border-radius: 12px;
-  padding: 14px 16px;
+  border-radius: 9px;
+  padding: 7px 14px;
   display: flex;
-  flex-direction: column;
-  gap: 4px;
+  flex-direction: row;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 8px;
 }
 
 .kpi-label {
-  font-size: 12px;
+  font-size: 11.5px;
   font-weight: 600;
   color: var(--text-muted);
   text-transform: uppercase;
@@ -1187,11 +1476,11 @@ body {
 }
 
 .kpi-val {
-  font-size: 24px;
+  font-size: 18px;
   font-weight: 700;
   font-family: var(--font-sans);
   font-variant-numeric: tabular-nums;
-  line-height: 1.2;
+  line-height: 1.1;
   color: var(--text-primary);
 }
 
@@ -1204,9 +1493,9 @@ body {
   display: flex;
   align-items: center;
   justify-content: space-between;
-  gap: 12px;
+  gap: 8px;
   flex-wrap: wrap;
-  margin-bottom: 14px;
+  margin-bottom: 8px;
 }
 
 .s4-toolbar-left,
@@ -1505,10 +1794,10 @@ label {
 }
 
 .status-banner {
-  margin-bottom: 10px;
-  padding: 8px 12px;
+  margin-bottom: 8px;
+  padding: 6px 10px;
   border-radius: 8px;
-  font-size: 14px;
+  font-size: 13px;
   font-weight: 500;
 }
 
@@ -1541,12 +1830,12 @@ label {
   display: inline-flex;
   align-items: center;
   justify-content: center;
-  height: 24px;
-  min-width: 62px;
-  padding: 0 10px;
+  height: 22px;
+  min-width: 58px;
+  padding: 0 8px;
   border-radius: 6px;
   font-family: var(--font-sans);
-  font-size: 12px;
+  font-size: 11.5px;
   font-weight: 700;
   letter-spacing: 0.02em;
   text-transform: uppercase;
@@ -1559,33 +1848,56 @@ label {
 .badge.FLAG { background: #DBEAFE; color: #1D4ED8; border: 1px solid #BFDBFE; }
 .badge.SKIPPED, .badge.DISABLED { background: #F1F5F9; color: #475569; border: 1px solid #E2E8F0; }
 
+/* ChatGPT-Style HTML Card / Artifact Table Container (All Tab Tables) */
 .table-wrap {
   width: 100%;
   max-width: 100%;
+  max-height: 430px;
+  overflow-y: auto;
   overflow-x: auto;
-  border: 1px solid var(--border-subtle);
-  border-radius: 12px;
-  margin-top: 12px;
+  -webkit-overflow-scrolling: touch;
+  border: 1px solid #CBD5E1;
+  border-radius: 10px;
+  margin-top: 6px;
   background: #FFFFFF;
+  box-shadow: 0 2px 6px rgba(15, 23, 42, 0.05);
 }
 
 table {
   width: 100%;
-  border-collapse: collapse;
+  border-collapse: separate;
+  border-spacing: 0;
   text-align: left;
   font-size: 13px;
   font-variant-numeric: tabular-nums;
+  background: #FFFFFF;
 }
 
 th, td {
-  padding: 10px 12px;
-  border-bottom: 1px solid var(--border-subtle);
+  padding: 8px 12px;
+  border-right: 1px solid #CBD5E1;
+  border-bottom: 1px solid #CBD5E1;
   vertical-align: middle;
   font-size: 13px;
+  line-height: 1.45;
+  color: #0F172A;
 }
 
-tbody tr:last-child td {
-  border-bottom: none;
+th:last-child,
+td:last-child {
+  border-right: none;
+}
+
+tbody tr td {
+  background: #FFFFFF;
+}
+
+tbody tr:nth-child(even) td {
+  background: #F8FAFC;
+}
+
+tbody tr:hover td {
+  background: #F1F5F9;
 }
 
 tbody tr.clickable-row {
@@ -1593,26 +1905,48 @@ tbody tr.clickable-row {
   transition: background 0.12s ease;
 }
 
-tbody tr.clickable-row:hover {
-  background: #F8FAFC;
+tbody tr.clickable-row:hover td {
+  background: #EFF6FF;
 }
 
-th {
-  background: var(--bg-shell);
-  color: var(--text-secondary);
-  font-weight: 600;
-  font-size: 12px;
+thead th {
+  position: sticky;
+  top: 0;
+  z-index: 5;
+  background: #F1F5F9;
+  color: #0F172A;
+  font-weight: 700;
+  font-size: 12.5px;
+  letter-spacing: 0.01em;
+  border-bottom: 1.5px solid #94A3B8;
   white-space: nowrap;
 }
 
 th.num-col, td.num-col {
   text-align: right;
   font-family: var(--font-mono);
+  font-variant-numeric: tabular-nums;
+  font-weight: 600;
+  white-space: nowrap;
 }
 
 td.mono-cell {
   font-family: var(--font-mono);
   font-size: 12.5px;
+  white-space: nowrap;
+}
+
+tfoot.table-grand-total-foot tr.grand-total-row td {
+  position: sticky;
+  bottom: 0;
+  z-index: 4;
+  background: #F1F5F9 !important;
+  color: #0F172A;
+  font-weight: 700;
+  font-size: 13px;
+  border-top: 2px solid #94A3B8;
+  border-bottom: none;
+  padding: 9px 12px;
 }
 
 /* 2-line Reason truncation + Show more */
@@ -1643,13 +1977,13 @@ td.mono-cell {
 .filter-bar {
   display: flex;
   flex-wrap: wrap;
-  gap: 10px;
+  gap: 8px;
   align-items: center;
-  margin-bottom: 12px;
-  padding: 10px 12px;
+  margin-bottom: 8px;
+  padding: 6px 10px;
   background: var(--bg-shell);
   border: 1px solid var(--border-subtle);
-  border-radius: 10px;
+  border-radius: 8px;
 }
 
 .s4-filter-bar {
@@ -1964,8 +2298,8 @@ td.mono-cell {
    S/4HANA Extract: Thin Full-Width Progress Bar & Job Controls
    ========================================================================== */
 .s4-progress-wrap {
-  margin-top: 12px;
-  margin-bottom: 12px;
+  margin-top: 6px;
+  margin-bottom: 6px;
   width: 100%;
 }
 
@@ -1989,8 +2323,8 @@ td.mono-cell {
   align-items: center;
   justify-content: flex-end;
   gap: 12px;
-  margin-top: 6px;
-  font-size: 13px;
+  margin-top: 3px;
+  font-size: 12px;
 }
 
 .s4-progress-text {
@@ -2082,15 +2416,15 @@ td.mono-cell {
   display: flex;
   align-items: center;
   justify-content: space-between;
-  margin-top: 14px;
-  padding-top: 10px;
+  margin-top: 8px;
+  padding-top: 8px;
   border-top: 1px solid var(--border-subtle);
   flex-wrap: wrap;
-  gap: 10px;
+  gap: 8px;
 }
 
 .pagination-info {
-  font-size: 13px;
+  font-size: 12.5px;
   color: var(--text-secondary);
   font-family: var(--font-sans);
   font-weight: 500;
@@ -2105,14 +2439,14 @@ td.mono-cell {
 
 .rows-per-page-label {
   margin-right: 6px;
-  font-size: 13px;
+  font-size: 12.5px;
   color: var(--text-secondary);
 }
 
 .btn-page {
-  min-height: 36px;
-  padding: 5px 12px;
-  font-size: 13px;
+  min-height: 32px;
+  padding: 4px 10px;
+  font-size: 12.5px;
   font-weight: 600;
   border-radius: 8px;
 }
@@ -2124,8 +2458,8 @@ td.mono-cell {
 }
 
 .page-num-btn {
-  min-width: 36px;
-  height: 36px;
+  min-width: 32px;
+  height: 32px;
   padding: 0 8px;
   display: inline-flex;
   align-items: center;
@@ -2133,7 +2467,7 @@ td.mono-cell {
   border: 1px solid var(--border-control);
   border-radius: 8px;
   background: #FFFFFF;
-  font-size: 13px;
+  font-size: 12.5px;
   font-weight: 600;
   color: var(--text-primary);
   cursor: pointer;
@@ -2159,11 +2493,11 @@ td.mono-cell {
    PART 1 & PART 5: Top Summary Bar & Consistency Warning
    ========================================================================== */
 .top-summary-wrap {
-  padding: 10px 20px;
+  padding: 5px 14px;
   background: #FFFFFF;
   border: 1px solid var(--border-subtle);
-  border-radius: 12px;
-  margin-bottom: 14px;
+  border-radius: 9px;
+  margin-bottom: 8px;
   flex-shrink: 0;
 }
 
@@ -2175,9 +2509,9 @@ td.mono-cell {
   display: flex;
   align-items: center;
   flex-wrap: wrap;
-  gap: 6px;
-  font-size: 13px;
-  line-height: 1.5;
+  gap: 4px;
+  font-size: 12.5px;
+  line-height: 1.35;
   color: var(--text-secondary);
 }
 
@@ -2185,14 +2519,14 @@ td.mono-cell {
   display: inline-flex;
   align-items: center;
   gap: 4px;
-  min-height: 26px;
-  padding: 2px 6px;
+  min-height: 22px;
+  padding: 1px 5px;
   border: none;
   border-radius: 6px;
   background: transparent;
   color: var(--text-primary);
   font-family: var(--font-sans);
-  font-size: 13px;
+  font-size: 12.5px;
   font-weight: 500;
   cursor: pointer;
   transition: background 0.14s ease, color 0.14s ease;

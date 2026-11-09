@@ -248,8 +248,63 @@ function createClampedReasonCell(rawReason) {
   return td;
 }
 
+function clearTableGrandTotal(tbodyOrTable) {
+  if (!tbodyOrTable) return;
+  const table = tbodyOrTable.tagName === 'TABLE' ? tbodyOrTable : tbodyOrTable.closest('table');
+  if (!table) return;
+  const oldFoot = table.querySelector('tfoot.table-grand-total-foot');
+  if (oldFoot) oldFoot.remove();
+}
+
+function renderTableGrandTotal(tbodyOrTable, opts = {}) {
+  if (!tbodyOrTable) return;
+  const table = tbodyOrTable.tagName === 'TABLE' ? tbodyOrTable : tbodyOrTable.closest('table');
+  if (!table) return;
+  clearTableGrandTotal(table);
+
+  const {
+    totalCols = 6,
+    amountColIndex = -1,
+    totalAmount = null,
+    label = 'Grand Total',
+    trailingText = '',
+  } = opts;
+
+  const tfoot = document.createElement('tfoot');
+  tfoot.className = 'table-grand-total-foot';
+  const tr = document.createElement('tr');
+  tr.className = 'grand-total-row';
+
+  if (amountColIndex >= 0 && totalAmount !== null && !Number.isNaN(Number(totalAmount))) {
+    const tdLabel = el('td', label);
+    if (amountColIndex > 0) {
+      tdLabel.colSpan = amountColIndex;
+    }
+    const tdAmount = el('td', formatMoney(totalAmount), 'num-col');
+    tr.append(tdLabel, tdAmount);
+
+    const remainingCols = totalCols - amountColIndex - 1;
+    if (remainingCols > 0) {
+      const tdTrail = el('td', trailingText);
+      tdTrail.colSpan = remainingCols;
+      tr.appendChild(tdTrail);
+    }
+  } else {
+    const tdLabel = el('td', label);
+    if (totalCols > 1) {
+      tdLabel.colSpan = totalCols - 1;
+    }
+    const tdVal = el('td', trailingText, 'num-col');
+    tr.append(tdLabel, tdVal);
+  }
+
+  tfoot.appendChild(tr);
+  table.appendChild(tfoot);
+}
+
 function renderTableSkeleton(tbody, colCount, rowCount = 5) {
   if (!tbody) return;
+  clearTableGrandTotal(tbody);
   tbody.textContent = '';
   for (let r = 0; r < rowCount; r++) {
     const tr = document.createElement('tr');
@@ -266,6 +321,7 @@ function renderTableSkeleton(tbody, colCount, rowCount = 5) {
 
 function renderEmptyTableState(tbody, colCount, message, actionLabel = '', onAction = null) {
   if (!tbody) return;
+  clearTableGrandTotal(tbody);
   tbody.textContent = '';
   const tr = document.createElement('tr');
   const td = document.createElement('td');
@@ -1152,11 +1208,200 @@ function renderAiChatResultMessage(res, checkedFileName) {
   btnSave.addEventListener('click', async () => {
     actionStatusEl.className = 'status-banner success';
     actionStatusEl.textContent = 'Result saved to check history.';
+    btnSave.textContent = 'Saved ✓';
+    btnSave.disabled = true;
+    loadTopSummary();
+    if ($('page-history') && $('page-history').classList.contains('active')) {
+      loadCheckHistory(state.historyPage || 1);
+    }
+    if ($('page-activity') && $('page-activity').classList.contains('active')) {
+      loadActivityLog(state.activityPage || 1);
+    }
   });
 
   msgCard.appendChild(actionStatusEl);
 
   return msgCard;
+}
+
+function parseMarkdownTableBlock(tableLines, contextTitle = '') {
+  if (!Array.isArray(tableLines) || tableLines.length < 2) return null;
+  const splitRow = (line) =>
+    String(line || '')
+      .trim()
+      .replace(/^\|/, '')
+      .replace(/\|$/, '')
+      .split('|')
+      .map(c => c.trim());
+
+  const headers = splitRow(tableLines[0]);
+  if (headers.length === 0) return null;
+
+  // Check if row 1 is a separator line like | --- | --- |
+  const isSep = (line) => /^\|?\s*:?-{2,}:?(?:\s*\|\s*:?-{2,}:?)+\s*\|?$/.test(String(line || '').trim());
+  const startRowIdx = isSep(tableLines[1]) ? 2 : 1;
+  const rows = [];
+  for (let i = startRowIdx; i < tableLines.length; i++) {
+    if (isSep(tableLines[i])) continue;
+    const cells = splitRow(tableLines[i]);
+    if (cells.length > 0 && cells.some(Boolean)) {
+      rows.push(cells);
+    }
+  }
+
+  const headerJoined = headers.join(' ').toLowerCase();
+  const ctxLower = String(contextTitle || '').toLowerCase();
+
+  // Determine whether this is the classic Ledger table or one of the other Tab tables
+  let variant = 'ledger';
+  let bannerLabel = '';
+  let bannerMeta = '';
+
+  if (/review\s*queue|open\s*alert/i.test(ctxLower) || /rule\s*\/\s*issue/i.test(headerJoined)) {
+    variant = 'review';
+    bannerLabel = '3. Review Queue · Open Alerts';
+    bannerMeta = `${rows.length} alert${rows.length === 1 ? '' : 's'}`;
+  } else if (/activity\s*log|audit/i.test(ctxLower) || /entry\s*#|timestamp/i.test(headerJoined)) {
+    variant = 'activity';
+    bannerLabel = '5. Activity Log · Audit Trail';
+    bannerMeta = `${rows.length} entr${rows.length === 1 ? 'y' : 'ies'}`;
+  } else if (/check\s*history|total\s*invoices:/i.test(ctxLower) || /\bverdict\b/i.test(headerJoined)) {
+    variant = 'history';
+    bannerLabel = '4. Check History · Verification Log';
+    bannerMeta = `${rows.length} check${rows.length === 1 ? '' : 's'}`;
+  } else if (/difference|తేడా|4\.\s*check\s*history/i.test(ctxLower) || /4\.\s*check\s*history/i.test(headerJoined)) {
+    variant = 'compare';
+    bannerLabel = 'Tab Comparison · System Guide';
+    bannerMeta = 'Overview';
+  }
+
+  const wrapClass = variant === 'ledger'
+    ? 'chat-table-wrap chat-variant-ledger'
+    : `chat-table-wrap chat-variant-tab chat-variant-${variant}`;
+  const wrap = el('div', null, wrapClass);
+
+  if (variant !== 'ledger' && bannerLabel) {
+    const banner = el('div', null, 'chat-tab-table-banner');
+    const titleWrap = el('span', null, 'chat-tab-banner-title');
+    titleWrap.append(
+      el('span', '', 'chat-tab-banner-dot'),
+      el('span', bannerLabel)
+    );
+    const metaEl = el('span', bannerMeta, 'chat-tab-banner-meta');
+    banner.append(titleWrap, metaEl);
+    wrap.appendChild(banner);
+  }
+
+  const table = el('table', null, 'chat-grid-table');
+  const thead = document.createElement('thead');
+  const trHead = document.createElement('tr');
+
+  const numColIndices = new Set();
+  const codeColIndices = new Set();
+  const dateColIndices = new Set();
+  const idxColIndices = new Set();
+  const statusColIndices = new Set();
+  const actionColIndices = new Set();
+
+  headers.forEach((h, colIdx) => {
+    const th = el('th', h);
+    if (/total|amount|inr|value|cost/i.test(h)) {
+      numColIndices.add(colIdx);
+      th.className = 'chat-col-num';
+    } else if (/^#$|^entry\s*#$/i.test(h.trim())) {
+      idxColIndices.add(colIdx);
+      th.className = 'chat-col-idx';
+    } else if (/invoice\s*no|invoice\s*id|^id$/i.test(h)) {
+      codeColIndices.add(colIdx);
+      th.className = 'chat-col-code';
+    } else if (/date|timestamp|time/i.test(h)) {
+      dateColIndices.add(colIdx);
+      th.className = 'chat-col-date';
+    } else if (/^(status|verdict)$/i.test(h.trim())) {
+      statusColIndices.add(colIdx);
+    } else if (/^action$/i.test(h.trim())) {
+      actionColIndices.add(colIdx);
+    }
+    trHead.appendChild(th);
+  });
+  thead.appendChild(trHead);
+  table.appendChild(thead);
+
+  const tbody = document.createElement('tbody');
+  const colSums = {};
+  numColIndices.forEach(idx => { colSums[idx] = 0; });
+  let hasNumericValue = false;
+
+  rows.forEach((cells) => {
+    const tr = document.createElement('tr');
+    headers.forEach((_, colIdx) => {
+      const val = cells[colIdx] !== undefined ? cells[colIdx] : '—';
+      const td = document.createElement('td');
+      const upperVal = String(val).trim().toUpperCase();
+
+      if (variant !== 'ledger' && statusColIndices.has(colIdx) && ['PASS', 'HOLD', 'REJECT'].includes(upperVal)) {
+        td.appendChild(el('span', upperVal, `badge ${upperVal}`));
+      } else if (variant !== 'ledger' && actionColIndices.has(colIdx) && val !== '—') {
+        td.appendChild(el('span', formatActionPlainWord(val), 'chat-action-pill'));
+      } else {
+        td.textContent = val;
+      }
+
+      if (numColIndices.has(colIdx)) {
+        td.className = 'chat-col-num';
+        const cleanedNum = Number(String(val).replace(/[^0-9.-]+/g, ''));
+        if (!Number.isNaN(cleanedNum) && String(val).replace(/[^0-9]+/g, '').length > 0) {
+          colSums[colIdx] = (colSums[colIdx] || 0) + cleanedNum;
+          hasNumericValue = true;
+        }
+      } else if (idxColIndices.has(colIdx)) {
+        td.className = 'chat-col-idx';
+      } else if (codeColIndices.has(colIdx)) {
+        td.className = 'chat-col-code';
+      } else if (dateColIndices.has(colIdx)) {
+        td.className = 'chat-col-date';
+      }
+      tr.appendChild(td);
+    });
+    tbody.appendChild(tr);
+  });
+  table.appendChild(tbody);
+
+  // Requirement 13: Include a Grand Total row whenever applicable
+  if (rows.length > 0 && variant !== 'compare') {
+    const tfoot = document.createElement('tfoot');
+    const trFoot = document.createElement('tr');
+    trFoot.className = 'grand-total-row';
+
+    if (numColIndices.size > 0 && hasNumericValue) {
+      const firstNumIdx = Math.min(...Array.from(numColIndices));
+      if (firstNumIdx > 0) {
+        const tdTotalLabel = el('td', `Grand Total (${rows.length} ${rows.length === 1 ? 'row' : 'rows'})`);
+        tdTotalLabel.colSpan = firstNumIdx;
+        trFoot.appendChild(tdTotalLabel);
+      }
+      for (let c = firstNumIdx; c < headers.length; c++) {
+        if (numColIndices.has(c)) {
+          const tdSum = el('td', formatMoney(colSums[c] || 0), 'chat-col-num');
+          trFoot.appendChild(tdSum);
+        } else {
+          trFoot.appendChild(el('td', c === 0 ? 'Grand Total' : ''));
+        }
+      }
+    } else if (headers.length >= 2) {
+      const tdLabel = el('td', 'Grand Total');
+      tdLabel.colSpan = headers.length - 1;
+      const tdCount = el('td', `${rows.length} ${rows.length === 1 ? 'record' : 'records'}`, 'chat-col-num');
+      trFoot.append(tdLabel, tdCount);
+    }
+    tfoot.appendChild(trFoot);
+    table.appendChild(tfoot);
+  }
+
+  const scrollBox = el('div', null, 'chat-table-scroll');
+  scrollBox.appendChild(table);
+  wrap.appendChild(scrollBox);
+  return wrap;
 }
 
 function renderFormattedAssistantReply(container, rawText) {
@@ -1165,12 +1410,47 @@ function renderFormattedAssistantReply(container, rawText) {
   const text = String(rawText || '');
   const lines = text.split('\n');
 
-  lines.forEach((line, idx) => {
-    if (idx > 0) {
+  let i = 0;
+  let hasAppendedBlock = false;
+  let lastNonEmptyLine = '';
+  while (i < lines.length) {
+    const line = lines[i];
+    const trimmed = line.trim();
+
+    // Detect start of a Markdown pipe table: | Col1 | Col2 | ...
+    if (trimmed.startsWith('|') && trimmed.endsWith('|') && trimmed.split('|').length >= 3) {
+      const tableLines = [];
+      while (i < lines.length) {
+        const tLine = lines[i].trim();
+        if (tLine.startsWith('|') && tLine.includes('|')) {
+          tableLines.push(lines[i]);
+          i++;
+        } else {
+          break;
+        }
+      }
+      const tableNode = parseMarkdownTableBlock(tableLines, lastNonEmptyLine);
+      if (tableNode) {
+        container.appendChild(tableNode);
+        hasAppendedBlock = true;
+        continue;
+      }
+    }
+    if (trimmed) {
+      lastNonEmptyLine = trimmed;
+    }
+
+    if (hasAppendedBlock && trimmed) {
       container.appendChild(document.createTextNode('\n'));
     }
-    const trimmed = line.trim();
-    if (!trimmed) return;
+
+    if (!trimmed) {
+      if (hasAppendedBlock) {
+        container.appendChild(document.createTextNode('\n'));
+      }
+      i++;
+      continue;
+    }
 
     // Match "Label: Value" or "• Label: Value" or "- Label: Value"
     const kvMatch = line.match(/^(\s*(?:[•\-*]\s+|\d+\.\s+)?[^:\n]{2,48}:)(\s+.*)$/);
@@ -1178,19 +1458,25 @@ function renderFormattedAssistantReply(container, rawText) {
       const strongEl = el('strong', kvMatch[1], 'ai-main-label');
       const valEl = el('span', kvMatch[2], 'ai-normal-value');
       container.append(strongEl, valEl);
-      return;
+      hasAppendedBlock = true;
+      i++;
+      continue;
     }
 
     // Match standalone section heading ending with ":"
     if (/^(\s*[^:\n]{3,65}:)\s*$/.test(line)) {
       const strongEl = el('strong', line, 'ai-main-label');
       container.appendChild(strongEl);
-      return;
+      hasAppendedBlock = true;
+      i++;
+      continue;
     }
 
     const spanEl = el('span', line, 'ai-normal-value');
     container.appendChild(spanEl);
-  });
+    hasAppendedBlock = true;
+    i++;
+  }
 }
 
 let chatActionQueue = Promise.resolve();
@@ -1636,7 +1922,7 @@ if ($('s4FileInput')) {
   });
 }
 
-function openS4DetailDrawer(row) {
+function openS4DetailDrawer(row, sourceTab = 's4') {
   const drawer = $('s4DetailDrawer');
   const backdrop = $('s4DrawerBackdrop');
   const titleEl = $('s4DrawerTitle');
@@ -1644,12 +1930,31 @@ function openS4DetailDrawer(row) {
   const bodyEl = $('s4DrawerBody');
   if (!drawer || !bodyEl) return;
 
-  const invNo = formatCellValue(row.invoiceNo || row.invoiceId || row.id);
-  const supp = formatCellValue(row.supplierName);
-  const gstin = formatCellValue(row.supplierGstin);
-  const dateVal = formatCellValue(row.invoiceDate || (row.fields && (row.fields.PostingDate || row.fields.postingDate)));
-  const totalVal = formatMoney(row.total);
-  const statusVal = row.status || 'PASS';
+  let parsedPayload = {};
+  if (row && row.resultJson) {
+    try {
+      parsedPayload = typeof row.resultJson === 'string'
+        ? JSON.parse(row.resultJson || '{}')
+        : (row.resultJson || {});
+    } catch {
+      parsedPayload = {};
+    }
+  }
+
+  const mergedFields = { ...(parsedPayload.fields || {}), ...(row.fields || {}) };
+  const invNo = formatCellValue(row.invoiceNo || row.invoiceId || row.id || mergedFields.invoiceNo);
+  const supp = formatCellValue(row.supplierName || mergedFields.supplierName);
+  const gstin = formatCellValue(row.supplierGstin || mergedFields.supplierGstin);
+  const dateVal = formatCellValue(
+    row.invoiceDate ||
+    mergedFields.invoiceDate ||
+    mergedFields.PostingDate ||
+    mergedFields.postingDate ||
+    (row.createdAt ? String(row.createdAt).slice(0, 10) : '')
+  );
+  const amtNum = row.amountInr !== undefined && row.amountInr !== null ? row.amountInr : row.total;
+  const totalVal = formatMoney(amtNum);
+  const statusVal = row.status || (row.blocked ? 'HOLD' : 'PASS');
 
   if (titleEl) titleEl.textContent = `Invoice ${invNo}`;
   if (subEl) subEl.textContent = supp;
@@ -1674,42 +1979,73 @@ function openS4DetailDrawer(row) {
   addKv('Invoice No', invNo);
   addKv('Supplier', supp);
   addKv('GSTIN', gstin);
-  addKv('Date', dateVal);
+  addKv('Invoice date', dateVal);
+  if (row.postingDate || row.postedAt) {
+    addKv('Posting date', formatCellValue(row.postingDate || String(row.postedAt).slice(0, 10)));
+  }
   addKv('Total (INR)', totalVal);
-  addKv('In ledger', formatLedgerMatchPlain(row.databaseMatch));
-  addKv('In SAP', formatSapMatchPlain(row.sapMatch));
 
-  const extraFields = row.fields || {};
-  if (extraFields.CompanyCode) addKv('Company code', formatCellValue(extraFields.CompanyCode));
-  if (extraFields.FiscalYear) addKv('Fiscal year', formatCellValue(extraFields.FiscalYear));
-  if (extraFields.SupplierInvoiceIDByInvcgParty) addKv('Reference', formatCellValue(extraFields.SupplierInvoiceIDByInvcgParty));
+  if (sourceTab === 'ledger') {
+    addKv('Fiscal year', formatCellValue(row.fiscalYear));
+    addKv('Source', formatCellValue(row.source || 'Import'));
+    if (row.description) {
+      addKv('Description', formatCellValue(row.description));
+    }
+  } else {
+    const dbMatch = row.databaseMatch || parsedPayload.databaseMatch;
+    const sapMatch = row.sapMatch || parsedPayload.sapMatch;
+    if (dbMatch) addKv('In ledger', formatLedgerMatchPlain(dbMatch));
+    if (sapMatch) addKv('In SAP', formatSapMatchPlain(sapMatch));
+    if (row.fileName || row.source) {
+      addKv('File / Source', formatCellValue(row.fileName || row.source));
+    }
+    if (row.createdBy) {
+      addKv('Reviewed by', formatReviewerName(row.createdBy));
+    }
+  }
+
+  if (mergedFields.CompanyCode) addKv('Company code', formatCellValue(mergedFields.CompanyCode));
+  if (mergedFields.FiscalYear && sourceTab !== 'ledger') addKv('Fiscal year', formatCellValue(mergedFields.FiscalYear));
+  if (mergedFields.SupplierInvoiceIDByInvcgParty) addKv('Reference', formatCellValue(mergedFields.SupplierInvoiceIDByInvcgParty));
+  if (mergedFields.description && !row.description) addKv('Description', formatCellValue(mergedFields.description));
 
   summarySec.appendChild(kvGrid);
   bodyEl.appendChild(summarySec);
 
   // Section 2: Active Rule Evaluations
-  const rulesSec = el('div', null, 'drawer-section');
-  rulesSec.appendChild(el('div', 'Rule evaluation', 'drawer-section-title'));
-  const activeResults = Array.isArray(row.activeResults) ? row.activeResults : [];
-  if (activeResults.length > 0) {
-    const rulesList = el('div', null, 'chat-active-rules-list');
-    activeResults.forEach(r => {
-      const line = el('div', null, 'chat-rule-line');
-      const cleanText = String(r.text || '').replace(/^AP-\d+\s*·?\s*/i, '').trim();
-      line.append(
-        el('span', r.tier || 'PASS', `badge ${r.tier || 'PASS'}`),
-        el('span', cleanText || formatCellValue(r.title), 'rule-reason')
-      );
-      rulesList.appendChild(line);
-    });
-    rulesSec.appendChild(rulesList);
-  } else {
-    rulesSec.appendChild(el('div', formatCellValue(row.reason || 'All active rules passed'), 'hint'));
+  if (sourceTab !== 'ledger') {
+    const rulesSec = el('div', null, 'drawer-section');
+    rulesSec.appendChild(el('div', 'Rule evaluation', 'drawer-section-title'));
+    const rawActive = Array.isArray(row.activeResults)
+      ? row.activeResults
+      : (Array.isArray(parsedPayload.activeResults)
+          ? parsedPayload.activeResults
+          : (Array.isArray(parsedPayload.results)
+              ? parsedPayload.results.filter(x => ['AP-02', 'AP-03', 'AP-09', 'AP-11'].includes(x.id))
+              : []));
+    if (rawActive.length > 0) {
+      const rulesList = el('div', null, 'chat-active-rules-list');
+      rawActive.forEach(r => {
+        const line = el('div', null, 'chat-rule-line');
+        const cleanText = String(r.text || '').replace(/^AP-\d+\s*·?\s*/i, '').trim();
+        line.append(
+          el('span', r.tier || 'PASS', `badge ${r.tier || 'PASS'}`),
+          el('span', cleanText || formatCellValue(r.title), 'rule-reason')
+        );
+        rulesList.appendChild(line);
+      });
+      rulesSec.appendChild(rulesList);
+    } else {
+      rulesSec.appendChild(el('div', formatCellValue(row.reason || parsedPayload.explanation || 'All active rules passed'), 'hint'));
+    }
+    bodyEl.appendChild(rulesSec);
   }
-  bodyEl.appendChild(rulesSec);
 
-  // Section 3: Row Notes (e.g. GSTIN not provided, Invoice date not provided, posting date used)
-  const notes = Array.isArray(row.rowNotes) ? row.rowNotes.filter(Boolean) : [];
+  // Section 3: Row Notes
+  const rawNotes = Array.isArray(row.rowNotes)
+    ? row.rowNotes
+    : (Array.isArray(parsedPayload.rowNotes) ? parsedPayload.rowNotes : []);
+  const notes = rawNotes.filter(Boolean);
   if (notes.length > 0) {
     const notesSec = el('div', null, 'drawer-section');
     notesSec.appendChild(el('div', 'Row notes', 'drawer-section-title'));
@@ -1793,6 +2129,7 @@ function renderS4Table() {
 
   // Server check results: 6 columns (Invoice No, Supplier, Date, Total (INR), Status, Reason)
   if (state.s4Results && state.s4Results.length > 0) {
+    let sumTotal = 0;
     state.s4Results.forEach(r => {
       const tr = document.createElement('tr');
       tr.className = 'clickable-row';
@@ -1803,6 +2140,9 @@ function renderS4Table() {
 
       const reasonText = r.reason || (r.status === 'PASS' ? 'All active rules passed' : '—');
       const tdReason = createClampedReasonCell(reasonText);
+
+      const numAmt = Number(r.total);
+      if (!Number.isNaN(numAmt)) sumTotal += numAmt;
 
       tr.append(
         el('td', formatCellValue(r.invoiceNo || r.invoiceId), 'mono-cell'),
@@ -1823,12 +2163,20 @@ function renderS4Table() {
 
       tbody.appendChild(tr);
     });
+    renderTableGrandTotal(tbody, {
+      totalCols: 6,
+      amountColIndex: 3,
+      totalAmount: sumTotal,
+      label: `Grand Total (${state.s4Results.length} ${state.s4Results.length === 1 ? 'invoice' : 'invoices'})`,
+      trailingText: 'INR',
+    });
     return;
   }
 
   // Pre-check preview if s4List is populated but check hasn't run yet
   if (state.s4List && state.s4List.length > 0 && !state.currentJobId) {
     const previewRows = state.s4List.slice(0, 50);
+    let sumPreview = 0;
     previewRows.forEach(inv => {
       const tr = document.createElement('tr');
       tr.className = 'clickable-row';
@@ -1836,17 +2184,28 @@ function renderS4Table() {
       tdStatus.appendChild(el('span', 'HOLD', 'badge SKIPPED'));
       tdStatus.firstChild.textContent = 'Ready';
 
+      const rawAmt = inv.total !== undefined ? inv.total : inv.InvoiceGrossAmount;
+      const numAmt = Number(rawAmt);
+      if (!Number.isNaN(numAmt)) sumPreview += numAmt;
+
       const dateVal = formatCellValue(inv.invoiceDate || inv.PostingDate || inv.postingDate);
       tr.append(
         el('td', formatCellValue(inv.invoiceNo || inv.SupplierInvoice || inv.id), 'mono-cell'),
         el('td', formatCellValue(inv.supplierName || inv.InvoicingParty)),
         el('td', dateVal, 'mono-cell'),
-        el('td', formatMoney(inv.total !== undefined ? inv.total : inv.InvoiceGrossAmount), 'num-col'),
+        el('td', formatMoney(rawAmt), 'num-col'),
         tdStatus,
         createClampedReasonCell('Click "Check all" to evaluate')
       );
       tr.addEventListener('click', () => openS4DetailDrawer(inv));
       tbody.appendChild(tr);
+    });
+    renderTableGrandTotal(tbody, {
+      totalCols: 6,
+      amountColIndex: 3,
+      totalAmount: sumPreview,
+      label: `Grand Total (${previewRows.length} ${previewRows.length === 1 ? 'invoice' : 'invoices'})`,
+      trailingText: 'INR',
     });
     return;
   }
@@ -1885,6 +2244,7 @@ function renderSapTestTable(invoices = [], autoShow = true) {
   tbody.textContent = '';
 
   if (!Array.isArray(invoices) || invoices.length === 0) {
+    clearTableGrandTotal(tbody);
     wrap.classList.add('hidden');
     return;
   }
@@ -1897,8 +2257,13 @@ function renderSapTestTable(invoices = [], autoShow = true) {
     wrap.classList.remove('hidden');
   }
 
+  let sumGross = 0;
   for (const row of invoices) {
     const tr = document.createElement('tr');
+    const numGross = Number(row.InvoiceGrossAmount);
+    if (!Number.isNaN(numGross) && row.InvoiceGrossAmount !== '' && row.InvoiceGrossAmount !== undefined) {
+      sumGross += numGross;
+    }
     tr.append(
       el('td', formatCellValue(row.SupplierInvoice), 'mono-cell'),
       el('td', formatCellValue(row.FiscalYear), 'mono-cell'),
@@ -1913,6 +2278,13 @@ function renderSapTestTable(invoices = [], autoShow = true) {
     );
     tbody.append(tr);
   }
+  renderTableGrandTotal(tbody, {
+    totalCols: 10,
+    amountColIndex: 4,
+    totalAmount: sumGross,
+    label: `Grand Total (${invoices.length} sample ${invoices.length === 1 ? 'invoice' : 'invoices'})`,
+    trailingText: 'INR',
+  });
 }
 
 if ($('btnToggleSapSample')) {
@@ -2240,12 +2612,16 @@ async function executeDatabaseSearch(page = 1) {
       return;
     }
 
+    let sumSearchTotal = 0;
     for (const r of records) {
       const tr = document.createElement('tr');
       const isBlocked = Boolean(r.blocked);
       const statusBadge = el('span', isBlocked ? 'HOLD' : 'PASS', `badge ${isBlocked ? 'HOLD' : 'PASS'}`);
       const tdStatus = document.createElement('td');
       tdStatus.appendChild(statusBadge);
+
+      const numAmt = Number(r.total);
+      if (!Number.isNaN(numAmt)) sumSearchTotal += numAmt;
 
       tr.append(
         el('td', formatCellValue(r.invoiceNo), 'mono-cell'),
@@ -2259,6 +2635,13 @@ async function executeDatabaseSearch(page = 1) {
       );
       tbody.append(tr);
     }
+    renderTableGrandTotal(tbody, {
+      totalCols: 8,
+      amountColIndex: 4,
+      totalAmount: sumSearchTotal,
+      label: `Grand Total (${records.length} ${records.length === 1 ? 'record' : 'records'})`,
+      trailingText: 'INR',
+    });
     setBanner('searchDbBanner', `Found ${total} record(s) in ledger · ${sourceLabel}`, 'success');
     renderPagination('searchDb', {
       page: data.page || targetPage,
@@ -2707,6 +3090,12 @@ function renderAlertsTable() {
 
     tbody.appendChild(tr);
   }
+  renderTableGrandTotal(tbody, {
+    totalCols: colCount,
+    amountColIndex: -1,
+    label: 'Grand Total (Review Queue)',
+    trailingText: `${state.alertsList.length} ${state.alertsList.length === 1 ? 'alert' : 'alerts'}`,
+  });
 }
 
 if ($('filterAlertsStatus')) {
@@ -2806,6 +3195,7 @@ function renderHistoryTable() {
     return;
   }
 
+  let sumHistoryTotal = 0;
   for (const r of state.historyList) {
     const tr = document.createElement('tr');
     const timeStr = r.createdAt ? new Date(r.createdAt).toLocaleString() : '—';
@@ -2814,6 +3204,9 @@ function renderHistoryTable() {
     const suppName = formatCellValue(r.supplierName);
     const gstinStr = formatCellValue(r.supplierGstin);
     const suppCellText = gstinStr !== '—' ? `${suppName} (${gstinStr})` : suppName;
+
+    const numAmt = Number(r.total);
+    if (!Number.isNaN(numAmt)) sumHistoryTotal += numAmt;
 
     const tdSt = document.createElement('td');
     tdSt.appendChild(el('span', r.status || 'PASS', `badge ${r.status || 'PASS'}`));
@@ -2827,8 +3220,24 @@ function renderHistoryTable() {
       tdSt,
       el('td', formatReviewerName(r.createdBy))
     );
+    tr.className = 'clickable-row';
+    tr.tabIndex = 0;
+    tr.addEventListener('click', () => openS4DetailDrawer(r, 'history'));
+    tr.addEventListener('keydown', (e) => {
+      if (e.key === 'Enter' || e.key === ' ') {
+        e.preventDefault();
+        openS4DetailDrawer(r, 'history');
+      }
+    });
     tbody.append(tr);
   }
+  renderTableGrandTotal(tbody, {
+    totalCols: 7,
+    amountColIndex: 4,
+    totalAmount: sumHistoryTotal,
+    label: `Grand Total (${state.historyList.length} ${state.historyList.length === 1 ? 'check' : 'checks'})`,
+    trailingText: 'INR',
+  });
 }
 
 if ($('filterHistoryLimit')) {
@@ -3088,6 +3497,12 @@ function renderActivityTable() {
     );
     tbody.append(tr);
   }
+  renderTableGrandTotal(tbody, {
+    totalCols: 5,
+    amountColIndex: -1,
+    label: 'Grand Total (Activity Log)',
+    trailingText: `${state.activityList.length} ${state.activityList.length === 1 ? 'entry' : 'entries'}`,
+  });
 }
 
 if ($('filterActivityAction')) {
@@ -3120,6 +3535,37 @@ if ($('btnExportActivityCsv')) {
       lines.push([row.ts, actionPlain, fileSource, resVal, byVal].map(escapeCsv).join(','));
     }
     triggerDownload('\uFEFF' + lines.join('\r\n'), 'blus-invoice-agent-activity-log.csv', 'text/csv;charset=utf-8');
+  });
+}
+
+async function downloadActivityExcel() {
+  const action = $('filterActivityAction') ? $('filterActivityAction').value : 'ALL';
+  const view = state.activityView || 'CHECKS';
+  const r = await fetch('/fraud/exportActivityExcel', {
+    method: 'POST',
+    headers: getHeaders(),
+    body: JSON.stringify({ action, view }),
+  });
+  if (!r.ok) {
+    throw new Error(`Activity Log Excel download failed (${r.status})`);
+  }
+  const xlsxArrayBuffer = await r.arrayBuffer();
+  const xlsxBlob = new Blob([xlsxArrayBuffer], {
+    type: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+  });
+  triggerDownload(
+    xlsxBlob,
+    'blus-invoice-agent-activity-log.xlsx',
+    'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet'
+  );
+}
+
+if ($('btnExportActivityExcel')) {
+  $('btnExportActivityExcel').addEventListener('click', () => {
+    downloadActivityExcel().catch(err => {
+      console.error(err);
+      showToast(err.message, 'error');
+    });
   });
 }
 
@@ -3334,9 +3780,15 @@ function renderLedgerTable() {
     return;
   }
 
+  let sumLedgerTotal = 0;
   for (const r of state.ledgerList) {
     const tr = document.createElement('tr');
+    tr.className = 'clickable-row';
+    tr.tabIndex = 0;
     const amt = r.amountInr !== undefined && r.amountInr !== null ? r.amountInr : r.total;
+    const numAmt = Number(amt);
+    if (!Number.isNaN(numAmt)) sumLedgerTotal += numAmt;
+
     tr.append(
       el('td', formatCellValue(r.invoiceNo), 'mono-cell'),
       el('td', formatCellValue(r.supplierName)),
@@ -3347,8 +3799,22 @@ function renderLedgerTable() {
       el('td', formatCellValue(r.fiscalYear), 'mono-cell'),
       el('td', formatCellValue(r.source || 'Import'))
     );
+    tr.addEventListener('click', () => openS4DetailDrawer(r, 'ledger'));
+    tr.addEventListener('keydown', (e) => {
+      if (e.key === 'Enter' || e.key === ' ') {
+        e.preventDefault();
+        openS4DetailDrawer(r, 'ledger');
+      }
+    });
     tbody.appendChild(tr);
   }
+  renderTableGrandTotal(tbody, {
+    totalCols: 8,
+    amountColIndex: 5,
+    totalAmount: sumLedgerTotal,
+    label: `Grand Total (${state.ledgerList.length} ${state.ledgerList.length === 1 ? 'invoice' : 'invoices'})`,
+    trailingText: 'INR',
+  });
 }
 
 if ($('btnLedgerSearch')) {
