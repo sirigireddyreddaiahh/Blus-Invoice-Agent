@@ -80,6 +80,18 @@ function toDisplayStatusTerm(res, verdict, hasNoInvoiceData = false) {
   return 'PASS';
 }
 
+function formatIST(value, withTime = true) {
+  if (!value) return '—';
+  const d = new Date(value);
+  if (isNaN(d.getTime())) return String(value);
+  const opts = { timeZone: 'Asia/Kolkata', day: '2-digit', month: '2-digit', year: 'numeric' };
+  if (withTime) {
+    Object.assign(opts, { hour: '2-digit', minute: '2-digit', second: '2-digit', hour12: true });
+    return d.toLocaleString('en-IN', opts);
+  }
+  return d.toLocaleDateString('en-IN', opts);
+}
+
 const state = {
   user: 'user',
   roles: ['APClerk', 'APController', 'Auditor'],
@@ -1950,7 +1962,7 @@ function openS4DetailDrawer(row, sourceTab = 's4') {
     mergedFields.invoiceDate ||
     mergedFields.PostingDate ||
     mergedFields.postingDate ||
-    (row.createdAt ? String(row.createdAt).slice(0, 10) : '')
+    (row.createdAt ? formatIST(row.createdAt, false) : '')
   );
   const amtNum = row.amountInr !== undefined && row.amountInr !== null ? row.amountInr : row.total;
   const totalVal = formatMoney(amtNum);
@@ -1981,7 +1993,7 @@ function openS4DetailDrawer(row, sourceTab = 's4') {
   addKv('GSTIN', gstin);
   addKv('Invoice date', dateVal);
   if (row.postingDate || row.postedAt) {
-    addKv('Posting date', formatCellValue(row.postingDate || String(row.postedAt).slice(0, 10)));
+    addKv('Posting date', formatCellValue(row.postingDate || formatIST(row.postedAt, false)));
   }
   addKv('Total (INR)', totalVal);
 
@@ -2631,7 +2643,7 @@ async function executeDatabaseSearch(page = 1) {
         el('td', formatMoney(r.total), 'num-col'),
         el('td', formatCellValue(r.description)),
         tdStatus,
-        el('td', r.postedAt ? new Date(r.postedAt).toLocaleString() : '—', 'mono-cell')
+        el('td', r.postedAt ? formatIST(r.postedAt) : '—', 'mono-cell')
       );
       tbody.append(tr);
     }
@@ -3198,7 +3210,7 @@ function renderHistoryTable() {
   let sumHistoryTotal = 0;
   for (const r of state.historyList) {
     const tr = document.createElement('tr');
-    const timeStr = r.createdAt ? new Date(r.createdAt).toLocaleString() : '—';
+    const timeStr = r.createdAt ? formatIST(r.createdAt) : '—';
     const fileStr = formatCellValue(r.fileName || r.source);
     const invNoStr = formatCellValue(r.invoiceNo);
     const suppName = formatCellValue(r.supplierName);
@@ -3469,7 +3481,7 @@ function renderActivityTable() {
   for (const row of state.activityList) {
     const parsed = parseAuditDetail(row.detail, row.action);
     const tr = document.createElement('tr');
-    const timeStr = row.ts ? new Date(row.ts).toLocaleString() : '—';
+    const timeStr = row.ts ? formatIST(row.ts) : '—';
     const actionLabel = formatActionPlainWord(row.action);
     const fileOrSource = formatCellValue(row.fileName || parsed.file);
 
