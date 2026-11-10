@@ -4,6 +4,38 @@ const express = require('express');
 const fs = require('fs');
 const path = require('path');
 
+// Safe loader for local .env files and /etc/secrets mounts (never throws)
+try {
+  const envCandidates = [
+    path.join(__dirname, '.env'),
+    path.join(__dirname, '.env.local'),
+    '/etc/secrets/.env',
+  ];
+  for (const envPath of envCandidates) {
+    try {
+      if (fs.existsSync(envPath) && typeof process.loadEnvFile === 'function') {
+        process.loadEnvFile(envPath);
+      }
+    } catch (_) {}
+  }
+  try {
+    if (fs.existsSync('/etc/secrets')) {
+      const secretFiles = fs.readdirSync('/etc/secrets');
+      for (const file of secretFiles) {
+        try {
+          const fullPath = path.join('/etc/secrets', file);
+          if (fs.existsSync(fullPath) && fs.statSync(fullPath).isFile() && !process.env[file]) {
+            process.env[file] = fs.readFileSync(fullPath, 'utf8').trim();
+          }
+        } catch (_) {}
+      }
+    }
+  } catch (_) {}
+} catch (_) {}
+
+// Client configuration: enable LLM invoice data access
+process.env.ALLOW_INVOICE_DATA_TO_LLM = 'true';
+
 const {
   HISTORY_EXPORT_HEADERS,
   S4_EXPORT_HEADERS,
@@ -34,27 +66,6 @@ const {
 async function seedPostedIfEmpty() {
   const U = require('./srv/rules/util');
   const masters = JSON.parse(fs.readFileSync(path.join(__dirname, 'data/masters.json'), 'utf8'));
-  const existing = await cds.run(SELECT.from('ap.Posted'));
-  if (existing && existing.length > 0) {
-    for (const r of existing) {
-      const updates = {};
-      if (!r.fiscalYear && r.invoiceDate) {
-        updates.fiscalYear = U.fiscalYear(r.invoiceDate);
-      }
-      if (!r.source) {
-        updates.source = 'Import';
-      }
-      if (!r.supplierName && r.supplierGstin) {
-        const v = (masters.vendors || []).find(x => x.gstin === r.supplierGstin);
-        if (v) updates.supplierName = v.name;
-      }
-      if (Object.keys(updates).length > 0 && r.ID) {
-        await cds.run(UPDATE('ap.Posted').set(updates).where({ ID: r.ID }));
-      }
-    }
-    return;
-  }
-
   const csvPath = path.join(__dirname, 'db/data/ap-Posted.csv');
   if (!fs.existsSync(csvPath)) return;
   const lines = fs.readFileSync(csvPath, 'utf8').trim().split('\n');
@@ -74,8 +85,30 @@ async function seedPostedIfEmpty() {
     }
     return row;
   });
-  if (entries.length > 0) {
-    await cds.run(INSERT.into('ap.Posted').entries(entries));
+
+  const existing = await cds.run(SELECT.from('ap.Posted'));
+  const existingIdSet = new Set((existing || []).map(r => String(r.ID)));
+  const existingInvSet = new Set((existing || []).map(r => U.normInvoiceNo(r.invoiceNo)));
+
+  const allowTestSeed = process.env.ALLOW_TEST_SEED === 'true';
+  const prodInvoices = new Set(['GVF-INV-0456', 'TMC-AMC-SEP26', '51109301', '51109302']);
+
+  // Insert only rows whose ID does not already exist; never delete or overwrite existing ledger rows
+  const rowsToInsert = entries.filter(e => {
+    if (existingIdSet.has(String(e.ID)) || existingInvSet.has(U.normInvoiceNo(e.invoiceNo))) {
+      return false;
+    }
+    // Block test data unless ALLOW_TEST_SEED is "true"
+    if (!allowTestSeed && !prodInvoices.has(e.invoiceNo)) {
+      if (e.invoiceDate && e.invoiceDate > '2026-11-10') return false;
+      if (/^0000|^1111/i.test(String(e.ID || ''))) return false;
+    }
+    return true;
+  });
+
+  if (rowsToInsert.length > 0) {
+    await cds.run(INSERT.into('ap.Posted').entries(rowsToInsert));
+    console.log(`Seeded ${rowsToInsert.length} new row(s) into ap.Posted`);
   }
 }
 
@@ -382,27 +415,14 @@ async function main() {
     },
   }));
 
-  // Connect to DB and deploy schema
-  cds.model = await cds.load(['db/schema.cds', 'srv/fraud-service.cds']);
-  const db = await cds.connect.to('db');
-  if (db.kind !== 'hana') {
-    await cds.deploy(cds.model).to(db);
-  } else {
-    cds.db = cds.services.db = db;
-    if (!db.model) db.model = cds.compile.for.nodejs(cds.model);
-  }
+  // Connect to DB (deferred if unreachable or slow)
   try {
-    await db.run('CREATE INDEX IF NOT EXISTS idx_posted_gstin_fy_inv ON ap_Posted (supplierGstin, fiscalYear, invoiceNo)');
-    await db.run('CREATE INDEX IF NOT EXISTS idx_posted_gstin_amt_date ON ap_Posted (supplierGstin, total, invoiceDate)');
-    await db.run('CREATE INDEX IF NOT EXISTS idx_checks_job_id ON ap_Checks (jobId)');
+    cds.model = await cds.load(['db/schema.cds', 'srv/fraud-service.cds']);
+    const db = await cds.connect.to('db');
+    cds.db = cds.services.db = db;
   } catch (err) {
-    console.log('Index setup note:', err.message);
+    console.log('Initial DB connection deferred:', err.message);
   }
-  await seedPostedIfEmpty();
-
-  // Background Job queue helpers and startup recovery
-  const { getJob, cancelJob, resumeJob, markInterruptedJobsAsFailed } = require('./srv/lib/queue');
-  await markInterruptedJobsAsFailed();
 
   // Streaming CSV and Excel (.xlsx) download endpoints
   app.get('/fraud/exportHistoryCsv', handleExportHistoryCsv);
@@ -816,12 +836,72 @@ async function main() {
   app.get('/fraud/fetchFromSapNow', handleFetchFromSapNow);
   app.post('/fraud/fetchFromSapNow', handleFetchFromSapNow);
 
+  // Diagnostic endpoint for LLM status
+  app.get('/fraud/llmstatus', (req, res) => {
+    const { getLlmStatus } = require('./srv/lib/agent-tools');
+    res.setHeader('Cache-Control', 'no-store, no-cache, must-revalidate, proxy-revalidate');
+    res.status(200).json(getLlmStatus());
+  });
+
   // Serve FraudService via CAP
   await cds.serve('FraudService').from('srv/fraud-service').in(app);
 
+  // START LISTENING FIRST BEFORE DB SETUP RUNS
   app.listen(PORT, '0.0.0.0', () => {
     console.log(`Blus Invoice Agent listening on http://0.0.0.0:${PORT}`);
+    console.log(`gemini: key present ${process.env.GEMINI_API_KEY ? 'yes' : 'no'}`);
+
+    // Startup database work (CREATE INDEX, seed) in background - 3 tries, 5s apart, never throws
+    runBackgroundDbSetup().catch(err => {
+      console.log('DB background setup failed:', err.message);
+    });
+
+    // Startup live call when ALLOW_INVOICE_DATA_TO_LLM is "true"
+    if (process.env.ALLOW_INVOICE_DATA_TO_LLM === 'true') {
+      const { triggerStartupLlmCheck } = require('./srv/lib/agent-tools');
+      triggerStartupLlmCheck().catch(err => {
+        console.log('Startup live check failed:', err.message);
+      });
+    }
   });
+}
+
+async function runBackgroundDbSetup(maxRetries = 3, delayMs = 5000) {
+  for (let attempt = 1; attempt <= maxRetries; attempt++) {
+    try {
+      if (!cds.db && cds.connect) {
+        try {
+          cds.db = await cds.connect.to('db');
+        } catch (_) {}
+      }
+      const db = cds.db || (cds.services && cds.services.db);
+      if (db) {
+        if (db.kind !== 'hana') {
+          await cds.deploy(cds.model).to(db);
+        } else {
+          if (!db.model) db.model = cds.compile.for.nodejs(cds.model);
+        }
+        try {
+          await db.run('CREATE INDEX IF NOT EXISTS idx_posted_gstin_fy_inv ON ap_Posted (supplierGstin, fiscalYear, invoiceNo)');
+          await db.run('CREATE INDEX IF NOT EXISTS idx_posted_gstin_amt_date ON ap_Posted (supplierGstin, total, invoiceDate)');
+          await db.run('CREATE INDEX IF NOT EXISTS idx_checks_job_id ON ap_Checks (jobId)');
+        } catch (_) {}
+      }
+      await seedPostedIfEmpty();
+      try {
+        const { markInterruptedJobsAsFailed } = require('./srv/lib/queue');
+        await markInterruptedJobsAsFailed();
+      } catch (_) {}
+      console.log('DB background setup completed successfully.');
+      return;
+    } catch (err) {
+      console.log(`DB background setup attempt ${attempt}/${maxRetries} failed: ${err.message}`);
+      if (attempt < maxRetries) {
+        await new Promise(r => setTimeout(r, delayMs));
+      }
+    }
+  }
+  console.log('DB setup reached maximum retries; HTTP server remains active.');
 }
 
 main().catch(err => {

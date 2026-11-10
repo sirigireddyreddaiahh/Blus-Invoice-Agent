@@ -38,7 +38,7 @@ modules:
       memory: 512M
       disk-quota: 1024M
     properties:
-      ALLOW_INVOICE_DATA_TO_LLM: "false"
+      ALLOW_INVOICE_DATA_TO_LLM: "true"
       CLIENT_DB_LOOKUP_ENABLED: "false"
       TESSDATA_PATH: "/home/vcap/app"
       SAP_MODE: "mock"
