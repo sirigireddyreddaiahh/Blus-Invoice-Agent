@@ -86,10 +86,59 @@ function formatIST(value, withTime = true) {
   if (isNaN(d.getTime())) return String(value);
   const opts = { timeZone: 'Asia/Kolkata', day: '2-digit', month: '2-digit', year: 'numeric' };
   if (withTime) {
-    Object.assign(opts, { hour: '2-digit', minute: '2-digit', second: '2-digit', hour12: true });
+    Object.assign(opts, { hour: '2-digit', minute: '2-digit', second: '2-digit', hour12: false });
     return d.toLocaleString('en-IN', opts);
   }
   return d.toLocaleDateString('en-IN', opts);
+}
+
+function startISTClock() {
+  let clockEl = document.getElementById('istClock');
+  if (!clockEl) {
+    const brandHeader = document.querySelector('.brand-header');
+    if (brandHeader) {
+      clockEl = document.createElement('span');
+      clockEl.id = 'istClock';
+      clockEl.className = 'ist-clock';
+      clockEl.textContent = '--:--:--';
+      clockEl.style.cssText = 'margin-left:auto;font-family:var(--font-mono,monospace);font-size:13px;font-weight:600;color:var(--text-secondary,#a0aec0);letter-spacing:0.02em;padding:4px 10px;border-radius:4px;background:rgba(255,255,255,0.04);border:1px solid rgba(255,255,255,0.08);';
+      brandHeader.appendChild(clockEl);
+    }
+  }
+  if (!clockEl) return;
+
+  let serverOffsetMs = 0;
+  let isOffline = false;
+
+  const syncWithServer = async () => {
+    try {
+      const res = await fetch('/fraud/serverTime');
+      if (!res.ok) throw new Error('HTTP ' + res.status);
+      const data = await res.json();
+      if (data && data.utc) {
+        serverOffsetMs = Date.parse(data.utc) - Date.now();
+        isOffline = false;
+      }
+    } catch (_err) {
+      isOffline = true;
+    }
+  };
+
+  const tick = () => {
+    const now = new Date(Date.now() + serverOffsetMs);
+    const timeStr = now.toLocaleTimeString('en-IN', {
+      timeZone: 'Asia/Kolkata',
+      hour: '2-digit',
+      minute: '2-digit',
+      second: '2-digit',
+      hour12: false,
+    });
+    clockEl.textContent = isOffline ? `${timeStr} (offline)` : timeStr;
+  };
+
+  syncWithServer().then(tick);
+  setInterval(tick, 1000);
+  setInterval(syncWithServer, 60000);
 }
 
 const state = {
@@ -3919,6 +3968,7 @@ async function initApp() {
 
   applyRolePermissions();
   loadTopSummary();
+  startISTClock();
 }
 
 initApp();

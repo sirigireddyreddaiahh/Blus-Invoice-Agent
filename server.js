@@ -843,6 +843,26 @@ async function main() {
     res.status(200).json(getLlmStatus());
   });
 
+  // Server clock endpoint in India time (IST, 24-hour format)
+  app.get('/fraud/serverTime', (req, res) => {
+    const now = new Date();
+    const ist = now.toLocaleString('en-IN', {
+      timeZone: 'Asia/Kolkata',
+      day: '2-digit',
+      month: '2-digit',
+      year: 'numeric',
+      hour: '2-digit',
+      minute: '2-digit',
+      second: '2-digit',
+      hour12: false,
+    });
+    res.setHeader('Cache-Control', 'no-store, no-cache, must-revalidate, proxy-revalidate');
+    res.status(200).json({
+      utc: now.toISOString(),
+      ist,
+    });
+  });
+
   // Serve FraudService via CAP
   await cds.serve('FraudService').from('srv/fraud-service').in(app);
 
