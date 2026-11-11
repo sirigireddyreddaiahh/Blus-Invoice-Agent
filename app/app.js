@@ -3,7 +3,7 @@
 const ACTIVE_RULE_IDS = ['AP-02', 'AP-03', 'AP-09', 'AP-11'];
 const MAX_FILE_BYTES = 10 * 1024 * 1024; // 10 MB
 
-const UNSUPPORTED_FILE_MSG = 'Only PDF, PNG and JPG files are supported.';
+const UNSUPPORTED_FILE_MSG = 'Only PDF, PNG, JPG, CSV, and JSON invoice files are supported.';
 const FILE_TOO_LARGE_MSG = 'File is too large. Maximum size is 10 MB.';
 const RULES_CHECK_DISCLAIMER = 'Rules check only. Does not prove the invoice is genuine.';
 const CHAT_GREETING_MSG = "Hello! I'm Blus Invoice Agent. Upload an invoice and I'll check it for duplicates and split invoices.";
@@ -432,9 +432,14 @@ async function odataGet(entityAndQuery) {
   return data.value || [];
 }
 
+let composerBannerTimer = null;
 function setBanner(id, message, type = 'info') {
   const b = $(id);
   if (!b) return;
+  if (id === 'chatComposerBanner' && composerBannerTimer) {
+    clearTimeout(composerBannerTimer);
+    composerBannerTimer = null;
+  }
   if (!message) {
     b.className = 'status-banner hidden';
     b.textContent = '';
@@ -442,6 +447,12 @@ function setBanner(id, message, type = 'info') {
   }
   b.className = `status-banner ${type}`;
   b.textContent = message;
+  if (id === 'chatComposerBanner') {
+    composerBannerTimer = setTimeout(() => {
+      b.className = 'status-banner hidden';
+      b.textContent = '';
+    }, 4500);
+  }
 }
 
 function showToast(message, type = 'success', duration = 4500) {
@@ -1700,15 +1711,7 @@ async function performAiChatCheck(userPromptText = '') {
         if (validInvoices.length === 0) {
           thinkingBubble.remove();
           const msgBubble = el('div', null, 'chat-bubble assistant');
-          msgBubble.appendChild(el('div', `${fileToSend.name}: 0 invoices checked (${rowErrors.length} row(s) rejected).`));
-          msgBubble.appendChild(el('div', colsFoundText, 'hint'));
-          if (rowErrors.length > 0) {
-            const errTitle = el('strong', 'Rows with errors:', 'ai-main-label');
-            msgBubble.appendChild(errTitle);
-            rowErrors.slice(0, 20).forEach((er, idx) => {
-              msgBubble.appendChild(el('div', `• Row ${er.row || idx + 1}: ${er.reason || er.invoiceNo || 'Failed to read'}`));
-            });
-          }
+          msgBubble.textContent = `"${fileToSend.name}" does not contain valid supplier invoice data (${rowErrors.length} row(s) missing required invoice fields such as Invoice Number, Supplier Name, or Gross Amount). Please upload a valid S/4HANA invoice extract or a clear supplier invoice in PDF, JPG, or PNG format.`;
           appendMessageToChat(msgBubble);
           loadTopSummary();
           return;
@@ -2059,12 +2062,9 @@ async function performAiChatCheck(userPromptText = '') {
           ? finalJob.errors
           : rowErrors;
         if (allErrors.length > 0) {
-          const errWrap = el('div', null, 'result-fields-lines');
-          errWrap.style.marginTop = '8px';
-          errWrap.appendChild(el('strong', 'Rows with errors:', 'result-field-label'));
-          allErrors.slice(0, 20).forEach((er, idx) => {
-            errWrap.appendChild(el('div', `• Row ${er.row || idx + 1}: ${er.reason || `${er.invoiceNo || 'Row'}: Failed`}`, 'result-field-line'));
-          });
+          const errWrap = el('div', null, 'chat-guidance-banner');
+          errWrap.style.marginTop = '10px';
+          errWrap.textContent = `Note: ${allErrors.length} row(s) in this file were skipped due to missing required fields (Invoice Number, Supplier Name, or Gross Amount).`;
           summaryBubble.appendChild(errWrap);
         }
 

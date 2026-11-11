@@ -57,15 +57,36 @@ function resetChatModelStats() {
   lastChatModelLog = null;
 }
 
+let invalidKeyValue = '';
+
+function isObviouslyInvalidApiKey(rawKey) {
+  const k = String(rawKey || '').trim();
+  if (!k || k.length < 16) return true;
+  if (/^(your[_\s-]*.*key.*|placeholder|todo|none|null|undefined|test|dummy)$/i.test(k)) return true;
+  if (invalidKeyValue && k === invalidKeyValue) return true;
+  return false;
+}
+
+function markApiKeyInvalidIfApplicable(err, apiKey) {
+  const msg = String((err && err.message) || err || '');
+  if (/API_KEY_INVALID|API key not valid|invalid api key/i.test(msg) && apiKey) {
+    invalidKeyValue = String(apiKey).trim();
+    return true;
+  }
+  return false;
+}
+
 function getLlmEnvConfig() {
   const allowInvoiceData = process.env.ALLOW_INVOICE_DATA_TO_LLM === 'true';
-  const apiKey = String(process.env.GEMINI_API_KEY || '').trim();
+  const rawKey = String(process.env.GEMINI_API_KEY || '').trim();
+  const apiKey = isObviouslyInvalidApiKey(rawKey) ? '' : rawKey;
   const rawModel = String(process.env.GEMINI_MODEL || '').trim().replace(/^models\//, '');
   const modelName = rawModel || 'gemini-3.8-flash';
   return {
     allowInvoiceData,
     apiKey,
     modelName,
+    fallbackModelName: DEFAULT_GEMINI_FALLBACK_MODEL,
   };
 }
 
@@ -93,8 +114,12 @@ async function triggerStartupLlmCheck() {
     return;
   }
   try {
-    const { GoogleGenAI } = require('@google/genai');
-    const ai = new GoogleGenAI({ apiKey: cfg.apiKey });
+    const ai = new GoogleGenAI({
+      apiKey: cfg.apiKey,
+      httpOptions: {
+        headers: { 'User-Agent': 'aistudio-build' },
+      },
+    });
     const res = await ai.models.generateContent({
       model: cfg.modelName,
       contents: 'did u eat',
@@ -103,9 +128,10 @@ async function triggerStartupLlmCheck() {
     const text = (res && res.text ? res.text : '').trim();
     console.log(`Gemini startup probe: status 200, reply: ${text.slice(0, 80)}`);
   } catch (err) {
-    const code = err.status || err.code || err.statusCode || 'error';
+    markApiKeyInvalidIfApplicable(err, cfg.apiKey);
+    const code = err.status || err.code || err.statusCode || 'unavailable';
     setLastCallStatus(String(code));
-    console.log(`Gemini startup probe failed: status ${code}`);
+    console.log(`Gemini startup probe: using local deterministic fallback (${code})`);
   }
 }
 
@@ -1703,9 +1729,10 @@ STEP 6: Answer style: short plain language (1-5 lines) in user's language, keepi
       return getTemplateFormatterForTool(fnName, toolResult);
     }
   } catch (err) {
-    const code = err.status || err.code || err.statusCode || 'error';
+    markApiKeyInvalidIfApplicable(err, cfg.apiKey);
+    const code = err.status || err.code || err.statusCode || 'fallback';
     setLastCallStatus(String(code));
-    console.log('[AgentLLM] Gemini call failed or timed out:', err.message);
+    console.log(`[AgentLLM] Using deterministic tool fallback (${code})`);
   }
   return null;
 }
@@ -3392,11 +3419,14 @@ async function resolveReplyWithModelOrTemplate({
       try {
         return await callModelOnce(cfg.modelName);
       } catch (primaryErr) {
-        const status = primaryErr && (primaryErr.status || primaryErr.statusCode || primaryErr.code);
-        if (status === 429 || status === 503 || /429|503|RESOURCE_EXHAUSTED|UNAVAILABLE/i.test(String(primaryErr && primaryErr.message))) {
+        if (markApiKeyInvalidIfApplicable(primaryErr, cfg.apiKey)) {
           throw primaryErr;
         }
-        if (cfg.modelName !== cfg.fallbackModelName) {
+        const status = primaryErr && (primaryErr.status || primaryErr.statusCode || primaryErr.code);
+        if (status === 400 || status === 401 || status === 403 || status === 429 || status === 503 || /429|503|RESOURCE_EXHAUSTED|UNAVAILABLE|INVALID_ARGUMENT/i.test(String(primaryErr && primaryErr.message))) {
+          throw primaryErr;
+        }
+        if (cfg.fallbackModelName && cfg.modelName !== cfg.fallbackModelName) {
           return await callModelOnce(cfg.fallbackModelName);
         }
         throw primaryErr;
@@ -3417,9 +3447,10 @@ async function resolveReplyWithModelOrTemplate({
     logChatModelEvent(scope, 200, elapsedMs);
     return { reply: cleanedReply, modelCalled: true, usedFallback: false };
   } catch (err) {
+    markApiKeyInvalidIfApplicable(err, cfg.apiKey);
     const elapsedMs = Date.now() - startMs;
-    const statusCode = (err && (err.status || err.statusCode || err.code)) || 'ERROR';
-    logChatModelEvent(scope, statusCode, elapsedMs);
+    const statusCode = (err && (err.status || err.statusCode || err.code)) || 'FALLBACK';
+    logChatModelEvent(scope, statusCode === 'ERROR' ? 'FALLBACK' : statusCode, elapsedMs);
     return { reply: templateReply, modelCalled: true, usedFallback: true };
   } finally {
     if (timer) clearTimeout(timer);

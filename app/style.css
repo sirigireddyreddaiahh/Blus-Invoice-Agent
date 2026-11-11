@@ -1,5 +1,5 @@
 :root {
-  /* Classic Professional Enterprise Palette */
+  /* Executive Enterprise FinTech Palette */
   --bg-canvas: #FFFFFF;
   --bg-shell: #F8FAFC;
   --bg-surface-subtle: #F1F5F9;
@@ -23,12 +23,12 @@
   --font-mono: 'JetBrains Mono', ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
 
   --radius-card: 12px;
-  --radius-control: 8px;
+  --radius-control: 9px;
   --radius-pill: 9999px;
 
-  --sidebar-width: 240px;
-  --sidebar-collapsed-width: 60px;
-  --topbar-height: 52px;
+  --sidebar-width: 244px;
+  --sidebar-collapsed-width: 64px;
+  --topbar-height: 54px;
 }
 
 * {
@@ -49,6 +49,7 @@ body {
   font-size: 14px;
   line-height: 1.5;
   -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
 }
 
 /* ==========================================================================
@@ -81,7 +82,7 @@ body {
   position: absolute;
   inset: 0;
   background:
-    radial-gradient(circle at 50% 18%, rgba(29, 78, 216, 0.04) 0%, transparent 55%),
+    radial-gradient(circle at 50% 18%, rgba(29, 78, 216, 0.05) 0%, transparent 55%),
     linear-gradient(180deg, #F8FAFC 0%, #FFFFFF 45%, #F8FAFC 100%);
   pointer-events: none;
 }
@@ -99,7 +100,7 @@ body {
   fill: none;
   stroke: #CBD5E1;
   stroke-width: 1;
-  stroke-opacity: 0.45;
+  stroke-opacity: 0.4;
   stroke-dasharray: 900;
   stroke-dashoffset: 900;
   animation:
@@ -182,7 +183,7 @@ body {
   align-items: center;
   justify-content: center;
   padding: 8px;
-  box-shadow: 0 4px 16px rgba(15, 23, 42, 0.06);
+  box-shadow: 0 8px 24px rgba(15, 23, 42, 0.06);
   overflow: hidden;
 }
 
@@ -275,7 +276,7 @@ body {
   white-space: normal;
   opacity: 0;
   transform: translateY(16px);
-  box-shadow: 0 1px 3px rgba(15, 23, 42, 0.03);
+  box-shadow: 0 2px 6px rgba(15, 23, 42, 0.03);
   transition: transform 0.2s ease, box-shadow 0.2s ease, border-color 0.2s ease;
   animation: cardStaggerRise 0.5s cubic-bezier(0.22, 1, 0.36, 1) forwards;
 }
@@ -295,19 +296,20 @@ body {
   transform: translateY(-3px);
   background: #FFFFFF;
   border-color: #94A3B8;
-  box-shadow: 0 10px 24px rgba(15, 23, 42, 0.06);
+  box-shadow: 0 12px 28px rgba(15, 23, 42, 0.07);
 }
 
 .welcome-card-icon {
   width: 36px;
   height: 36px;
-  border-radius: 8px;
+  border-radius: 9px;
   background: var(--bg-shell);
   border: 1px solid var(--border-subtle);
   color: var(--text-secondary);
   display: inline-flex;
   align-items: center;
   justify-content: center;
+  transition: all 0.18s ease;
 }
 
 .welcome-option-card:hover .welcome-card-icon {
@@ -357,13 +359,13 @@ body {
   border-radius: 12px;
   border: 1px solid var(--border-control);
   background: #FFFFFF;
-  box-shadow: 0 2px 8px rgba(15, 23, 42, 0.04);
+  box-shadow: 0 4px 12px rgba(15, 23, 42, 0.04);
   transition: border-color 0.18s ease, box-shadow 0.18s ease;
 }
 
 .welcome-ask-box:focus-within {
   border-color: var(--accent-blue);
-  box-shadow: 0 0 0 3px rgba(29, 78, 216, 0.1);
+  box-shadow: 0 0 0 3px rgba(29, 78, 216, 0.12);
 }
 
 .welcome-ask-box input[type="text"] {
@@ -384,12 +386,14 @@ body {
 }
 
 /* ==========================================================================
-   Thin Top Bar (Left: Logo + Blus Invoice Agent, Right: AP-02 · AP-03 · AP-09 · AP-11)
+   Executive Top Bar (Crisp Frosted Glass Surface)
    ========================================================================== */
 .brand-header {
   height: var(--topbar-height);
-  background: var(--bg-canvas);
-  border-bottom: 1px solid var(--border-subtle);
+  background: rgba(255, 255, 255, 0.92);
+  backdrop-filter: blur(12px);
+  -webkit-backdrop-filter: blur(12px);
+  border-bottom: 1px solid #E2E8F0;
   padding: 0 20px;
   display: flex;
   align-items: center;
@@ -399,6 +403,7 @@ body {
   left: 0;
   right: 0;
   z-index: 100;
+  box-shadow: 0 1px 2px rgba(15, 23, 42, 0.02);
 }
 
 .brand-title-wrap {
@@ -408,19 +413,22 @@ body {
 }
 
 .brand-header-logo {
-  width: 26px;
-  height: 26px;
+  width: 28px;
+  height: 28px;
   object-fit: contain;
-  border-radius: 6px;
+  border-radius: 7px;
+  padding: 2px;
+  background: #F8FAFC;
+  border: 1px solid #E2E8F0;
   flex-shrink: 0;
 }
 
 .brand-header h1 {
   font-family: var(--font-display);
   font-size: 15.5px;
-  font-weight: 600;
-  letter-spacing: -0.01em;
-  color: var(--text-primary);
+  font-weight: 700;
+  letter-spacing: -0.02em;
+  color: #0F172A;
   white-space: nowrap;
 }
 
@@ -438,7 +446,7 @@ body {
   padding: 0;
   border: 1px solid var(--border-subtle);
   border-radius: 8px;
-  background: transparent;
+  background: #FFFFFF;
   color: var(--text-primary);
   align-items: center;
   justify-content: center;
@@ -446,7 +454,7 @@ body {
 }
 
 /* ==========================================================================
-   Collapsible Left Sidebar (Classic Slate-Grey Surface)
+   Premium Collapsible Left Sidebar (Refined Slate-Ivory Navigation)
    ========================================================================== */
 .app-shell {
   display: flex;
@@ -467,20 +475,20 @@ body {
 
 .sidebar {
   width: var(--sidebar-width);
-  background: linear-gradient(180deg, #F0F6FF 0%, #F1FBF6 100%);
-  border-right: 1px solid #CBD5E1;
+  background: #F8FAFC;
+  border-right: 1px solid #E2E8F0;
   display: flex;
   flex-direction: column;
   flex-shrink: 0;
   height: calc(100vh - var(--topbar-height));
   padding: 12px 10px;
-  transition: width 0.18s ease;
+  transition: width 0.2s cubic-bezier(0.22, 1, 0.36, 1), padding 0.2s ease;
   z-index: 90;
 }
 
 .sidebar.collapsed {
   width: var(--sidebar-collapsed-width);
-  padding: 12px 6px;
+  padding: 12px 8px;
 }
 
 .sidebar-top {
@@ -488,6 +496,8 @@ body {
   align-items: center;
   justify-content: flex-end;
   margin-bottom: 8px;
+  padding-bottom: 6px;
+  border-bottom: 1px solid #EEF2F6;
 }
 
 .sidebar.collapsed .sidebar-top {
@@ -495,21 +505,23 @@ body {
 }
 
 .sidebar-collapse-btn {
-  width: 32px;
-  height: 32px;
+  width: 30px;
+  height: 30px;
   padding: 0;
-  border: 1px solid transparent;
+  border: 1px solid #E2E8F0;
   border-radius: 8px;
-  background: rgba(255, 255, 255, 0.65);
-  color: #475569;
+  background: #FFFFFF;
+  color: #64748B;
   display: inline-flex;
   align-items: center;
   justify-content: center;
   cursor: pointer;
+  box-shadow: 0 1px 2px rgba(15, 23, 42, 0.03);
+  transition: all 0.16s ease;
 }
 
 .sidebar-collapse-btn:hover {
-  background: #FFFFFF;
+  background: #F1F5F9;
   border-color: #CBD5E1;
   color: #0F172A;
 }
@@ -521,27 +533,29 @@ body {
 .sidebar-nav {
   display: flex;
   flex-direction: column;
-  gap: 6px;
+  gap: 4px;
 }
 
 .sidebar .nav-item {
+  position: relative;
   display: flex;
   align-items: center;
-  gap: 10px;
+  gap: 11px;
   width: 100%;
   text-align: left;
   padding: 8px 10px;
+  min-height: 42px;
   border: 1px solid transparent;
   border-radius: 10px;
-  background: rgba(255, 255, 255, 0.55);
-  color: #1E293B;
+  background: transparent;
+  color: #475569;
   font-family: var(--font-sans);
   font-size: 13.5px;
   font-weight: 500;
   cursor: pointer;
   white-space: nowrap;
   overflow: hidden;
-  transition: background 0.16s ease, color 0.16s ease, border-color 0.16s ease, box-shadow 0.16s ease;
+  transition: all 0.16s cubic-bezier(0.22, 1, 0.36, 1);
 }
 
 .sidebar.collapsed .nav-item {
@@ -557,80 +571,87 @@ body {
   height: 28px;
   border-radius: 7px;
   flex-shrink: 0;
-  transition: background 0.16s ease, color 0.16s ease, border-color 0.16s ease;
+  background: #FFFFFF;
+  color: #64748B;
+  border: 1px solid #E2E8F0;
+  box-shadow: 0 1px 2px rgba(15, 23, 42, 0.03);
+  transition: all 0.16s ease;
 }
 
-/* Distinct colored icon badges for each sidebar step */
+/* Subtle refined semantic tints on inactive sidebar icons */
 #nav-upload .nav-icon {
-  background: #DBEAFE;
-  color: #0A1CFF;
-  border: 1px solid #BFDBFE;
+  color: #2563EB;
+  background: #EFF6FF;
+  border-color: #DBEAFE;
 }
 
 #nav-s4 .nav-icon {
-  background: #D1FAE5;
   color: #059669;
-  border: 1px solid #A7F3D0;
-}
-
-#nav-alerts .nav-icon {
-  background: #FEF3C7;
-  color: #D97706;
-  border: 1px solid #FDE68A;
-}
-
-#nav-history .nav-icon {
-  background: #E0E7FF;
-  color: #4F46E5;
-  border: 1px solid #C7D2FE;
-}
-
-#nav-activity .nav-icon {
-  background: #CCFBF1;
-  color: #0D9488;
-  border: 1px solid #99F6E4;
+  background: #ECFDF5;
+  border-color: #D1FAE5;
 }
 
 #nav-ledger .nav-icon {
-  background: #DCFCE7;
-  color: #15803D;
-  border: 1px solid #BBF7D0;
+  color: #16A34A;
+  background: #F0FDF4;
+  border-color: #DCFCE7;
+}
+
+#nav-alerts .nav-icon {
+  color: #D97706;
+  background: #FFFBEB;
+  border-color: #FEF3C7;
+}
+
+#nav-history .nav-icon {
+  color: #4F46E5;
+  background: #EEF2FF;
+  border-color: #E0E7FF;
+}
+
+#nav-activity .nav-icon {
+  color: #0D9488;
+  background: #F0FDFA;
+  border-color: #CCFBF1;
 }
 
 .sidebar .nav-label {
   overflow: hidden;
   text-overflow: ellipsis;
+  letter-spacing: -0.005em;
 }
 
 .sidebar.collapsed .nav-label {
   display: none !important;
 }
 
-.sidebar .nav-item:hover:not(:disabled) {
-  background: #FFFFFF;
-  border-color: #CBD5E1;
-  color: #000000;
-  box-shadow: 0 2px 6px rgba(15, 23, 42, 0.05);
+.sidebar .nav-item:hover:not(:disabled):not(.active) {
+  background: rgba(255, 255, 255, 0.85);
+  border-color: #E2E8F0;
+  color: #0F172A;
+  box-shadow: 0 1px 3px rgba(15, 23, 42, 0.03);
 }
 
 .sidebar .nav-item.active {
-  background: linear-gradient(90deg, #DBEAFE 0%, #DCFCE7 100%);
-  border-color: #93C5FD;
-  box-shadow: inset 3px 0 0 #0A1CFF, 0 2px 8px rgba(10, 28, 255, 0.08);
-  color: #0A1CFF;
-  font-weight: 700;
+  background: #FFFFFF;
+  border-color: #CBD5E1;
+  box-shadow: inset 3px 0 0 #1D4ED8, 0 2px 6px rgba(15, 23, 42, 0.06);
+  color: #0F172A;
+  font-weight: 600;
 }
 
 .sidebar .nav-item.active .nav-icon {
-  background: #0A1CFF;
+  background: #1D4ED8;
   color: #FFFFFF;
-  border-color: #0A1CFF;
+  border-color: #1D4ED8;
+  box-shadow: 0 2px 6px rgba(29, 78, 216, 0.25);
 }
 
 .sidebar-backdrop {
   position: fixed;
   inset: 0;
   background: rgba(15, 23, 42, 0.35);
+  backdrop-filter: blur(2px);
   z-index: 150;
 }
 
@@ -1202,42 +1223,51 @@ body {
 }
 
 /* ==========================================================================
-   Classic Bottom Composer Bar
+   Premium Floating Bottom Composer Bar & Aligned Composer Banners
    ========================================================================== */
+#chatComposerBanner,
+#replaceConfirmBar {
+  width: calc(100% - 48px);
+  max-width: 760px;
+  margin: 0 auto 10px auto;
+  border-radius: 10px;
+  padding: 9px 14px;
+  font-size: 13px;
+  box-shadow: 0 4px 12px rgba(15, 23, 42, 0.05);
+}
+
 .ai-composer {
   flex: 0 0 auto;
   position: static;
-  /* position: absolute; bottom: 16px; */
   width: calc(100% - 48px);
   max-width: 760px;
-  margin: 0 auto 16px auto;
+  margin: 0 auto 18px auto;
   display: flex;
   align-items: center;
-  gap: 8px;
-  border-radius: 16px;
-  border: 1px solid transparent;
-  background-image: linear-gradient(#FFFFFF, #FFFFFF), linear-gradient(135deg, #0A1CFF 0%, #00D93A 100%);
-  background-origin: border-box;
-  background-clip: padding-box, border-box;
-  background-color: #FFFFFF;
-  padding: 8px 12px;
-  box-shadow: 0 4px 16px rgba(10, 28, 255, 0.08);
-  transition: box-shadow 0.18s ease;
+  gap: 10px;
+  border-radius: 14px;
+  border: 1px solid #CBD5E1;
+  background: #FFFFFF;
+  padding: 7px 10px 7px 10px;
+  box-shadow: 0 4px 18px rgba(15, 23, 42, 0.06), 0 1px 3px rgba(15, 23, 42, 0.03);
+  transition: border-color 0.18s ease, box-shadow 0.18s ease;
   z-index: 20;
 }
 
 .ai-composer:focus-within {
-  box-shadow: 0 6px 20px rgba(10, 28, 255, 0.12);
+  border-color: #2563EB;
+  box-shadow: 0 0 0 3px rgba(37, 99, 235, 0.12), 0 8px 24px rgba(15, 23, 42, 0.08);
 }
 
 .btn-attach-plus {
-  width: 32px;
-  height: 32px;
+  width: 34px;
+  height: 34px;
+  min-height: 34px;
   padding: 0;
-  border-radius: 8px;
-  background: var(--bg-shell);
-  border: 1px solid var(--border-subtle);
-  color: var(--text-secondary);
+  border-radius: 9px;
+  background: #F8FAFC;
+  border: 1px solid #E2E8F0;
+  color: #475569;
   font-size: 18px;
   font-weight: 500;
   line-height: 1;
@@ -1246,12 +1276,13 @@ body {
   justify-content: center;
   flex-shrink: 0;
   cursor: pointer;
+  transition: all 0.15s ease;
 }
 
 .btn-attach-plus:hover:not(:disabled) {
-  background: var(--bg-surface-subtle);
-  border-color: var(--border-control);
-  color: var(--text-primary);
+  background: #EFF6FF;
+  border-color: #BFDBFE;
+  color: #1D4ED8;
 }
 
 /* Small chip INSIDE the composer bar, left of the text input */
@@ -1259,11 +1290,11 @@ body {
   display: inline-flex;
   align-items: center;
   gap: 6px;
-  padding: 4px 8px;
-  background: var(--bg-shell);
-  color: var(--text-primary);
-  border: 1px solid var(--border-control);
-  border-radius: 6px;
+  padding: 4px 10px;
+  background: #F1F5F9;
+  color: #0F172A;
+  border: 1px solid #CBD5E1;
+  border-radius: 8px;
   font-size: 12.5px;
   font-weight: 500;
   white-space: nowrap;
@@ -1275,7 +1306,7 @@ body {
   align-items: center;
   justify-content: center;
   flex-shrink: 0;
-  color: var(--text-secondary);
+  color: #2563EB;
 }
 
 .chip-file-name {
@@ -1304,7 +1335,7 @@ body {
 }
 
 .chip-remove-btn:hover {
-  background: var(--bg-surface-subtle);
+  background: #E2E8F0;
   color: var(--text-primary);
 }
 
@@ -1341,8 +1372,8 @@ body {
    Other Pages & Shared Cards / Buttons (Enterprise Finance Polish)
    ========================================================================== */
 .page-header {
-  margin-bottom: 8px;
-  padding-bottom: 6px;
+  margin-bottom: 10px;
+  padding-bottom: 8px;
   border-bottom: 1px solid var(--border-subtle);
   flex-shrink: 0;
 }
@@ -1366,17 +1397,17 @@ body {
 
 .page-header h2 {
   font-family: var(--font-display);
-  font-size: 18.5px;
+  font-size: 19px;
   font-weight: 700;
-  letter-spacing: -0.015em;
+  letter-spacing: -0.02em;
   color: var(--text-primary);
   line-height: 1.2;
 }
 
 .page-header p:not(.section-kicker) {
-  font-size: 12.5px;
+  font-size: 12.8px;
   color: var(--text-muted);
-  margin-top: 1px;
+  margin-top: 2px;
 }
 
 .section-title,
@@ -1403,12 +1434,12 @@ body {
 }
 
 .card {
-  border-radius: 10px;
-  border: 1px solid var(--border-subtle);
+  border-radius: 12px;
+  border: 1px solid #E2E8F0;
   background: #FFFFFF;
-  padding: 12px 14px;
+  padding: 14px 16px;
   margin-bottom: 12px;
-  box-shadow: none;
+  box-shadow: 0 1px 3px rgba(15, 23, 42, 0.03), 0 1px 2px rgba(15, 23, 42, 0.02);
 }
 
 .source-chip,
@@ -1442,8 +1473,8 @@ body {
 /* KPI Grids (4 cards or 3 cards in one compact row) */
 .kpi-grid {
   display: grid;
-  gap: 8px;
-  margin-bottom: 8px;
+  gap: 10px;
+  margin-bottom: 10px;
   flex-shrink: 0;
 }
 
@@ -1457,15 +1488,21 @@ body {
 
 .kpi-card {
   background: #FFFFFF;
-  border: 1px solid var(--border-subtle);
-  border-radius: 9px;
-  padding: 7px 14px;
+  border: 1px solid #E2E8F0;
+  border-radius: 10px;
+  padding: 9px 14px;
   display: flex;
   flex-direction: row;
   align-items: baseline;
   justify-content: space-between;
   gap: 8px;
+  box-shadow: 0 1px 2px rgba(15, 23, 42, 0.03);
 }
+
+.kpi-card.total { border-top: 2.5px solid #475569; }
+.kpi-card.pass { border-top: 2.5px solid #16A34A; }
+.kpi-card.hold { border-top: 2.5px solid #D97706; }
+.kpi-card.reject { border-top: 2.5px solid #DC2626; }
 
 .kpi-label {
   font-size: 11.5px;
