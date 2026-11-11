@@ -742,6 +742,110 @@ async function main() {
     }
   });
 
+  // Batch post passed invoices to ap.Posted ledger from AI Chat
+  app.post('/fraud/postBatchToLedger', async (req, res) => {
+    res.setHeader('Cache-Control', 'no-store, no-cache, must-revalidate, proxy-revalidate');
+    try {
+      const body = req.body || {};
+      const rawList = typeof body.invoices === 'string' ? JSON.parse(body.invoices) : (body.invoices || []);
+      const list = Array.isArray(rawList) ? rawList : [];
+      if (!list.length) {
+        return res.status(400).json({ error: { message: 'No passed invoices provided to post.' } });
+      }
+      const user = (req.user && req.user.id) || 'user';
+      const masters = JSON.parse(fs.readFileSync(path.join(__dirname, 'data/masters.json'), 'utf8'));
+      const { insertInvoiceIntoLedger } = require('./srv/lib/ledger');
+      let postedCount = 0;
+      for (const item of list) {
+        const inv = item.invoice || item.fields || item;
+        await insertInvoiceIntoLedger(inv, { blocked: false, user, masters, source: 'Chat' });
+        postedCount++;
+      }
+      await audit(
+        'LEDGER_INSERT',
+        null,
+        `Posted ${postedCount} passed invoice(s) to database ledger from AI Chat`,
+        { user, fileName: body.fileName || 'chat-batch', result: `${postedCount} PASS_INSERTED` }
+      );
+      return res.status(200).json({
+        ok: true,
+        postedCount,
+        total: list.length,
+        message: `Posted ${postedCount} passed invoice(s) to the Ledger.`,
+      });
+    } catch (err) {
+      return res.status(500).json({ error: { message: err.message || 'Batch posting to ledger failed' } });
+    }
+  });
+
+  // Batch post failed (HOLD / REJECT) invoices to Review Queue (ap.Alerts) from AI Chat
+  app.post('/fraud/postBatchToReviewQueue', async (req, res) => {
+    res.setHeader('Cache-Control', 'no-store, no-cache, must-revalidate, proxy-revalidate');
+    try {
+      const crypto = require('crypto');
+      const body = req.body || {};
+      const rawList = typeof body.items === 'string' ? JSON.parse(body.items) : (body.items || []);
+      const list = Array.isArray(rawList) ? rawList : [];
+      if (!list.length) {
+        return res.status(400).json({ error: { message: 'No failed invoices provided for Review Queue.' } });
+      }
+      const user = (req.user && req.user.id) || 'user';
+      const tsNow = new Date().toISOString();
+      let queuedCount = 0;
+
+      for (const item of list) {
+        const checkId = item.checkId || item.ID || item.id || crypto.randomUUID();
+        const invNo = String(item.invoiceNo || (item.invoice && item.invoice.invoiceNo) || '—').slice(0, 60);
+        const suppName = String(item.supplierName || (item.invoice && item.invoice.supplierName) || '—').slice(0, 120);
+        const tier = String(item.status === 'HOLD' ? 'HOLD' : 'REJECT').slice(0, 10);
+        const reasonText = String(item.reason || item.explanation || 'Flagged for controller review').slice(0, 1000);
+
+        const existingAlerts = await cds.run(
+          SELECT.from('ap.Alerts').where({ check_ID: checkId })
+        );
+        if (existingAlerts && existingAlerts.length > 0) {
+          // Ensure decision is OPEN so it appears in Review Queue
+          await cds.run(
+            UPDATE('ap.Alerts').set({ decision: 'OPEN' }).where({ check_ID: checkId })
+          );
+          queuedCount++;
+        } else {
+          await cds.run(
+            INSERT.into('ap.Alerts').entries({
+              ID: crypto.randomUUID(),
+              createdAt: tsNow,
+              createdBy: String(user).slice(0, 100),
+              check_ID: checkId,
+              ruleId: String(item.ruleId || 'AP-02').slice(0, 20),
+              title: String(item.title || (tier === 'HOLD' ? 'Review required' : 'Duplicate / Rule violation')).slice(0, 120),
+              tier,
+              text: reasonText,
+              decision: 'OPEN',
+              invoiceNo: invNo,
+              supplierName: suppName,
+            })
+          );
+          queuedCount++;
+        }
+      }
+
+      await audit(
+        'REVIEW_QUEUE',
+        null,
+        `Posted ${queuedCount} failed invoice(s) to Review Queue from AI Chat`,
+        { user, fileName: body.fileName || 'chat-batch', result: `${queuedCount} QUEUED` }
+      );
+      return res.status(200).json({
+        ok: true,
+        queuedCount,
+        total: list.length,
+        message: `Posted ${queuedCount} failed invoice(s) to the Review Queue.`,
+      });
+    } catch (err) {
+      return res.status(500).json({ error: { message: err.message || 'Posting to Review Queue failed' } });
+    }
+  });
+
   // Batch documents endpoint for uploading multiple PDFs or images safely
   app.post('/fraud/uploadBatchDocuments', async (req, res) => {
     try {

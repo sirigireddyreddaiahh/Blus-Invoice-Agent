@@ -102,7 +102,7 @@ function getRuleName(ruleId) {
  */
 async function getS4ResultsQuery({ jobId = '', page = 1, limit = 50, status = 'ALL', search = '' } = {}) {
   const p = Math.max(1, parseInt(page, 10) || 1);
-  const l = Math.max(1, Math.min(200, parseInt(limit, 10) || 50));
+  const l = Math.max(1, Math.min(2000, parseInt(limit, 10) || 50));
   const s = String(status || 'ALL').trim().toUpperCase();
   const q = String(search || '').trim();
 
@@ -122,10 +122,10 @@ async function getS4ResultsQuery({ jobId = '', page = 1, limit = 50, status = 'A
   }
 
   const counts = {
-    total: job ? (job.total || 0) : 0,
-    pass: job ? (job.passCount || 0) : 0,
-    hold: job ? (job.holdCount || 0) : 0,
-    reject: job ? (job.rejectCount || 0) : 0,
+    total: job ? Number(job.total || 0) : 0,
+    pass: job ? Number(job.passCount || 0) : 0,
+    hold: job ? Number(job.holdCount || 0) : 0,
+    reject: job ? Number(job.rejectCount || 0) : 0,
   };
 
   if (!job) {
@@ -152,6 +152,25 @@ async function getS4ResultsQuery({ jobId = '', page = 1, limit = 50, status = 'A
     params.push(targetJobId);
   } else {
     whereClauses.push("source = 'S4'");
+  }
+
+  // If job counts were not populated yet, derive them from ap_Checks for this job
+  if (targetJobId && counts.pass === 0 && counts.hold === 0 && counts.reject === 0) {
+    try {
+      const grp = (await cds.run(
+        `SELECT status, count(*) as count FROM ap_Checks WHERE jobId = ? GROUP BY status`,
+        [targetJobId]
+      ) || []).map(r => normalizeRow(r, 'ap.Checks'));
+      for (const g of grp) {
+        const st = String(g.status || '').toUpperCase();
+        const cnt = Number(g.count || 0);
+        if (st === 'PASS') counts.pass += cnt;
+        else if (st === 'HOLD' || st === 'FLAG') counts.hold += cnt;
+        else if (st === 'REJECT') counts.reject += cnt;
+      }
+      const sumCnt = counts.pass + counts.hold + counts.reject;
+      if (!counts.total && sumCnt > 0) counts.total = sumCnt;
+    } catch (_) {}
   }
 
   if (s && s !== 'ALL') {

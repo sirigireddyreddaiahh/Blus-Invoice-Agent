@@ -151,7 +151,7 @@ const flag = (v) => {
 
 const amount = (v) => {
   if (v === undefined || v === null) return undefined;
-  const s = String(v).replace(/^(?:INR|Rs\.?|₹)\s*/i, '').replace(/,/g, '').trim();
+  const s = String(v).replace(/^(?:INR|Rs\.?|₹)\s*/i, '').replace(/[\s,]+/g, '').trim();
   if (s === '') return undefined;
   const n = Number(s);
   return Number.isFinite(n) ? n : undefined;
@@ -166,6 +166,94 @@ const isoDate = (v) => {
   if (m8) return `${m8[1]}-${m8[2]}-${m8[3]}`;
   return s;
 };
+
+function expandNestedInvoiceRow(r) {
+  if (!r || typeof r !== 'object') return r || {};
+  const expanded = { ...r };
+
+  let parsedJson = null;
+  const rawJsonField = r.json_data ?? r.jsondata ?? r.jsonData;
+  if (rawJsonField && typeof rawJsonField === 'string') {
+    try {
+      parsedJson = JSON.parse(rawJsonField.trim());
+    } catch {
+      try {
+        parsedJson = JSON.parse(rawJsonField.replace(/[\r\n]+/g, ' ').trim());
+      } catch {
+        parsedJson = null;
+      }
+    }
+  } else if (rawJsonField && typeof rawJsonField === 'object') {
+    parsedJson = rawJsonField;
+  } else if (r.seller || r.summary || r.date_of_issue || r.invoice_no) {
+    parsedJson = r;
+  }
+
+  if (parsedJson && typeof parsedJson === 'object') {
+    const seller = (parsedJson.seller && typeof parsedJson.seller === 'object') ? parsedJson.seller : {};
+    const summary = (parsedJson.summary && typeof parsedJson.summary === 'object') ? parsedJson.summary : {};
+    const items = Array.isArray(parsedJson.items) ? parsedJson.items : [];
+
+    const invNo = parsedJson.invoice_no ?? parsedJson.invoiceNo ?? parsedJson.SupplierInvoice;
+    const suppName = seller.name ?? parsedJson.supplier_name ?? parsedJson.supplierName ?? parsedJson.InvoicingParty;
+    const suppGstin = seller.gstin ?? seller.tax_id ?? parsedJson.supplier_gstin ?? parsedJson.supplierGstin ?? parsedJson.gstin;
+    const invDate = parsedJson.date_of_issue ?? parsedJson.invoice_date ?? parsedJson.invoiceDate ?? parsedJson.date;
+    const grossAmt = summary.gross_worth ?? summary.total_gross_worth ?? summary.total ?? parsedJson.gross_worth ?? parsedJson.total;
+    const netAmt = summary.net_worth ?? summary.total_net_worth ?? parsedJson.net_worth ?? parsedJson.taxable;
+    const itemDesc = items
+      .map(it => (it && it.description ? String(it.description).trim() : ''))
+      .filter(Boolean)
+      .join(', ');
+
+    if (invNo !== undefined && !expanded.SupplierInvoice && !expanded.invoiceno) {
+      expanded.SupplierInvoice = String(invNo).trim();
+    }
+    if (suppName !== undefined && !expanded.InvoicingParty && !expanded.suppliername) {
+      expanded.InvoicingParty = String(suppName).trim();
+    }
+    if (suppGstin !== undefined && !expanded.SupplierGSTIN && !expanded.gstin) {
+      expanded.SupplierGSTIN = String(suppGstin).trim();
+    }
+    if (invDate !== undefined && !expanded.InvoiceDate && !expanded.invoicedate) {
+      expanded.InvoiceDate = String(invDate).trim();
+    }
+    if (grossAmt !== undefined && !expanded.InvoiceGrossAmount && !expanded.total) {
+      expanded.InvoiceGrossAmount = String(grossAmt).replace(/\s+/g, ' ').trim();
+    }
+    if (netAmt !== undefined && !expanded.taxable) {
+      expanded.taxable = String(netAmt).replace(/\s+/g, ' ').trim();
+    }
+    if (itemDesc && !expanded.SupplierInvoiceIDByInvcgParty && !expanded.description) {
+      expanded.SupplierInvoiceIDByInvcgParty = itemDesc;
+    }
+    if (!expanded.DocumentCurrency && !expanded.currency) {
+      expanded.DocumentCurrency = 'INR';
+    }
+  }
+
+  const rawOcr = r.ocred_text ?? r.ocredtext ?? r.ocr_text;
+  if (rawOcr && typeof rawOcr === 'string' && (!expanded.SupplierInvoice || !expanded.InvoicingParty || !expanded.InvoiceGrossAmount)) {
+    const t = rawOcr;
+    if (!expanded.SupplierInvoice) {
+      const mInv = t.match(/invoice\s*(?:no\.?|number|#)\s*[:\-]?\s*([A-Za-z0-9\/\-]+)/i);
+      if (mInv) expanded.SupplierInvoice = mInv[1].trim();
+    }
+    if (!expanded.InvoiceDate) {
+      const mDate = t.match(/(?:invoice\s*date|date\s*of\s*issue|date\s*of\s*invoice|date)\s*[:\-]?\s*(\d{1,2}[\/\-.]\d{1,2}[\/\-.]\d{4}|\d{4}-\d{2}-\d{2})/i);
+      if (mDate) expanded.InvoiceDate = mDate[1].trim();
+    }
+    if (!expanded.SupplierGSTIN) {
+      const mGstin = t.match(/\b(\d{2}[A-Z]{5}\d{4}[A-Z][1-9A-Z]Z[0-9A-Z])\b/);
+      if (mGstin) expanded.SupplierGSTIN = mGstin[1].trim();
+    }
+    if (!expanded.InvoiceGrossAmount) {
+      const mTotal = t.match(/Total\s+INR\s+[\d,]+\.\d{2}\s+INR\s+([\d,]+\.\d{2})/i) || t.match(/gross\s*worth[^\d]*([\d,]+\.\d{2})/i);
+      if (mTotal) expanded.InvoiceGrossAmount = mTotal[1].trim();
+    }
+  }
+
+  return expanded;
+}
 
 function pickField(normRow, aliases) {
   for (const a of aliases) {
@@ -185,8 +273,9 @@ function deriveFiscalYear(dateIso) {
 }
 
 function s4RowToInvoice(r, index = 0) {
+  const expandedRow = expandNestedInvoiceRow(r);
   const normRow = {};
-  for (const [k, v] of Object.entries(r || {})) {
+  for (const [k, v] of Object.entries(expandedRow || {})) {
     const nk = normHeaderKey(k);
     if (v !== undefined && v !== null && String(v).trim() !== '' && normRow[nk] === undefined) {
       normRow[nk] = v;
@@ -236,10 +325,12 @@ function s4RowToInvoice(r, index = 0) {
     : undefined;
 
   const effectiveDescription = SupplierInvoiceIDByInvcgParty || DocumentHeaderText;
+  const rowFileName = normRow.filename ? String(normRow.filename).trim() : undefined;
 
   const inv = {
     id: normRow.id || `IMP-${String(index + 1).padStart(3, '0')}`,
     source: 'S4',
+    fileName: rowFileName,
     // Internal Fiori mapped fields
     SupplierInvoice,
     InvoicingParty,
@@ -352,7 +443,18 @@ function parseAndValidateS4Input(text) {
     };
   }
 
-  const colMatch = matchFioriColumns(rawHeaders);
+  // If rows contain nested json_data / ocred_text / seller / summary, include expanded keys in header matching
+  const effectiveHeaderSet = new Set(rawHeaders);
+  if (Array.isArray(rawRows) && rawRows.length > 0) {
+    const sampleExpanded = expandNestedInvoiceRow(rawRows[0]);
+    Object.keys(sampleExpanded || {}).forEach(k => {
+      if (sampleExpanded[k] !== undefined && sampleExpanded[k] !== '') {
+        effectiveHeaderSet.add(k);
+      }
+    });
+  }
+
+  const colMatch = matchFioriColumns(Array.from(effectiveHeaderSet));
   const invoices = [];
   const rowErrors = [];
 

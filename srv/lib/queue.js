@@ -8,12 +8,14 @@ const {
   insertInvoiceIntoLedger,
 } = require('./ledger');
 const { checkSapMatchForInvoice, querySapSandboxInvoices, getSapConfig } = require('./sap');
+const { normalizeRow } = require('./pagination');
 
 const CHUNK_SIZE = 50;
 
 const jobQueue = [];
 let isWorkerRunning = false;
 const cancelledJobIds = new Set();
+const liveJobProgress = new Map();
 
 function publicView(inv) {
   const { pdfText: _text, ...rest } = inv;
@@ -141,10 +143,11 @@ async function processJob(task) {
 
   const total = invoices.length;
 
-  const jobRow = await cds.run(
+  const rawJobRow = await cds.run(
     SELECT.one.from('ap.Jobs').where({ ID: jobId }).or({ jobId })
   );
-  const actualStartingIndex = (jobRow && (jobRow.lastIndex || jobRow.processed)) || startingIndex || 0;
+  const jobRow = rawJobRow ? normalizeRow(rawJobRow, 'ap.Jobs') : null;
+  const actualStartingIndex = Number((jobRow && (jobRow.lastIndex || jobRow.processed)) || startingIndex || 0);
 
   if (actualStartingIndex >= total && total > 0) {
     await cds.run(
@@ -196,9 +199,9 @@ async function processJob(task) {
   }
 
   let totalProcessed = actualStartingIndex;
-  let passCount = (jobRow && jobRow.passCount) || initialPassCount;
-  let holdCount = (jobRow && jobRow.holdCount) || initialHoldCount;
-  let rejectCount = (jobRow && jobRow.rejectCount) || initialRejectCount;
+  let passCount = Number((jobRow && jobRow.passCount) || initialPassCount || 0);
+  let holdCount = Number((jobRow && jobRow.holdCount) || initialHoldCount || 0);
+  let rejectCount = Number((jobRow && jobRow.rejectCount) || initialRejectCount || 0);
 
   const sapCache = new Map();
   let sapCircuitBroken = false;
@@ -248,6 +251,21 @@ async function processJob(task) {
 
     for (let i = 0; i < chunkInvoices.length; i++) {
       const inv = chunkInvoices[i];
+      const currentIdx = cStart + i + 1;
+
+      liveJobProgress.set(jobId, {
+        status: 'RUNNING',
+        processed: currentIdx - 1,
+        currentIndex: currentIdx,
+        total,
+        passCount,
+        holdCount,
+        rejectCount,
+        currentInvoiceNo: inv.invoiceNo || inv.SupplierInvoice || `Row ${currentIdx}`,
+        currentSupplier: inv.supplierName || inv.InvoicingParty || 'Supplier',
+        currentFileName: inv.fileName || task.fileName || 'batch-invoice',
+        currentPhase: 'Extracting fields, checking database ledger & evaluating active rules...',
+      });
 
       try {
         // Compare against ledger (posted) and lightweight earlier items
@@ -278,13 +296,32 @@ async function processJob(task) {
         if (enriched.status === 'PASS') {
           passCount++;
           // Auto-insert PASS invoices into ledger so subsequent chunks/uploads detect them
-          await insertInvoiceIntoLedger(inv, { blocked: false, user, masters, source: 'Batch' });
+          try {
+            await insertInvoiceIntoLedger(inv, { blocked: false, user, masters, source: 'Batch' });
+          } catch (ledgerErr) {
+            console.error(`[LEDGER_INSERT_WARN] Invoice ${inv.invoiceNo}:`, ledgerErr.message);
+          }
           posted.push(inv);
         } else if (enriched.status === 'HOLD') {
           holdCount++;
         } else if (enriched.status === 'REJECT') {
           rejectCount++;
         }
+
+        liveJobProgress.set(jobId, {
+          status: 'RUNNING',
+          processed: currentIdx,
+          currentIndex: currentIdx,
+          total,
+          passCount,
+          holdCount,
+          rejectCount,
+          currentInvoiceNo: inv.invoiceNo || inv.SupplierInvoice || `Row ${currentIdx}`,
+          currentSupplier: inv.supplierName || inv.InvoicingParty || 'Supplier',
+          currentFileName: inv.fileName || task.fileName || 'batch-invoice',
+          currentStatus: enriched.status,
+          currentPhase: `Checked ${inv.invoiceNo || `Row ${currentIdx}`} in database ledger (${enriched.status})`,
+        });
 
         // Add lightweight representation for cross-chunk duplicate detection
         lightweightEarlier.push({
@@ -308,16 +345,16 @@ async function processJob(task) {
         checksToInsert.push({
           ID: checkId,
           createdAt: tsNow,
-          createdBy: user,
-          source: source || 'S4',
+          createdBy: String(user || 'User').slice(0, 100),
+          source: String(source || 'S4').slice(0, 10),
           jobId: jobId,
-          fileName: inv.fileName || null,
-          supplierName: inv.supplierName || null,
-          supplierGstin: inv.supplierGstin || null,
-          invoiceNo: inv.invoiceNo || null,
+          fileName: inv.fileName ? String(inv.fileName).slice(0, 255) : null,
+          supplierName: inv.supplierName ? String(inv.supplierName).slice(0, 120) : null,
+          supplierGstin: inv.supplierGstin ? String(inv.supplierGstin).slice(0, 15) : null,
+          invoiceNo: inv.invoiceNo ? String(inv.invoiceNo).slice(0, 60) : null,
           invoiceDate: inv.invoiceDate || null,
           total: inv.total ?? null,
-          status: enriched.status,
+          status: String(enriched.status || 'PASS').slice(0, 10),
           resultJson: JSON.stringify(storedPayload),
         });
 
@@ -325,25 +362,25 @@ async function processJob(task) {
           resultsToInsert.push({
             ID: crypto.randomUUID(),
             check_ID: checkId,
-            ruleId: r.id,
-            title: r.title,
-            tier: r.tier,
-            text: r.text,
+            ruleId: String(r.id || '').slice(0, 20),
+            title: String(r.title || '').slice(0, 120),
+            tier: String(r.tier || 'PASS').slice(0, 10),
+            text: String(r.text || '').slice(0, 1000),
           });
 
           if (['REJECT', 'HOLD', 'FLAG'].includes(r.tier)) {
             alertsToInsert.push({
               ID: crypto.randomUUID(),
               createdAt: tsNow,
-              createdBy: user,
+              createdBy: String(user || 'User').slice(0, 100),
               check_ID: checkId,
-              ruleId: r.id,
-              title: r.title,
-              tier: r.tier,
-              text: r.text,
+              ruleId: String(r.id || '').slice(0, 20),
+              title: String(r.title || '').slice(0, 120),
+              tier: String(r.tier || 'REJECT').slice(0, 10),
+              text: String(r.text || '').slice(0, 1000),
               decision: 'OPEN',
-              invoiceNo: inv.invoiceNo || null,
-              supplierName: inv.supplierName || null,
+              invoiceNo: inv.invoiceNo ? String(inv.invoiceNo).slice(0, 60) : null,
+              supplierName: inv.supplierName ? String(inv.supplierName).slice(0, 120) : null,
             });
           }
         }
@@ -356,6 +393,11 @@ async function processJob(task) {
           sapMatch,
           invoice: publicView(inv),
         });
+
+        // Short yield so HTTP polling sees live 1 of N, 2 of N progress smoothly
+        if (total <= 250) {
+          await new Promise(r => setTimeout(r, 12));
+        }
       } catch (invErr) {
         // One bad invoice must not stop the chunk
         console.error(`[BAD_INVOICE_ERROR] Invoice ${inv.invoiceNo || 'unknown'}:`, invErr);
@@ -401,6 +443,7 @@ async function processJob(task) {
     if (cancelledJobIds.has(jobId) || cancelledJobIds.has(task.jobId)) {
       cancelledJobIds.delete(jobId);
       cancelledJobIds.delete(task.jobId);
+      liveJobProgress.delete(jobId);
       const cancelTime = new Date().toISOString();
       await cds.run(
         UPDATE('ap.Jobs').set({
@@ -425,6 +468,7 @@ async function processJob(task) {
 
   const finishedAt = new Date().toISOString();
   const durationMs = Date.now() - startTime;
+  liveJobProgress.delete(jobId);
 
   // Mark job as DONE and store final results
   await cds.run(
@@ -654,10 +698,11 @@ async function resumeJob(jobId, { masters, audit, user = 'user' } = {}) {
 }
 
 async function getJob(jobId) {
-  const job = await cds.run(
+  const rawJob = await cds.run(
     SELECT.one.from('ap.Jobs').where({ ID: jobId }).or({ jobId })
   );
-  if (!job) return null;
+  if (!rawJob) return null;
+  const job = normalizeRow(rawJob, 'ap.Jobs');
 
   let results = null;
   if (job.resultJson) {
@@ -669,16 +714,45 @@ async function getJob(jobId) {
     try { errors = JSON.parse(job.errorsJson); } catch {}
   }
 
+  const live = liveJobProgress.get(job.jobId || job.ID) || liveJobProgress.get(jobId) || null;
+
+  let passCount = Number(job.passCount || 0);
+  let holdCount = Number(job.holdCount || 0);
+  let rejectCount = Number(job.rejectCount || 0);
+  let processed = Number(job.processed || 0);
+  const total = Number(job.total || (live && live.total) || 0);
+
+  if (live && (job.status === 'QUEUED' || job.status === 'RUNNING')) {
+    processed = Math.max(processed, Number(live.processed || 0));
+    passCount = Math.max(passCount, Number(live.passCount || 0));
+    holdCount = Math.max(holdCount, Number(live.holdCount || 0));
+    rejectCount = Math.max(rejectCount, Number(live.rejectCount || 0));
+  }
+
+  if (passCount === 0 && holdCount === 0 && rejectCount === 0 && Array.isArray(results) && results.length > 0) {
+    for (const r of results) {
+      const st = String(r.status || '').toUpperCase();
+      if (st === 'PASS') passCount++;
+      else if (st === 'HOLD' || st === 'FLAG') holdCount++;
+      else if (st === 'REJECT') rejectCount++;
+    }
+  }
+
   return {
     jobId: job.jobId || job.ID,
     id: job.jobId || job.ID,
-    status: job.status,
-    total: job.total || 0,
-    processed: job.processed || 0,
-    lastIndex: job.lastIndex || job.processed || 0,
-    passCount: job.passCount || 0,
-    holdCount: job.holdCount || 0,
-    rejectCount: job.rejectCount || 0,
+    status: (live && job.status === 'QUEUED' && live.status === 'RUNNING') ? 'RUNNING' : job.status,
+    total,
+    processed,
+    lastIndex: Number(job.lastIndex || processed || 0),
+    passCount,
+    holdCount,
+    rejectCount,
+    currentIndex: live ? live.currentIndex : processed,
+    currentInvoiceNo: live ? live.currentInvoiceNo : null,
+    currentSupplier: live ? live.currentSupplier : null,
+    currentFileName: live ? live.currentFileName : null,
+    currentPhase: live ? live.currentPhase : null,
     startedAt: job.startedAt || null,
     finishedAt: job.finishedAt || null,
     createdAt: job.createdAt || null,

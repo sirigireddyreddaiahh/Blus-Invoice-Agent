@@ -2645,4 +2645,232 @@ tfoot.table-grand-total-foot tr.grand-total-row td {
   color: #7F1D1D;
 }
 
+/* ==========================================================================
+   AI Chat Grey Thinking Mode & Passed / Failed Result Cards
+   ========================================================================== */
+.chat-bubble.assistant.ai-thinking-box {
+  display: inline-flex;
+  flex-direction: column;
+  gap: 3px;
+  width: fit-content;
+  max-width: 100%;
+  padding: 4px 2px;
+  background: transparent;
+  border: none;
+  box-shadow: none;
+  color: #475569;
+  font-size: 13.5px;
+  line-height: 1.4;
+}
+
+.ai-thinking-header {
+  display: inline-flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 8px;
+  font-weight: 500;
+  color: #475569;
+  font-variant-numeric: tabular-nums;
+}
+
+.ai-thinking-title {
+  font-size: 13.5px;
+  font-weight: 500;
+  background: linear-gradient(90deg, #475569 0%, #94A3B8 50%, #475569 100%);
+  background-size: 200% auto;
+  color: #475569;
+  -webkit-background-clip: text;
+  background-clip: text;
+  -webkit-text-fill-color: transparent;
+  animation: aiTextShimmer 2.2s linear infinite;
+}
+
+.ai-thinking-dot {
+  width: 12px;
+  height: 12px;
+  border-radius: 50%;
+  border: 1.75px solid #CBD5E1;
+  border-top-color: #64748B;
+  background: transparent;
+  flex-shrink: 0;
+  animation: aiSpinRing 0.85s linear infinite;
+}
+
+@keyframes aiSpinRing {
+  to { transform: rotate(360deg); }
+}
+
+@keyframes aiTextShimmer {
+  0% { background-position: 200% center; }
+  100% { background-position: 0% center; }
+}
+
+.ai-thinking-detail {
+  font-size: 12.5px;
+  color: #64748B;
+  font-variant-numeric: tabular-nums;
+  margin-left: 5px;
+  padding-left: 14px;
+  border-left: 1.5px solid #E2E8F0;
+}
+
+.ai-thinking-tally {
+  font-size: 12px;
+  color: #94A3B8;
+  font-family: var(--font-mono);
+  font-weight: 400;
+  font-variant-numeric: tabular-nums;
+}
+
+.chat-guidance-banner {
+  margin: 8px 0 12px;
+  padding: 10px 12px;
+  border-radius: 8px;
+  background: #F8FAFC;
+  border: 1px solid #E2E8F0;
+  font-size: 13px;
+  color: #334155;
+  line-height: 1.5;
+}
+
+.chat-batch-card {
+  margin-top: 14px;
+  border-radius: 12px;
+  border: 1px solid #E2E8F0;
+  background: #FFFFFF;
+  overflow: hidden;
+  box-shadow: 0 1px 3px rgba(15, 23, 42, 0.04);
+}
+
+.chat-batch-card.pass-card {
+  border-color: #BBF7D0;
+}
+
+.chat-batch-card.fail-card {
+  border-color: #FECACA;
+}
+
+.chat-batch-card-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  flex-wrap: wrap;
+  gap: 8px;
+  padding: 12px 16px;
+  border-bottom: 1px solid #E2E8F0;
+}
+
+.chat-batch-card.pass-card .chat-batch-card-header {
+  background: #F0FDF4;
+  border-bottom-color: #DCFCE7;
+}
+
+.chat-batch-card.fail-card .chat-batch-card-header {
+  background: #FEF2F2;
+  border-bottom-color: #FEE2E2;
+}
+
+.chat-batch-card-title {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 14px;
+  font-weight: 700;
+  color: #0F172A;
+}
+
+.chat-batch-card-meta {
+  font-size: 12.5px;
+  font-weight: 600;
+  color: #475569;
+  font-family: var(--font-mono);
+}
+
+.chat-batch-card-reason-summary {
+  padding: 10px 16px;
+  font-size: 12.8px;
+  color: #334155;
+  background: #F8FAFC;
+  border-bottom: 1px solid #F1F5F9;
+  line-height: 1.45;
+}
+
+.chat-batch-rows-scroll {
+  max-height: 290px;
+  overflow-y: auto;
+  divide-y: 1px solid #F1F5F9;
+}
+
+.chat-batch-row {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  padding: 10px 16px;
+  border-bottom: 1px solid #F1F5F9;
+  cursor: pointer;
+  transition: background 0.15s ease;
+}
+
+.chat-batch-row:last-child {
+  border-bottom: none;
+}
+
+.chat-batch-row:hover {
+  background: #F8FAFC;
+}
+
+.chat-batch-row-top {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.chat-batch-row-main {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 8px;
+  font-size: 13px;
+  font-weight: 600;
+  color: #0F172A;
+}
+
+.chat-batch-row-amt {
+  font-size: 13px;
+  font-weight: 600;
+  font-family: var(--font-mono);
+  color: #0F172A;
+}
+
+.chat-batch-row-reason {
+  font-size: 12.5px;
+  color: #475569;
+  line-height: 1.4;
+}
+
+.chat-batch-card-footer {
+  padding: 12px 16px;
+  background: #F8FAFC;
+  border-top: 1px solid #E2E8F0;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.chat-batch-prompt {
+  font-size: 13px;
+  font-weight: 600;
+  color: #1E293B;
+}
+
+.chat-batch-actions {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+
 

@@ -192,12 +192,18 @@ function normalizeLedgerSource(rawSource) {
  */
 async function insertInvoiceIntoLedger(inv, { blocked = false, user = 'reviewer', source = '' } = {}) {
   const invDate = inv.invoiceDate || inv.InvoiceDate || inv.PostingDate || inv.postingDate || null;
-  const fy = invDate ? U.fiscalYear(invDate) : (inv.FiscalYear || inv.fiscalYear || 'UNKNOWN');
-  const invNo = inv.invoiceNo || inv.SupplierInvoice || null;
-  const suppGstin = inv.supplierGstin || inv.SupplierGSTIN || null;
-  const suppName = inv.supplierName || inv.InvoicingParty || null;
+  const rawFy = invDate ? U.fiscalYear(invDate) : (inv.FiscalYear || inv.fiscalYear || 'UNKNOWN');
+  const fy = String(rawFy || 'UNKNOWN').slice(0, 10);
+  const rawInvNo = inv.invoiceNo || inv.SupplierInvoice || null;
+  const invNo = rawInvNo ? String(rawInvNo).trim().slice(0, 60) : null;
+  const rawGstin = inv.supplierGstin || inv.SupplierGSTIN || null;
+  const suppGstin = rawGstin ? String(rawGstin).trim().toUpperCase().slice(0, 15) : null;
+  const rawSuppName = inv.supplierName || inv.InvoicingParty || null;
+  const suppName = rawSuppName ? String(rawSuppName).trim().slice(0, 120) : null;
   const totalVal = inv.total ?? inv.InvoiceGrossAmount;
   const normalizedSource = normalizeLedgerSource(source || inv.ledgerSource || inv.source || 'Chat');
+  const safeDesc = String(inv.description || inv.SupplierInvoiceIDByInvcgParty || inv.DocumentHeaderText || '').trim().slice(0, 250);
+  const safeIrn = inv.irn ? String(inv.irn).trim().slice(0, 64) : null;
 
   const whereCond = suppGstin
     ? { supplierGstin: suppGstin, invoiceNo: invNo, fiscalYear: fy }
@@ -208,13 +214,14 @@ async function insertInvoiceIntoLedger(inv, { blocked = false, user = 'reviewer'
   );
 
   if (existing) {
+    const existingId = existing.ID || existing.id;
     const updates = {};
-    if (existing.blocked && !blocked) updates.blocked = false;
-    if (!existing.source && normalizedSource) updates.source = normalizedSource;
-    if (Object.keys(updates).length > 0) {
-      await cds.run(UPDATE('ap.Posted').set(updates).where({ ID: existing.ID }));
+    if ((existing.blocked || existing.BLOCKED) && !blocked) updates.blocked = false;
+    if (!(existing.source || existing.SOURCE) && normalizedSource) updates.source = normalizedSource;
+    if (Object.keys(updates).length > 0 && existingId) {
+      await cds.run(UPDATE('ap.Posted').set(updates).where({ ID: existingId }));
     }
-    return existing.ID;
+    return existingId;
   }
 
   const id = crypto.randomUUID();
@@ -226,8 +233,8 @@ async function insertInvoiceIntoLedger(inv, { blocked = false, user = 'reviewer'
     invoiceDate: invDate,
     total: totalVal !== undefined && totalVal !== null ? Number(totalVal) : 0,
     supplierName: suppName,
-    description: inv.description || inv.SupplierInvoiceIDByInvcgParty || inv.DocumentHeaderText || '',
-    irn: inv.irn || null,
+    description: safeDesc,
+    irn: safeIrn,
     blocked,
     recurringPo: Boolean(inv.recurringPo),
     postedAt: new Date().toISOString(),

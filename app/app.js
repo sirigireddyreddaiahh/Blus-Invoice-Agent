@@ -1125,12 +1125,22 @@ function renderAiChatResultMessage(res, checkedFileName) {
   const noteEl = el('div', RULES_CHECK_DISCLAIMER, 'chat-rules-disclaimer');
   msgCard.appendChild(noteEl);
 
-  // 8c.5: Two buttons below: "Post to ledger" and "Save result".
-  const actionsRow = el('div', null, 'chat-result-actions');
-  const canPostRole = state.roles.includes('APClerk');
+  const canPostRole = state.roles.includes('APClerk') || state.roles.includes('APController');
   const isBlocked = verdict === 'Blocked' || res.status === 'REJECT' || hasNoInvoiceData || res.status === 'NOT_AN_INVOICE';
   const isPass = !hasNoInvoiceData && !isBlocked && (verdict === 'Passed checks' || res.status === 'PASS');
   const isHoldOrReject = isBlocked || res.status === 'HOLD' || verdict === 'Needs review';
+
+  const guidanceEl = el(
+    'div',
+    isPass
+      ? 'Verification complete: Passed checks. You can post this invoice to the Ledger and view it in the Ledger tab.'
+      : 'Verification complete: Flagged by rules. Check the Ledger tab for passed invoices and check the 3. Review queue tab for held or rejected invoices.',
+    'chat-guidance-banner'
+  );
+  msgCard.appendChild(guidanceEl);
+
+  // Action buttons below: Post to ledger / Post to Review Queue / Open tab / Save result
+  const actionsRow = el('div', null, 'chat-result-actions');
 
   const isAlreadyInLedger = Boolean(
     res.alreadyInLedger ||
@@ -1154,16 +1164,34 @@ function renderAiChatResultMessage(res, checkedFileName) {
 
   if (!canPostRole) btnPost.classList.add('hidden');
 
+  const btnPostReview = el('button', 'Post to Review Queue', 'primary');
+  btnPostReview.type = 'button';
+  if (!isHoldOrReject || isPass) {
+    btnPostReview.classList.add('hidden');
+  }
+
+  const btnOpenTarget = el('button', isPass ? 'Open Ledger' : 'Open Review Queue', '');
+  btnOpenTarget.type = 'button';
+  btnOpenTarget.addEventListener('click', () => {
+    if (isPass) {
+      switchPage('ledger');
+    } else if (state.roles.includes('APController')) {
+      switchPage('alerts');
+    } else {
+      switchPage('history');
+    }
+  });
+
   const btnSave = el('button', 'Save result', 'btn-chat-save-result');
   btnSave.type = 'button';
 
-  actionsRow.append(btnPost, btnSave);
+  actionsRow.append(btnPost, btnPostReview, btnOpenTarget, btnSave);
   msgCard.appendChild(actionsRow);
 
   if (isAlreadyInLedger) {
     const dupLine = el(
       'div',
-      'This invoice is already saved in the ledger. No duplicate added.',
+      'This invoice is already saved in the ledger. No duplicate added. Would you like to post this failed check to the Review Queue?',
       'chat-hold-reject-reason'
     );
     dupLine.style.fontSize = '12.5px';
@@ -1173,8 +1201,8 @@ function renderAiChatResultMessage(res, checkedFileName) {
   } else if (isHoldOrReject || !isPass) {
     const holdRejectMsg = hasNoInvoiceData
       ? 'This invoice has no data. Rejected invoices cannot be posted to the ledger.'
-      : cleanReasonDisplayText(res.explanation || TERM_MEANINGS[displayTerm] || 'Held or rejected invoices are saved after review.');
-    const reasonText = el('div', holdRejectMsg, 'chat-hold-reject-reason');
+      : cleanReasonDisplayText(res.explanation || TERM_MEANINGS[displayTerm] || 'Held or rejected invoices are routed to the Review Queue.');
+    const reasonText = el('div', `${holdRejectMsg} Would you like to post this failed invoice to the Review Queue?`, 'chat-hold-reject-reason');
     reasonText.style.fontSize = '12.5px';
     reasonText.style.color = 'var(--text-muted)';
     reasonText.style.marginTop = '4px';
@@ -1182,6 +1210,42 @@ function renderAiChatResultMessage(res, checkedFileName) {
   }
 
   const actionStatusEl = el('div', '', 'status-banner hidden');
+
+  btnPostReview.addEventListener('click', async () => {
+    if (btnPostReview.disabled) return;
+    actionStatusEl.className = 'status-banner info';
+    actionStatusEl.textContent = 'Posting failed invoice to Review Queue...';
+    btnPostReview.disabled = true;
+    try {
+      const triggered = activeRows.find(r => r.tier !== 'PASS' && r.tier !== 'SKIPPED') || activeRows[0] || {};
+      const resp = await fetch('/fraud/postBatchToReviewQueue', {
+        method: 'POST',
+        headers: getHeaders(),
+        body: JSON.stringify({
+          fileName: checkedFileName || inv.invoiceNo || 'chat-invoice',
+          items: [{
+            checkId: res.checkId,
+            invoiceNo: inv.invoiceNo || checkedFileName || '—',
+            supplierName: inv.supplierName || '—',
+            status: res.status === 'HOLD' ? 'HOLD' : 'REJECT',
+            ruleId: triggered.id || 'AP-02',
+            title: triggered.title || 'Rule violation',
+            reason: triggered.text || res.explanation || 'Flagged for controller review',
+          }],
+        }),
+      });
+      const data = await resp.json().catch(() => ({}));
+      if (!resp.ok) throw new Error((data.error && data.error.message) || 'Failed to post to Review Queue');
+      actionStatusEl.className = 'status-banner success';
+      actionStatusEl.textContent = data.message || 'Posted to Review Queue.';
+      btnPostReview.textContent = 'Posted to Review Queue ✓';
+      loadTopSummary();
+    } catch (err) {
+      btnPostReview.disabled = false;
+      actionStatusEl.className = 'status-banner error';
+      actionStatusEl.textContent = err.message || 'Posting to Review Queue failed.';
+    }
+  });
 
   btnPost.addEventListener('click', async () => {
     if (btnPost.disabled || hasNoInvoiceData) return;
@@ -1547,20 +1611,48 @@ async function askQuestionInAiThread(questionText, explicitCheckId = '') {
   appendMessageToChat(userBubble);
 
   // Single thinking indicator on the left while server runs
-  const replyBubble = el('div', 'Thinking...', 'chat-bubble assistant thinking-indicator');
+  const replyBubble = createAiThinkingBox('Thinking...');
   appendMessageToChat(replyBubble);
 
   try {
     const checkId = explicitCheckId || (state.currentResult && state.currentResult.checkId) || '';
     const reply = await api('askInvoice', { checkId, question: q });
-    replyBubble.classList.remove('thinking-indicator');
+    replyBubble.classList.remove('thinking-indicator', 'ai-thinking-box');
     const replyStr = typeof reply === 'string' ? reply : JSON.stringify(reply);
     renderFormattedAssistantReply(replyBubble, replyStr);
   } catch (err) {
-    replyBubble.classList.remove('thinking-indicator');
+    replyBubble.classList.remove('thinking-indicator', 'ai-thinking-box');
     replyBubble.textContent = err.message || 'The assistant is not configured.';
   }
   scrollChatToBottom();
+}
+
+function createAiThinkingBox(initialHeader = 'Thinking...', initialDetail = '', initialTally = '') {
+  const box = el('div', null, 'chat-bubble assistant thinking-indicator ai-thinking-box');
+  const headerWrap = el('div', null, 'ai-thinking-header');
+  const dot = el('span', '', 'ai-thinking-dot');
+  const headerTextEl = el('span', initialHeader, 'ai-thinking-title');
+  const tallyEl = el('span', initialTally, 'ai-thinking-tally');
+  if (!initialTally) tallyEl.classList.add('hidden');
+  headerWrap.append(dot, headerTextEl, tallyEl);
+
+  const detailEl = el('div', initialDetail, 'ai-thinking-detail');
+  if (!initialDetail) detailEl.classList.add('hidden');
+
+  box.append(headerWrap, detailEl);
+
+  box.update = ({ header, detail, tally } = {}) => {
+    if (header !== undefined) headerTextEl.textContent = header;
+    if (detail !== undefined) {
+      detailEl.textContent = detail;
+      detailEl.classList.toggle('hidden', !detail);
+    }
+    if (tally !== undefined) {
+      tallyEl.textContent = tally;
+      tallyEl.classList.toggle('hidden', !tally);
+    }
+  };
+  return box;
 }
 
 async function performAiChatCheck(userPromptText = '') {
@@ -1582,8 +1674,11 @@ async function performAiChatCheck(userPromptText = '') {
     // 8a. User message on the right: "Checking [filename]"
     appendMessageToChat(el('div', `Checking ${fileToSend.name}`, 'chat-bubble user'));
 
-    // 8b. A single thinking indicator on the left while the server runs
-    const thinkingBubble = el('div', 'Thinking...', 'chat-bubble assistant thinking-indicator');
+    // 8b. Simple, minimal premium AI thinking indicator on the left while server runs
+    const thinkingBubble = createAiThinkingBox(
+      `Reading ${fileToSend.name}`,
+      'Extracting fields & preparing database ledger check...'
+    );
     appendMessageToChat(thinkingBubble);
 
     const fileExt = String(fileToSend.ext || fileToSend.name || '').toLowerCase().split('.').pop();
@@ -1594,7 +1689,6 @@ async function performAiChatCheck(userPromptText = '') {
           contentText = atob(fileToSend.base64);
         }
         const imp = await api('importS4Extract', { fileName: fileToSend.name, content: contentText });
-        const colLine = imp.columnsFound || '';
         const validInvoices = Array.isArray(imp.invoices) ? imp.invoices : [];
         const rowErrors = Array.isArray(imp.rowErrors) ? imp.rowErrors : [];
 
@@ -1619,8 +1713,15 @@ async function performAiChatCheck(userPromptText = '') {
           return;
         }
 
+        const totalInvCount = validInvoices.length;
         state.s4List = validInvoices;
-        thinkingBubble.textContent = `0 of ${validInvoices.length} checked...`;
+
+        thinkingBubble.update({
+          header: `Checking 1 of ${totalInvCount} (1%)`,
+          detail: `${validInvoices[0].invoiceNo || 'Row 1'} · ${validInvoices[0].supplierName || 'Supplier'} — Checking database ledger...`,
+          tally: `· 0 Pass · 0 Hold · 0 Reject`,
+        });
+
         const job = await api('checkBatch', {
           fileName: fileToSend.name,
           invoices: JSON.stringify(validInvoices),
@@ -1630,60 +1731,327 @@ async function performAiChatCheck(userPromptText = '') {
         state.currentJobId = jobId;
 
         let finalJob = job;
+        let displayIdx = 1;
         if (jobId) {
-          for (let attempt = 0; attempt < 120; attempt++) {
+          for (let attempt = 0; attempt < 240; attempt++) {
             const st = await fetchJobStatus(jobId);
             if (st) {
               finalJob = st;
-              thinkingBubble.textContent = `${st.processed || 0} of ${st.total || validInvoices.length} checked...`;
+              const serverProcessed = Number(st.processed || st.currentIndex || 0);
+              const total = Number(st.total || totalInvCount);
+              // Step displayIdx smoothly toward serverProcessed so user sees 1 of N, 2 of N, ...
+              const targetIdx = (st.status === 'DONE') ? total : Math.max(displayIdx, serverProcessed);
+              while (displayIdx <= targetIdx && displayIdx <= total) {
+                const curInv = validInvoices[displayIdx - 1] || {};
+                const invLabel = curInv.invoiceNo || st.currentInvoiceNo || `Row ${displayIdx}`;
+                const suppLabel = curInv.supplierName || st.currentSupplier || 'Supplier';
+                const pct = Math.min(100, Math.round((displayIdx / total) * 100));
+                thinkingBubble.update({
+                  header: `Checking ${displayIdx} of ${total} (${pct}%)`,
+                  detail: `${invLabel} · ${suppLabel} — Checking ledger & active rules...`,
+                  tally: `· ${st.passCount || 0} Pass · ${st.holdCount || 0} Hold · ${st.rejectCount || 0} Reject`,
+                });
+                scrollChatToBottom();
+                if (targetIdx - displayIdx > 0) {
+                  await new Promise(r => setTimeout(r, total <= 120 ? 18 : 6));
+                }
+                displayIdx++;
+              }
               if (st.status === 'DONE' || st.status === 'FAILED' || st.status === 'CANCELLED') {
                 break;
               }
             }
-            await new Promise(r => setTimeout(r, 350));
+            await new Promise(r => setTimeout(r, 180));
           }
+        }
+
+        // Fetch all rows for this batch job (up to 2000) so both Passed and Failed cards have complete data
+        let allBatchRows = [];
+        try {
+          const allParams = new URLSearchParams({
+            page: '1',
+            limit: '2000',
+            status: 'ALL',
+            search: '',
+          });
+          if (jobId) allParams.set('jobId', jobId);
+          const allRes = await fetch(`/fraud/s4Results?${allParams.toString()}`, {
+            method: 'GET',
+            headers: getHeaders(),
+          });
+          const allData = await parseJsonResponse(allRes);
+          if (allData && Array.isArray(allData.rows) && allData.rows.length > 0) {
+            allBatchRows = allData.rows;
+          }
+        } catch (_) {}
+
+        if (allBatchRows.length === 0 && finalJob && Array.isArray(finalJob.results) && finalJob.results.length > 0) {
+          allBatchRows = finalJob.results.map(r => {
+            const inv = r.invoice || r.fields || {};
+            const nonPass = (r.activeResults || r.results || []).filter(x => x.tier !== 'PASS' && x.tier !== 'SKIPPED' && x.tier !== 'DISABLED');
+            return {
+              id: inv.invoiceNo || r.id,
+              checkId: r.checkId,
+              invoiceNo: inv.invoiceNo || '—',
+              supplierName: inv.supplierName || '—',
+              supplierGstin: inv.supplierGstin || '—',
+              invoiceDate: inv.invoiceDate || '—',
+              total: inv.total,
+              status: r.status || 'PASS',
+              databaseMatch: r.databaseMatch,
+              sapMatch: r.sapMatch,
+              activeResults: r.activeResults || [],
+              fields: inv,
+              reason: nonPass.length ? nonPass.map(x => cleanReasonDisplayText(x.text)).join(' | ') : 'All active rules passed',
+            };
+          });
         }
 
         thinkingBubble.remove();
         await loadS4Results(1, true);
         await loadTopSummary();
 
-        const summaryBubble = el('div', null, 'chat-bubble assistant chat-result-message');
-        const totalChecked = (finalJob && finalJob.processed) || validInvoices.length;
-        const passCnt = (finalJob && finalJob.passCount) || 0;
-        const holdCnt = (finalJob && finalJob.holdCount) || 0;
-        const rejCnt = (finalJob && finalJob.rejectCount) || 0;
+        const passedRows = allBatchRows.filter(r => String(r.status || 'PASS').toUpperCase() === 'PASS');
+        const failedRows = allBatchRows.filter(r => String(r.status || 'PASS').toUpperCase() !== 'PASS');
+        const holdRows = failedRows.filter(r => String(r.status || '').toUpperCase() === 'HOLD');
+        const rejectRows = failedRows.filter(r => String(r.status || '').toUpperCase() !== 'HOLD');
 
+        const passCnt = passedRows.length || Number((finalJob && finalJob.passCount) || (state.s4Counts && state.s4Counts.pass) || 0);
+        const holdCnt = holdRows.length || Number((finalJob && finalJob.holdCount) || (state.s4Counts && state.s4Counts.hold) || 0);
+        const rejCnt = rejectRows.length || Number((finalJob && finalJob.rejectCount) || (state.s4Counts && state.s4Counts.reject) || 0);
+        const failedCnt = holdCnt + rejCnt;
+        const totalChecked = (passCnt + failedCnt) || Number((finalJob && finalJob.processed) || validInvoices.length);
+
+        const summaryBubble = el('div', null, 'chat-bubble assistant chat-result-message');
+
+        // 1. Top Headline: How many checked, how many Passed, how many Failed
         const summaryHeader = el(
           'div',
-          `${fileToSend.name}: ${totalChecked} invoices checked. ${passCnt} PASS, ${holdCnt} HOLD, ${rejCnt} REJECT.`,
+          `${fileToSend.name}: ${totalChecked} invoices checked — ${passCnt} Passed (PASS), ${failedCnt} Failed (${holdCnt} HOLD, ${rejCnt} REJECT).`,
           'result-field-line'
         );
-        summaryHeader.style.fontWeight = '600';
+        summaryHeader.style.fontWeight = '700';
+        summaryHeader.style.fontSize = '14.5px';
         summaryBubble.appendChild(summaryHeader);
+
+        // 2. Clear Guidance Banner telling user where to check Passed vs Failed
+        const guidanceBanner = el(
+          'div',
+          `Verification completed across all ${totalChecked} invoice(s). Check the Ledger tab for passed invoices (${passCnt} PASS) and check the 3. Review queue tab for held or rejected invoices (${failedCnt} Failed: ${holdCnt} HOLD, ${rejCnt} REJECT). Review the Passed and Failed cards below and choose whether to post them:`,
+          'chat-guidance-banner'
+        );
+        summaryBubble.appendChild(guidanceBanner);
 
         const colEl = el('div', colsFoundText, 'result-field-line');
         colEl.style.marginBottom = '8px';
-        colEl.style.fontSize = '13px';
+        colEl.style.fontSize = '12.5px';
         colEl.style.color = 'var(--text-muted)';
         summaryBubble.appendChild(colEl);
 
-        const s4Rows = state.s4Results || [];
-        const flagged = s4Rows.filter(r => r.status === 'HOLD' || r.status === 'REJECT');
-        if (flagged.length > 0) {
-          const flagWrap = el('div', null, 'chat-active-rules-list');
-          flagged.slice(0, 20).forEach(r => {
-            const rowLine = el('div', null, 'chat-rule-line');
-            rowLine.append(
-              el('span', r.status, `badge ${r.status}`),
-              el('span', `${r.invoiceNo || '-'} (${r.supplierName || '-'}): ${r.reason || '-'}`, 'rule-reason')
+        // 3. CARD 1: PASSED INVOICES CARD
+        if (passedRows.length > 0) {
+          const sumPassAmt = passedRows.reduce((acc, r) => acc + (Number(r.total) || 0), 0);
+          const passCard = el('div', null, 'chat-batch-card pass-card');
+
+          const passHeader = el('div', null, 'chat-batch-card-header');
+          const passTitleWrap = el('div', null, 'chat-batch-card-title');
+          passTitleWrap.append(
+            el('span', 'PASS', 'badge PASS'),
+            el('span', `Passed Invoices (${passedRows.length})`)
+          );
+          const passMeta = el('div', `Total: INR ${formatMoney(sumPassAmt)}`, 'chat-batch-card-meta');
+          passHeader.append(passTitleWrap, passMeta);
+          passCard.appendChild(passHeader);
+
+          const passReasonSummary = el(
+            'div',
+            'Why passed: Checked against the database ledger — no duplicate invoice number found in the financial year, supplier GSTIN is valid and unique, no repeat bill within 90 days, and no split-invoice pattern.',
+            'chat-batch-card-reason-summary'
+          );
+          passCard.appendChild(passReasonSummary);
+
+          const passListScroll = el('div', null, 'chat-batch-rows-scroll');
+          passedRows.forEach((r, idx) => {
+            const rowEl = el('div', null, 'chat-batch-row');
+            const topLine = el('div', null, 'chat-batch-row-top');
+            const mainLeft = el('div', null, 'chat-batch-row-main');
+            mainLeft.append(
+              el('span', 'PASS', 'badge PASS'),
+              el('span', `${idx + 1}. ${r.invoiceNo || '—'} (${r.supplierName || '—'})`),
+              el('span', `· GSTIN: ${r.supplierGstin || '—'} · Date: ${r.invoiceDate || '—'}`, 'hint')
             );
-            flagWrap.appendChild(rowLine);
+            const amtRight = el('div', `INR ${formatMoney(r.total)}`, 'chat-batch-row-amt');
+            topLine.append(mainLeft, amtRight);
+
+            const passReasonText = (r.reason && r.reason !== 'All active rules passed')
+              ? r.reason
+              : 'Passed all active rules — Not found in database ledger (no duplicate), valid GSTIN, no repeat or split bill.';
+            const reasonLine = el('div', `Reason: ${passReasonText}`, 'chat-batch-row-reason');
+
+            rowEl.append(topLine, reasonLine);
+            rowEl.addEventListener('click', () => openS4DetailDrawer(r));
+            passListScroll.appendChild(rowEl);
           });
-          if (flagged.length > 20) {
-            flagWrap.appendChild(el('div', `and ${flagged.length - 20} more flagged rows`, 'hint'));
-          }
-          summaryBubble.appendChild(flagWrap);
+          passCard.appendChild(passListScroll);
+
+          const passFooter = el('div', null, 'chat-batch-card-footer');
+          const passPrompt = el(
+            'div',
+            `Would you like to post these ${passedRows.length} passed invoice(s) to the Ledger?`,
+            'chat-batch-prompt'
+          );
+          const passActions = el('div', null, 'chat-batch-actions');
+          const btnPostPassLedger = el('button', `Post ${passedRows.length} Passed to Ledger`, 'primary');
+          btnPostPassLedger.type = 'button';
+          const btnViewLedger = el('button', 'Open Ledger', '');
+          btnViewLedger.type = 'button';
+          const passStatusBanner = el('div', '', 'status-banner hidden');
+
+          btnPostPassLedger.addEventListener('click', async () => {
+            if (btnPostPassLedger.disabled) return;
+            btnPostPassLedger.disabled = true;
+            passStatusBanner.className = 'status-banner info';
+            passStatusBanner.textContent = `Posting ${passedRows.length} passed invoice(s) to Ledger...`;
+            try {
+              const resp = await fetch('/fraud/postBatchToLedger', {
+                method: 'POST',
+                headers: getHeaders(),
+                body: JSON.stringify({
+                  fileName: fileToSend.name,
+                  invoices: passedRows,
+                }),
+              });
+              const data = await resp.json().catch(() => ({}));
+              if (!resp.ok) throw new Error((data.error && data.error.message) || 'Failed to post passed invoices to Ledger');
+              passStatusBanner.className = 'status-banner success';
+              passStatusBanner.textContent = `${data.message || `Posted ${passedRows.length} passed invoice(s) to the Ledger.`} You can view them in the Ledger tab.`;
+              btnPostPassLedger.textContent = `Posted ${passedRows.length} Passed to Ledger ✓`;
+              loadTopSummary();
+              if ($('page-ledger') && $('page-ledger').classList.contains('active')) {
+                loadLedgerView(1);
+              }
+            } catch (err) {
+              btnPostPassLedger.disabled = false;
+              passStatusBanner.className = 'status-banner error';
+              passStatusBanner.textContent = err.message || 'Failed to post passed invoices to Ledger.';
+            }
+          });
+
+          btnViewLedger.addEventListener('click', () => {
+            switchPage('ledger');
+            loadLedgerView(1);
+          });
+
+          passActions.append(btnPostPassLedger, btnViewLedger);
+          passFooter.append(passPrompt, passActions, passStatusBanner);
+          passCard.appendChild(passFooter);
+          summaryBubble.appendChild(passCard);
+        }
+
+        // 4. CARD 2: FAILED (HOLD / REJECT) INVOICES CARD
+        if (failedRows.length > 0) {
+          const sumFailAmt = failedRows.reduce((acc, r) => acc + (Number(r.total) || 0), 0);
+          const failCard = el('div', null, 'chat-batch-card fail-card');
+
+          const failHeader = el('div', null, 'chat-batch-card-header');
+          const failTitleWrap = el('div', null, 'chat-batch-card-title');
+          const primaryBadgeTier = rejCnt > 0 ? 'REJECT' : 'HOLD';
+          failTitleWrap.append(
+            el('span', primaryBadgeTier, `badge ${primaryBadgeTier}`),
+            el('span', `Failed / Flagged Invoices (${failedRows.length} — ${holdCnt} HOLD, ${rejCnt} REJECT)`)
+          );
+          const failMeta = el('div', `Total: INR ${formatMoney(sumFailAmt)}`, 'chat-batch-card-meta');
+          failHeader.append(failTitleWrap, failMeta);
+          failCard.appendChild(failHeader);
+
+          const failReasonSummary = el(
+            'div',
+            'Why failed: Flagged during database ledger & rule verification (such as duplicate invoice already saved in the ledger, GSTIN conflict, repeat bill within 90 days, or split-invoice pattern).',
+            'chat-batch-card-reason-summary'
+          );
+          failCard.appendChild(failReasonSummary);
+
+          const failListScroll = el('div', null, 'chat-batch-rows-scroll');
+          failedRows.forEach((r, idx) => {
+            const rowEl = el('div', null, 'chat-batch-row');
+            const topLine = el('div', null, 'chat-batch-row-top');
+            const mainLeft = el('div', null, 'chat-batch-row-main');
+            const stBadge = String(r.status || 'REJECT').toUpperCase();
+            mainLeft.append(
+              el('span', stBadge, `badge ${stBadge}`),
+              el('span', `${idx + 1}. ${r.invoiceNo || '—'} (${r.supplierName || '—'})`),
+              el('span', `· GSTIN: ${r.supplierGstin || '—'} · Date: ${r.invoiceDate || '—'}`, 'hint')
+            );
+            const amtRight = el('div', `INR ${formatMoney(r.total)}`, 'chat-batch-row-amt');
+            topLine.append(mainLeft, amtRight);
+
+            const failReasonText = cleanReasonDisplayText(r.reason || r.explanation || 'Flagged by active rule check.');
+            const reasonLine = el('div', `Reason: ${failReasonText}`, 'chat-batch-row-reason');
+
+            rowEl.append(topLine, reasonLine);
+            rowEl.addEventListener('click', () => openS4DetailDrawer(r));
+            failListScroll.appendChild(rowEl);
+          });
+          failCard.appendChild(failListScroll);
+
+          const failFooter = el('div', null, 'chat-batch-card-footer');
+          const failPrompt = el(
+            'div',
+            `Would you like to post these ${failedRows.length} failed invoice(s) to the Review Queue for review?`,
+            'chat-batch-prompt'
+          );
+          const failActions = el('div', null, 'chat-batch-actions');
+          const btnPostFailReview = el('button', `Post ${failedRows.length} Failed to Review Queue`, 'primary');
+          btnPostFailReview.type = 'button';
+          const btnViewReviewQueue = el('button', 'Open Review Queue', '');
+          btnViewReviewQueue.type = 'button';
+          const failStatusBanner = el('div', '', 'status-banner hidden');
+
+          btnPostFailReview.addEventListener('click', async () => {
+            if (btnPostFailReview.disabled) return;
+            btnPostFailReview.disabled = true;
+            failStatusBanner.className = 'status-banner info';
+            failStatusBanner.textContent = `Posting ${failedRows.length} failed invoice(s) to Review Queue...`;
+            try {
+              const resp = await fetch('/fraud/postBatchToReviewQueue', {
+                method: 'POST',
+                headers: getHeaders(),
+                body: JSON.stringify({
+                  fileName: fileToSend.name,
+                  items: failedRows,
+                }),
+              });
+              const data = await resp.json().catch(() => ({}));
+              if (!resp.ok) throw new Error((data.error && data.error.message) || 'Failed to post to Review Queue');
+              failStatusBanner.className = 'status-banner success';
+              failStatusBanner.textContent = `${data.message || `Posted ${failedRows.length} failed invoice(s) to the Review Queue.`} Check the 3. Review queue tab to review them.`;
+              btnPostFailReview.textContent = `Posted ${failedRows.length} Failed to Review Queue ✓`;
+              loadTopSummary();
+              if ($('page-alerts') && $('page-alerts').classList.contains('active')) {
+                loadAlertsQueue(1);
+              }
+            } catch (err) {
+              btnPostFailReview.disabled = false;
+              failStatusBanner.className = 'status-banner error';
+              failStatusBanner.textContent = err.message || 'Failed to post to Review Queue.';
+            }
+          });
+
+          btnViewReviewQueue.addEventListener('click', () => {
+            if (state.roles.includes('APController')) {
+              switchPage('alerts');
+              loadAlertsQueue(1);
+            } else {
+              switchPage('s4');
+              setS4StatusFilter(rejCnt > 0 ? 'REJECT' : 'HOLD');
+              loadS4Results(1);
+            }
+          });
+
+          failActions.append(btnPostFailReview, btnViewReviewQueue);
+          failFooter.append(failPrompt, failActions, failStatusBanner);
+          failCard.appendChild(failFooter);
+          summaryBubble.appendChild(failCard);
         }
 
         const allErrors = (finalJob && Array.isArray(finalJob.errors) && finalJob.errors.length)
@@ -1700,7 +2068,8 @@ async function performAiChatCheck(userPromptText = '') {
         }
 
         const actionsRow = el('div', null, 'chat-result-actions');
-        const btnOpenAll = el('button', 'Open all results', 'primary');
+        actionsRow.style.marginTop = '12px';
+        const btnOpenAll = el('button', 'Open all results in S/4HANA extract', '');
         btnOpenAll.type = 'button';
         btnOpenAll.addEventListener('click', () => {
           switchPage('s4');
@@ -1722,11 +2091,25 @@ async function performAiChatCheck(userPromptText = '') {
     }
 
     try {
+      thinkingBubble.update({
+        header: `Checking 1 of 1 · ${fileToSend.name}`,
+        detail: 'Extracting invoice fields & reading document...',
+        tally: '',
+      });
+      const stepTimer = setTimeout(() => {
+        thinkingBubble.update({
+          header: `Checking 1 of 1 · ${fileToSend.name}`,
+          detail: 'Checking database ledger & evaluating duplicate/GSTIN rules...',
+          tally: '',
+        });
+      }, 450);
+
       const out = await api('chatCheckInvoice', {
         fileName: fileToSend.name,
         fileSize: fileToSend.size,
         fileBase64: fileToSend.base64,
       });
+      clearTimeout(stepTimer);
 
       thinkingBubble.remove();
       state.fields = out.fields || {};
@@ -2413,6 +2796,7 @@ if ($('btnUseSampleS4')) {
     setBanner('s4Banner', 'Loading sample S/4HANA extract...', 'info');
     try {
       setS4SourceChip('uploaded');
+      state.lastImportedS4FileKey = null;
       state.s4List = await api('fetchS4Invoices', null, 'GET');
       state.s4Results = [];
       state.currentJobId = null;
@@ -2445,6 +2829,7 @@ if ($('btnImportS4')) {
       }
     }
 
+    state.lastImportedS4FileKey = files.map(f => `${f.name}:${f.size}:${f.lastModified}`).join('|');
     setS4SourceChip('uploaded');
     setBanner('s4Banner', `Reading ${files.length} file(s)...`, 'info');
     try {
@@ -2714,6 +3099,13 @@ if ($('btnClearSearchDb')) {
 if ($('btnCheckAllS4')) {
   $('btnCheckAllS4').addEventListener('click', async () => {
     closeAllDropdowns();
+    const input = $('s4FileInput');
+    const files = input && input.files ? Array.from(input.files) : [];
+    const currentFileKey = files.length ? files.map(f => `${f.name}:${f.size}:${f.lastModified}`).join('|') : null;
+    if (files.length && (!state.s4List.length || state.lastImportedS4FileKey !== currentFileKey) && $('btnImportS4')) {
+      $('btnImportS4').click();
+      return;
+    }
     if (!state.s4List.length) {
       setS4SourceChip('uploaded');
       state.s4List = await api('fetchS4Invoices', null, 'GET');
@@ -2722,7 +3114,9 @@ if ($('btnCheckAllS4')) {
     setBanner('s4Banner', 'Processing started', 'info');
     try {
       const job = await api('checkBatch', { invoices: JSON.stringify(state.s4List) });
+      loadTopSummary();
       if (job && (job.jobId || job.id)) {
+        state.currentJobId = job.jobId || job.id;
         pollBatchJob(job.jobId || job.id, job.total || state.s4List.length);
       } else if (Array.isArray(job)) {
         state.s4Results = job;
