@@ -48,6 +48,29 @@ function cleanRuleText(text) {
   return String(text || '').replace(/^AP-\d+\s*·?\s*/i, '').trim();
 }
 
+function formatISTExport(value, withTime = true) {
+  if (!value) return '';
+  let raw = value;
+  if (typeof raw === 'string') {
+    const s = raw.trim();
+    const m = s.match(/^(\d{4}-\d{2}-\d{2})[T\s](\d{2}:\d{2}:\d{2})(?:\.(\d+))?$/);
+    if (m) {
+      const ms = m[3] ? `.${m[3].slice(0, 3).padEnd(3, '0')}` : '';
+      raw = `${m[1]}T${m[2]}${ms}Z`;
+    } else if (/^\d{4}-\d{2}-\d{2}[T\s]\d{2}:\d{2}$/.test(s)) {
+      raw = `${s.replace(' ', 'T')}:00Z`;
+    }
+  }
+  const d = new Date(raw);
+  if (isNaN(d.getTime())) return String(value);
+  const opts = { timeZone: 'Asia/Kolkata', day: '2-digit', month: '2-digit', year: 'numeric' };
+  if (withTime) {
+    Object.assign(opts, { hour: '2-digit', minute: '2-digit', second: '2-digit', hour12: false });
+    return d.toLocaleString('en-IN', opts);
+  }
+  return d.toLocaleDateString('en-IN', opts);
+}
+
 /**
  * Normalizes raw database check rows into uniform export row arrays
  * for Check History without any rule codes.
@@ -68,7 +91,7 @@ function extractHistoryRowCells(r) {
   };
 
   return [
-    r.createdAt || '',
+    r.createdAt ? formatISTExport(r.createdAt) : '',
     r.source || 'CHAT',
     r.fileName || r.source || '',
     r.invoiceNo || '',
@@ -376,7 +399,7 @@ function extractActivityRowCells(r) {
 
   return [
     r.idx !== undefined && r.idx !== null ? `#${r.idx}` : '',
-    r.ts || '',
+    r.ts ? formatISTExport(r.ts) : '',
     r.action || 'CHECK',
     fileOrSource,
     resultText,
@@ -390,7 +413,7 @@ function extractLedgerRowCells(r) {
   if (s === 'BATCH' || s === 'S4') sourceLabel = 'Batch';
   else if (s === 'CHAT' || s === 'UPLOAD') sourceLabel = 'Chat';
 
-  const postingDate = r.postingDate || (r.postedAt ? String(r.postedAt).slice(0, 10) : (r.invoiceDate || ''));
+  const postingDate = r.postedAt ? formatISTExport(r.postedAt) : (r.postingDate || r.invoiceDate || '');
   return [
     r.invoiceNo || '',
     r.supplierName || '',

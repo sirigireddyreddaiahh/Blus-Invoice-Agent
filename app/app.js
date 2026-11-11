@@ -82,7 +82,20 @@ function toDisplayStatusTerm(res, verdict, hasNoInvoiceData = false) {
 
 function formatIST(value, withTime = true) {
   if (!value) return '—';
-  const d = new Date(value);
+  let raw = value;
+  if (typeof raw === 'string') {
+    const s = raw.trim();
+    // If string has date + time (YYYY-MM-DD[T ]HH:mm:ss...) without a Z or +/-HH:mm offset,
+    // treat it as UTC (since SAP HANA TIMESTAMP columns strip the trailing 'Z').
+    const m = s.match(/^(\d{4}-\d{2}-\d{2})[T\s](\d{2}:\d{2}:\d{2})(?:\.(\d+))?$/);
+    if (m) {
+      const ms = m[3] ? `.${m[3].slice(0, 3).padEnd(3, '0')}` : '';
+      raw = `${m[1]}T${m[2]}${ms}Z`;
+    } else if (/^\d{4}-\d{2}-\d{2}[T\s]\d{2}:\d{2}$/.test(s)) {
+      raw = `${s.replace(' ', 'T')}:00Z`;
+    }
+  }
+  const d = new Date(raw);
   if (isNaN(d.getTime())) return String(value);
   const opts = { timeZone: 'Asia/Kolkata', day: '2-digit', month: '2-digit', year: 'numeric' };
   if (withTime) {

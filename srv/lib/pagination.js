@@ -33,10 +33,25 @@ function normalizeRow(row, entityName) {
       keyMap[fk.toLowerCase()] = fk;
     }
   }
+  const tsFields = new Set(['createdat', 'modifiedat', 'postedat', 'decidedat', 'startedat', 'finishedat']);
   const out = {};
   for (const [k, v] of Object.entries(row)) {
-    const mapped = keyMap[k.toLowerCase()];
-    out[mapped || k] = v;
+    const lowerK = k.toLowerCase();
+    const mapped = keyMap[lowerK] || k;
+    let val = v;
+    if (tsFields.has(lowerK) && val !== null && val !== undefined) {
+      if (val instanceof Date && !isNaN(val.getTime())) {
+        val = val.toISOString();
+      } else if (typeof val === 'string') {
+        const s = val.trim();
+        const m = s.match(/^(\d{4}-\d{2}-\d{2})[T\s](\d{2}:\d{2}:\d{2})(?:\.(\d+))?$/);
+        if (m) {
+          const ms = m[3] ? `.${m[3].slice(0, 3).padEnd(3, '0')}` : '.000';
+          val = `${m[1]}T${m[2]}${ms}Z`;
+        }
+      }
+    }
+    out[mapped] = val;
   }
   return out;
 }
