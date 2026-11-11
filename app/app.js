@@ -92,55 +92,6 @@ function formatIST(value, withTime = true) {
   return d.toLocaleDateString('en-IN', opts);
 }
 
-function startISTClock() {
-  let clockEl = document.getElementById('istClock');
-  if (!clockEl) {
-    const brandHeader = document.querySelector('.brand-header');
-    if (brandHeader) {
-      clockEl = document.createElement('span');
-      clockEl.id = 'istClock';
-      clockEl.className = 'ist-clock';
-      clockEl.textContent = '--:--:--';
-      clockEl.style.cssText = 'margin-left:auto;font-family:var(--font-mono,monospace);font-size:13px;font-weight:600;color:var(--text-secondary,#a0aec0);letter-spacing:0.02em;padding:4px 10px;border-radius:4px;background:rgba(255,255,255,0.04);border:1px solid rgba(255,255,255,0.08);';
-      brandHeader.appendChild(clockEl);
-    }
-  }
-  if (!clockEl) return;
-
-  let serverOffsetMs = 0;
-  let isOffline = false;
-
-  const syncWithServer = async () => {
-    try {
-      const res = await fetch('/fraud/serverTime');
-      if (!res.ok) throw new Error('HTTP ' + res.status);
-      const data = await res.json();
-      if (data && data.utc) {
-        serverOffsetMs = Date.parse(data.utc) - Date.now();
-        isOffline = false;
-      }
-    } catch (_err) {
-      isOffline = true;
-    }
-  };
-
-  const tick = () => {
-    const now = new Date(Date.now() + serverOffsetMs);
-    const timeStr = now.toLocaleTimeString('en-IN', {
-      timeZone: 'Asia/Kolkata',
-      hour: '2-digit',
-      minute: '2-digit',
-      second: '2-digit',
-      hour12: false,
-    });
-    clockEl.textContent = isOffline ? `${timeStr} (offline)` : timeStr;
-  };
-
-  syncWithServer().then(tick);
-  setInterval(tick, 1000);
-  setInterval(syncWithServer, 60000);
-}
-
 const state = {
   user: 'user',
   roles: ['APClerk', 'APController', 'Auditor'],
@@ -764,6 +715,7 @@ function dismissWelcomeScreen(opts = {}) {
       if (shell) shell.classList.add('chat-fade-in');
       setTimeout(() => {
         welcome.classList.add('hidden');
+        if (shell) shell.classList.remove('chat-fade-in');
       }, 500);
     }
   }
@@ -1400,12 +1352,16 @@ function parseMarkdownTableBlock(tableLines, contextTitle = '') {
       const td = document.createElement('td');
       const upperVal = String(val).trim().toUpperCase();
 
+      const displayVal = (dateColIndices.has(colIdx) && /^\d{4}-\d{2}-\d{2}[T\s]\d{2}:\d{2}/.test(String(val).trim()))
+        ? formatIST(String(val).trim())
+        : val;
+
       if (variant !== 'ledger' && statusColIndices.has(colIdx) && ['PASS', 'HOLD', 'REJECT'].includes(upperVal)) {
         td.appendChild(el('span', upperVal, `badge ${upperVal}`));
       } else if (variant !== 'ledger' && actionColIndices.has(colIdx) && val !== '—') {
         td.appendChild(el('span', formatActionPlainWord(val), 'chat-action-pill'));
       } else {
-        td.textContent = val;
+        td.textContent = displayVal;
       }
 
       if (numColIndices.has(colIdx)) {
@@ -2042,7 +1998,10 @@ function openS4DetailDrawer(row, sourceTab = 's4') {
   addKv('GSTIN', gstin);
   addKv('Invoice date', dateVal);
   if (row.postingDate || row.postedAt) {
-    addKv('Posting date', formatCellValue(row.postingDate || formatIST(row.postedAt, false)));
+    addKv('Posting date', formatCellValue(row.postedAt ? formatIST(row.postedAt) : row.postingDate));
+  }
+  if (row.createdAt && sourceTab !== 'ledger') {
+    addKv('Checked at', formatIST(row.createdAt));
   }
   addKv('Total (INR)', totalVal);
 
@@ -2995,6 +2954,12 @@ function openReviewDecisionDrawer(alert) {
   addKv('Supplier', supp);
   addKv('Issue', issueLabel);
   addKv('Reason', cleanReasonDisplayText(alert.reason || alert.text));
+  if (alert.createdAt) {
+    addKv('Raised at', formatIST(alert.createdAt));
+  }
+  if (alert.decidedAt) {
+    addKv('Decided at', formatIST(alert.decidedAt));
+  }
   detailsEl.appendChild(kvGrid);
 
   drawer.classList.remove('hidden');
@@ -3593,7 +3558,8 @@ if ($('btnExportActivityCsv')) {
       const fileSource = formatCellValue(row.fileName || parsed.file);
       const resVal = parsed.clean !== '—' ? parsed.clean : parsed.result;
       const byVal = formatReviewerName(row.createdBy || parsed.user);
-      lines.push([row.ts, actionPlain, fileSource, resVal, byVal].map(escapeCsv).join(','));
+      const timeVal = row.ts ? formatIST(row.ts) : '—';
+      lines.push([timeVal, actionPlain, fileSource, resVal, byVal].map(escapeCsv).join(','));
     }
     triggerDownload('\uFEFF' + lines.join('\r\n'), 'blus-invoice-agent-activity-log.csv', 'text/csv;charset=utf-8');
   });
@@ -3731,8 +3697,11 @@ function openFailedReadsDrawer() {
     const listWrap = el('div', null, 'failed-reads-list');
     failedFiles.forEach(item => {
       const card = el('div', null, 'failed-read-card');
+      const fileHeader = item.ts
+        ? `${formatCellValue(item.fileName || 'invoice')} · ${formatIST(item.ts)}`
+        : formatCellValue(item.fileName || 'invoice');
       card.append(
-        el('div', formatCellValue(item.fileName || 'invoice'), 'failed-read-file'),
+        el('div', fileHeader, 'failed-read-file'),
         el('div', formatCellValue(item.reason || 'No readable text found. Try a clearer scan or a Fiori CSV export.'), 'failed-read-reason')
       );
       listWrap.appendChild(card);
@@ -3855,7 +3824,7 @@ function renderLedgerTable() {
       el('td', formatCellValue(r.supplierName)),
       el('td', formatCellValue(r.supplierGstin), 'mono-cell'),
       el('td', formatCellValue(r.invoiceDate), 'mono-cell'),
-      el('td', formatCellValue(r.postingDate), 'mono-cell'),
+      el('td', r.postedAt ? formatIST(r.postedAt) : formatCellValue(r.postingDate), 'mono-cell'),
       el('td', formatMoney(amt), 'num-col'),
       el('td', formatCellValue(r.fiscalYear), 'mono-cell'),
       el('td', formatCellValue(r.source || 'Import'))
@@ -3968,7 +3937,6 @@ async function initApp() {
 
   applyRolePermissions();
   loadTopSummary();
-  startISTClock();
 }
 
 initApp();
