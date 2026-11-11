@@ -1126,7 +1126,8 @@ class FraudService extends cds.ApplicationService {
         checkId: preCheckId,
       });
 
-      const checkId = runCheck
+      const isMissingCoreData = hasNoInvoiceData || checkMissingFields.length > 0 || rawResult.status === 'NOT_AN_INVOICE';
+      const checkId = (runCheck && !isMissingCoreData)
         ? await persist(inv, rawResult, effectiveSource, req, {
             checkId: preCheckId,
             steps,

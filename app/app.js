@@ -1045,16 +1045,19 @@ function renderAiChatResultMessage(res, checkedFileName) {
   const hasSupplierName = Boolean(inv.supplierName && String(inv.supplierName).trim() && String(inv.supplierName).trim() !== '—');
   const hasTotal = inv.total !== undefined && inv.total !== null && inv.total !== '' && !Number.isNaN(Number(inv.total));
   const hasNoInvoiceData = !hasInvoiceNo || !hasSupplierName || !hasTotal || res.ok === false || res.status === 'Failed to read' || res.status === 'INCOMPLETE';
+  const isNotAnInvoice = res.status === 'NOT_AN_INVOICE' || res.verdict === 'Not an invoice' || res.status === 'COULD_NOT_READ';
 
-  if (hasNoInvoiceData) {
-    const hasNoDataRow = activeRows.some(r => r && r.text && /this invoice (has|have) no data/i.test(r.text));
-    if (!hasNoDataRow) {
-      activeRows = [
-        { id: 'DATA', title: 'Invoice data check', tier: 'REJECT', text: 'This invoice has no data' },
-        ...activeRows,
-      ];
-    }
-  } else if (activeRows.length === 0 && (res.explanation || res.reason) && res.status !== 'PASS') {
+  if (hasNoInvoiceData || isNotAnInvoice) {
+    const msgCard = el('div', null, 'chat-bubble assistant');
+    const fileLabel = checkedFileName ? `"${checkedFileName}"` : 'This file';
+    const docExplanation = (isNotAnInvoice && res.explanation && !/this invoice has no data/i.test(res.explanation))
+      ? `${res.explanation} `
+      : `${fileLabel} does not appear to be a valid invoice or has no readable invoice details (such as Invoice Number, Supplier Name, GSTIN, or Total Amount). `;
+    msgCard.textContent = `${docExplanation}Please upload a clear supplier invoice in JPG, PNG, or PDF format.`;
+    return msgCard;
+  }
+
+  if (activeRows.length === 0 && (res.explanation || res.reason) && res.status !== 'PASS') {
     activeRows = [
       {
         id: 'CHECK',
@@ -1065,8 +1068,8 @@ function renderAiChatResultMessage(res, checkedFileName) {
     ];
   }
 
-  let verdict = hasNoInvoiceData ? 'Blocked' : (res.verdict || toVerdictLabel(res.status, activeRows));
-  const displayTerm = toDisplayStatusTerm(res, verdict, hasNoInvoiceData);
+  let verdict = res.verdict || toVerdictLabel(res.status, activeRows);
+  const displayTerm = toDisplayStatusTerm(res, verdict, false);
   const displayMeaning = TERM_MEANINGS[displayTerm] || '';
 
   const msgCard = el('div', null, 'chat-bubble assistant chat-result-message');
@@ -1075,9 +1078,7 @@ function renderAiChatResultMessage(res, checkedFileName) {
   const badgeCls = displayTerm === 'PASS'
     ? 'verdict-pass'
     : (displayTerm === 'HOLD' ? 'verdict-hold' : 'verdict-block');
-  const badgeDisplayLabel = hasNoInvoiceData
-    ? `${displayTerm} — This invoice has no data`
-    : (displayMeaning ? `${displayTerm} — ${displayMeaning}` : displayTerm);
+  const badgeDisplayLabel = displayMeaning ? `${displayTerm} — ${displayMeaning}` : displayTerm;
   const verdictBadge = el('span', badgeDisplayLabel, `verdict-badge ${badgeCls}`);
   msgCard.appendChild(verdictBadge);
 
