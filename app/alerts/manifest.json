@@ -3,8 +3,8 @@
   "sap.app": {
     "id": "ap.sentinel.alerts",
     "type": "application",
-    "title": "Review queue",
-    "description": "AP Review Queue for Duplicate Invoice Detection Agent",
+    "title": "Exception Review",
+    "description": "AP Exception Review for Duplicate Invoice Detection Agent",
     "dataSources": {
       "mainService": {
         "uri": "/fraud/",

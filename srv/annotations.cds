@@ -2,7 +2,7 @@ using FraudService from './fraud-service';
 
 // Fiori Elements review queue.
 annotate FraudService.Alerts with @(
-  UI.HeaderInfo: { TypeName: 'Review item', TypeNamePlural: 'Review queue', Title: { Value: ruleId }, Description: { Value: title } },
+  UI.HeaderInfo: { TypeName: 'Review item', TypeNamePlural: 'Exception Review', Title: { Value: ruleId }, Description: { Value: title } },
   UI.SelectionFields: [ tier, decision, ruleId ],
   UI.LineItem: [
     { Value: ruleId, Label: 'Rule' },
@@ -27,7 +27,7 @@ annotate FraudService.Alerts with @(
 
 // Fiori Elements check history.
 annotate FraudService.Checks with @(
-  UI.HeaderInfo: { TypeName: 'Invoice check', TypeNamePlural: 'Check history', Title: { Value: invoiceNo }, Description: { Value: supplierName } },
+  UI.HeaderInfo: { TypeName: 'Invoice check', TypeNamePlural: 'Verification History', Title: { Value: invoiceNo }, Description: { Value: supplierName } },
   UI.SelectionFields: [ status, supplierName, source ],
   UI.LineItem: [
     { Value: invoiceNo, Label: 'Invoice no' },

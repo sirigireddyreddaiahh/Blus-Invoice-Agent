@@ -42,7 +42,7 @@ service FraudService @(path: '/fraud') {
   function getActivityLogs(page: Integer, limit: Integer, action: String) returns String;
 
   // Read-only server-side AI Assistant actions
-  action chat(message: String, checkId: String) returns String;
-  action askInvoice(checkId: String, question: String) returns String;
+  action chat(message: String, checkId: String, lastInvoice: String, history: String, page: Integer, source: String) returns String;
+  action askInvoice(checkId: String, question: String, lastInvoice: String, history: String, page: Integer, source: String) returns String;
 }
 

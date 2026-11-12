@@ -14,7 +14,6 @@ approuter/node_modules/
 # Development and tooling files (not needed at runtime)
 .aistudio/
 bun.lock
-metadata.json
 README.md
 docs/
 scripts/
@@ -22,3 +21,5 @@ test/
 config/
 db.sqlite*
 .env.example
+public/assets/aistudio/
+

@@ -221,8 +221,8 @@ async function handleExportHistoryExcel(req, res) {
     }
     await streamExcel({
       res,
-      filename: 'blus-invoice-agent-check-history.xlsx',
-      sheetName: 'Check History',
+      filename: 'blus-invoice-agent-verification-history.xlsx',
+      sheetName: 'Verification History',
       headers: HISTORY_EXPORT_HEADERS,
       totalColIndex: 7,
       extractCells: extractHistoryRowCells,
@@ -313,8 +313,8 @@ async function handleExportLedgerExcel(req, res) {
     const filters = { ...(req.query || {}), ...(req.body || {}) };
     await streamExcel({
       res,
-      filename: 'blus-invoice-agent-ledger.xlsx',
-      sheetName: 'Ledger',
+      filename: 'blus-invoice-agent-posted-ledger.xlsx',
+      sheetName: 'Posted Ledger',
       headers: LEDGER_EXPORT_HEADERS,
       totalColIndex: 6,
       extractCells: extractLedgerRowCells,
@@ -323,6 +323,73 @@ async function handleExportLedgerExcel(req, res) {
   } catch (err) {
     if (!res.headersSent) {
       res.status(500).json({ error: { message: err.message || 'Ledger Excel export failed' } });
+    }
+  }
+}
+
+const REVIEW_QUEUE_EXPORT_HEADERS = [
+  'Invoice No',
+  'Supplier',
+  'Rule / Issue',
+  'Status',
+  'Reason',
+  'Created At',
+];
+
+function extractReviewQueueRowCells(r) {
+  const verdict = String(r.tier || r.status || 'REJECT').toUpperCase() === 'HOLD' ? 'REVIEW' : 'REJECT';
+  return [
+    r.invoiceNo || '—',
+    r.supplierName || '—',
+    r.issue || r.ruleId || r.title || '—',
+    verdict,
+    r.reason || r.text || '—',
+    r.createdAt ? String(r.createdAt).slice(0, 19).replace('T', ' ') : '—',
+  ];
+}
+
+async function fetchReviewQueueChunk(filters = {}, offset = 0, limit = 500) {
+  const status = String(filters.status || 'ALL').trim();
+  const out = await getReviewQueueQuery({
+    page: Math.floor(offset / limit) + 1,
+    limit,
+    status,
+  });
+  return (out && Array.isArray(out.rows)) ? out.rows : [];
+}
+
+async function handleExportReviewQueueCsv(req, res) {
+  try {
+    const filters = { ...(req.query || {}), ...(req.body || {}) };
+    await streamCsv({
+      res,
+      filename: 'blus-invoice-agent-exception-review.csv',
+      headers: REVIEW_QUEUE_EXPORT_HEADERS,
+      extractCells: extractReviewQueueRowCells,
+      fetchChunk: (offset, limit) => fetchReviewQueueChunk(filters, offset, limit),
+    });
+  } catch (err) {
+    if (!res.headersSent) {
+      res.status(500).json({ error: { message: err.message || 'Exception Review CSV export failed' } });
+    }
+  }
+}
+
+async function handleExportReviewQueueExcel(req, res) {
+  try {
+    const filters = { ...(req.query || {}), ...(req.body || {}) };
+    await streamExcel({
+      res,
+      filename: 'blus-invoice-agent-exception-review.xlsx',
+      sheetName: 'Exception Review',
+      headers: REVIEW_QUEUE_EXPORT_HEADERS,
+      totalColIndex: -1,
+      extractCells: extractReviewQueueRowCells,
+      fetchChunk: (offset, limit) => fetchReviewQueueChunk(filters, offset, limit),
+    });
+  } catch (err) {
+    if (!res.headersSent) {
+      res.status(500).json({ error: { message: err.message || 'Exception Review Excel export failed' } });
     }
   }
 }
@@ -347,8 +414,8 @@ async function handleExportActivityExcel(req, res) {
     const filters = { ...(req.query || {}), ...(req.body || {}) };
     await streamExcel({
       res,
-      filename: 'blus-invoice-agent-activity-log.xlsx',
-      sheetName: 'Activity Log',
+      filename: 'blus-invoice-agent-audit-trail.xlsx',
+      sheetName: 'Audit Trail',
       headers: ACTIVITY_EXPORT_HEADERS,
       totalColIndex: -1,
       extractCells: extractActivityRowCells,
@@ -356,7 +423,7 @@ async function handleExportActivityExcel(req, res) {
     });
   } catch (err) {
     if (!res.headersSent) {
-      res.status(500).json({ error: { message: err.message || 'Activity Log Excel export failed' } });
+      res.status(500).json({ error: { message: err.message || 'Audit Trail Excel export failed' } });
     }
   }
 }
@@ -439,6 +506,11 @@ async function main() {
   app.post('/fraud/exportLedgerCsv', handleExportLedgerCsv);
   app.get('/fraud/exportLedgerExcel', handleExportLedgerExcel);
   app.post('/fraud/exportLedgerExcel', handleExportLedgerExcel);
+
+  app.get('/fraud/exportReviewQueueCsv', handleExportReviewQueueCsv);
+  app.post('/fraud/exportReviewQueueCsv', handleExportReviewQueueCsv);
+  app.get('/fraud/exportReviewQueueExcel', handleExportReviewQueueExcel);
+  app.post('/fraud/exportReviewQueueExcel', handleExportReviewQueueExcel);
 
   app.get('/fraud/exportActivityExcel', handleExportActivityExcel);
   app.post('/fraud/exportActivityExcel', handleExportActivityExcel);
@@ -771,14 +843,14 @@ async function main() {
         ok: true,
         postedCount,
         total: list.length,
-        message: `Posted ${postedCount} passed invoice(s) to the Ledger.`,
+        message: `Posted ${postedCount} passed invoice(s) to the Posted Ledger.`,
       });
     } catch (err) {
-      return res.status(500).json({ error: { message: err.message || 'Batch posting to ledger failed' } });
+      return res.status(500).json({ error: { message: err.message || 'Batch posting to Posted Ledger failed' } });
     }
   });
 
-  // Batch post failed (HOLD / REJECT) invoices to Review Queue (ap.Alerts) from AI Chat
+  // Batch post failed (HOLD / REJECT) invoices to Exception Review (ap.Alerts) from AI Chat
   app.post('/fraud/postBatchToReviewQueue', async (req, res) => {
     res.setHeader('Cache-Control', 'no-store, no-cache, must-revalidate, proxy-revalidate');
     try {
@@ -787,7 +859,7 @@ async function main() {
       const rawList = typeof body.items === 'string' ? JSON.parse(body.items) : (body.items || []);
       const list = Array.isArray(rawList) ? rawList : [];
       if (!list.length) {
-        return res.status(400).json({ error: { message: 'No failed invoices provided for Review Queue.' } });
+        return res.status(400).json({ error: { message: 'No failed invoices provided for Exception Review.' } });
       }
       const user = (req.user && req.user.id) || 'user';
       const tsNow = new Date().toISOString();
@@ -804,7 +876,7 @@ async function main() {
           SELECT.from('ap.Alerts').where({ check_ID: checkId })
         );
         if (existingAlerts && existingAlerts.length > 0) {
-          // Ensure decision is OPEN so it appears in Review Queue
+          // Ensure decision is OPEN so it appears in Exception Review
           await cds.run(
             UPDATE('ap.Alerts').set({ decision: 'OPEN' }).where({ check_ID: checkId })
           );
@@ -832,17 +904,17 @@ async function main() {
       await audit(
         'REVIEW_QUEUE',
         null,
-        `Posted ${queuedCount} failed invoice(s) to Review Queue from AI Chat`,
+        `Posted ${queuedCount} failed invoice(s) to Exception Review from AI Chat`,
         { user, fileName: body.fileName || 'chat-batch', result: `${queuedCount} QUEUED` }
       );
       return res.status(200).json({
         ok: true,
         queuedCount,
         total: list.length,
-        message: `Posted ${queuedCount} failed invoice(s) to the Review Queue.`,
+        message: `Posted ${queuedCount} failed invoice(s) to Exception Review.`,
       });
     } catch (err) {
-      return res.status(500).json({ error: { message: err.message || 'Posting to Review Queue failed' } });
+      return res.status(500).json({ error: { message: err.message || 'Posting to Exception Review failed' } });
     }
   });
 
@@ -969,6 +1041,33 @@ async function main() {
 
   // Serve FraudService via CAP
   await cds.serve('FraudService').from('srv/fraud-service').in(app);
+
+  // Global error handler with correlation ID and HANA pool acquire timeout message
+  app.use((err, req, res, next) => {
+    const corrId = (req && req.headers && (req.headers['x-correlation-id'] || req.headers['x-request-id'])) || crypto.randomUUID();
+    console.error(`[Server][corrId=${corrId}] Error:`, err && err.stack ? err.stack : err);
+    if (res.headersSent) return next(err);
+    const msg = String((err && (err.message || err.code)) || err || '');
+    const isPoolErr = /acquireTimeoutMillis|ResourceRequestTimedOut|TimeoutError.*pool|pool.*timeout|ECONNREFUSED|EHDB|Connection failed|Database is starting/i.test(msg);
+    if (isPoolErr) {
+      return res.status(503).json({
+        error: {
+          code: 'DB_POOL_STARTING',
+          correlationId: corrId,
+          message: 'Database is starting, retry in a minute',
+        },
+      });
+    }
+    const cleanMsg = (!msg || msg === 'Internal Server Error')
+      ? `Request could not be completed (Ref: ${corrId.slice(0, 8)}). Please retry.`
+      : msg;
+    return res.status(err.status || err.statusCode || 500).json({
+      error: {
+        correlationId: corrId,
+        message: cleanMsg,
+      },
+    });
+  });
 
   // START LISTENING FIRST BEFORE DB SETUP RUNS
   app.listen(PORT, '0.0.0.0', () => {
