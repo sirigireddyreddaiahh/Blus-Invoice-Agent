@@ -27,7 +27,7 @@ const { createBatchJob, getJob, cancelJob, resumeJob } = require('./lib/queue');
 const { getUnifiedChecksTotal, getS4ResultsQuery, getReviewQueueQuery, getCheckHistoryQuery, getActivityLogsQuery, searchLedgerDatabaseQuery, getLedgerQuery, getSummaryQuery, cleanRuleText, getRuleName } = require('./lib/pagination');
 const { processDocumentBatch } = require('./lib/document-processor');
 const { checkSapMatchForInvoice, querySapSandboxInvoices, getSapConfig, SAP_SOURCE_LABEL } = require('./lib/sap');
-const { AGENT_TOOLS, LEDGER_TOOLS, CREDENTIAL_REFUSAL_MSG, TERM_MEANINGS, getLlmEnvConfig, toDisplayStatusTerm, sanitizeChatOutput, isCredentialOrServerSettingQuestion, runReadOnlyAgentQuery, setSessionLastCheck, getSessionLastCheck, markSessionCheckSaved, last_check, classifyChatIntent, buildIntentReply, formatFixedInvoiceCheckText, handleScopedChatQuestion, evaluateInvoiceLedgerDuplicateStatus, handleStructuredInvoiceChat, buildCard, CLASSIFIER_SYSTEM_PROMPT } = require('./lib/agent-tools');
+const { AGENT_TOOLS, LEDGER_TOOLS, CREDENTIAL_REFUSAL_MSG, TERM_MEANINGS, getLlmEnvConfig, toDisplayStatusTerm, sanitizeChatOutput, isCredentialOrServerSettingQuestion, runReadOnlyAgentQuery, setSessionLastCheck, markSessionCheckSaved, last_check, classifyChatIntent, buildIntentReply, formatFixedInvoiceCheckText, handleScopedChatQuestion, evaluateInvoiceLedgerDuplicateStatus } = require('./lib/agent-tools');
 const { FAILED_TO_READ_REASON, AI_ASSIST_LABEL, hasReadableFields, tryExtractWithGeminiAssist } = require('./lib/ai-extract');
 
 const s4Invoices = require('../data/s4-invoices.json');
@@ -1887,7 +1887,7 @@ class FraudService extends cds.ApplicationService {
       let timer = null;
       try {
         const timeoutPromise = new Promise((_, reject) => {
-          timer = setTimeout(() => reject(new Error('Gemini request timed out after 20s')), 20000);
+          timer = setTimeout(() => reject(new Error('Gemini request timed out')), 15000);
         });
         const response = await Promise.race([
           ai.models.generateContent({
@@ -2048,127 +2048,59 @@ class FraudService extends cds.ApplicationService {
       return '';
     };
 
-    const getCorrelationId = (req) => {
-      return (
-        (req && req.headers && (req.headers['x-correlation-id'] || req.headers['x-request-id'])) ||
-        crypto.randomUUID()
-      );
-    };
-
-    const isPoolOrDbStartupError = (err) => {
-      const msg = String((err && (err.message || err.code)) || err || '');
-      return /acquireTimeoutMillis|ResourceRequestTimedOut|TimeoutError.*pool|pool.*timeout|ECONNREFUSED|EHDB|Connection failed|Database is starting/i.test(msg);
-    };
-
-    const handleInvoiceQuestion = async (req, checkId, questionText, extraData = {}) => {
-      const corrId = getCorrelationId(req);
-      try {
-        const isUnsetKey = Boolean(req && req.headers && req.headers['x-gemini-api-key-unset'] === 'true');
-        if (isUnsetKey && (!checkId || checkId === '')) {
-          return 'The assistant is not configured.';
-        }
-        const user = getUserId(req);
-        const rawQ = String(questionText || '').trim();
-        const lastInvoice = String(extraData.lastInvoice || '').trim();
-        const page = Math.max(1, parseInt(extraData.page, 10) || 1);
-        const source = String(extraData.source || '').trim();
-        let history = [];
-        if (extraData.history) {
-          if (Array.isArray(extraData.history)) {
-            history = extraData.history.slice(-6);
-          } else if (typeof extraData.history === 'string') {
-            try {
-              const parsedHist = JSON.parse(extraData.history);
-              if (Array.isArray(parsedHist)) history = parsedHist.slice(-6);
-            } catch (_e) {}
-          }
-        }
-
-        // Explicit SAP sandbox query when user asks about SAP (and not asking for credentials)
-        if (/\bsap\b/i.test(rawQ) && !isCredentialOrServerSettingQuestion(rawQ)) {
-          const isTel = /[\u0C00-\u0C7F]/.test(rawQ) || /\btelugu\b/i.test(rawQ);
-          const sapForceUnset = Boolean(req && req.headers && req.headers['x-sap-api-key-unset'] === 'true');
-          const sapMode = String(process.env.SAP_MODE || 'live').trim().toLowerCase();
-          const sapCfg = getSapConfig();
-          if (sapForceUnset || !sapCfg.isConfigured || sapMode !== 'live') {
-            return isTel ? 'SAP కాన్ఫిగర్ చేయబడలేదు' : 'SAP not configured';
-          }
-          const refMatch = rawQ.match(/\b([0-9]{6,16}|INV[A-Za-z0-9/_-]*|[A-Z]{2,5}[/-][A-Za-z0-9/_-]+)\b/i);
-          const refTerm = refMatch ? refMatch[1] : '';
-          const sapRes = await querySapSandboxInvoices({ reference: refTerm, top: 5, timeoutMs: 5000 });
-          if (!sapRes.ok) {
-            return `SAP unavailable (${SAP_SOURCE_LABEL}).`;
-          }
-          if (sapRes.invoices && sapRes.invoices.length > 0) {
-            const hit = sapRes.invoices[0];
-            const no = hit.SupplierInvoice || hit.SupplierInvoiceIDByInvcgParty || refTerm || '-';
-            const party = hit.InvoicingParty || '-';
-            const dt = hit.InvoiceDate || hit.PostingDate || '-';
-            const amt = hit.InvoiceGrossAmount ? `${hit.DocumentCurrency ? hit.DocumentCurrency + ' ' : ''}${hit.InvoiceGrossAmount}` : '-';
-            return redactServerCredentials(
-              `${SAP_SOURCE_LABEL}: Found invoice ${no}, invoicing party ${party}, date ${dt}, amount ${amt}.`
-            );
-          }
-          return redactServerCredentials(`Not found in ${SAP_SOURCE_LABEL}.`);
-        }
-
-        // Check structured 7-intent router (invoice_details, multi_invoice_details, recent_invoice, ledger_list, review_queue_list, status_only, next_page)
-        const structuredRes = await handleStructuredInvoiceChat({
-          question: rawQ,
-          lastInvoice,
-          history,
-          page,
-          source,
-          sessionKey: user,
-          checkId: checkId || null,
-        });
-        if (structuredRes) {
-          return JSON.stringify(structuredRes);
-        }
-
-        // STEP 1 to STEP 6: Scoped chat routing & answer logic (classifies scope BEFORE any DB read)
-        const scopedResult = await handleScopedChatQuestion(rawQ, {
-          sessionKey: user,
-          checkId: checkId || null,
-        });
-        return sanitizeChatOutput(redactServerCredentials(scopedResult.reply));
-      } catch (e) {
-        console.error(`[askInvoice][corrId=${corrId}] Error:`, e && e.stack ? e.stack : e);
-        if (isPoolOrDbStartupError(e)) {
-          return JSON.stringify({
-            type: 'error',
-            poolError: true,
-            correlationId: corrId,
-            message: 'Database is starting, retry in a minute',
-            text: 'Database is starting, retry in a minute',
-          });
-        }
-        if (/timed?\s*out|LLM_TIMEOUT/i.test(String((e && e.message) || ''))) {
-          return 'The AI assistant took longer than 20 seconds to respond. Please try your request again.';
-        }
-        return `Unable to complete the request right now (Ref: ${corrId.slice(0, 8)}). Please retry in a moment.`;
+    const handleInvoiceQuestion = async (req, checkId, questionText) => {
+      const isUnsetKey = Boolean(req && req.headers && req.headers['x-gemini-api-key-unset'] === 'true');
+      if (isUnsetKey && (!checkId || checkId === '')) {
+        return 'The assistant is not configured.';
       }
+      const user = getUserId(req);
+      const rawQ = String(questionText || '').trim();
+
+      // Explicit SAP sandbox query when user asks about SAP (and not asking for credentials)
+      if (/\bsap\b/i.test(rawQ) && !isCredentialOrServerSettingQuestion(rawQ)) {
+        const isTel = /[\u0C00-\u0C7F]/.test(rawQ) || /\btelugu\b/i.test(rawQ);
+        const sapForceUnset = Boolean(req && req.headers && req.headers['x-sap-api-key-unset'] === 'true');
+        const sapMode = String(process.env.SAP_MODE || 'live').trim().toLowerCase();
+        const sapCfg = getSapConfig();
+        if (sapForceUnset || !sapCfg.isConfigured || sapMode !== 'live') {
+          return isTel ? 'SAP కాన్ఫిగర్ చేయబడలేదు' : 'SAP not configured';
+        }
+        const refMatch = rawQ.match(/\b([0-9]{6,16}|INV[A-Za-z0-9/_-]*|[A-Z]{2,5}[/-][A-Za-z0-9/_-]+)\b/i);
+        const refTerm = refMatch ? refMatch[1] : '';
+        const sapRes = await querySapSandboxInvoices({ reference: refTerm, top: 5, timeoutMs: 5000 });
+        if (!sapRes.ok) {
+          return `SAP unavailable (${SAP_SOURCE_LABEL}).`;
+        }
+        if (sapRes.invoices && sapRes.invoices.length > 0) {
+          const hit = sapRes.invoices[0];
+          const no = hit.SupplierInvoice || hit.SupplierInvoiceIDByInvcgParty || refTerm || '-';
+          const party = hit.InvoicingParty || '-';
+          const dt = hit.InvoiceDate || hit.PostingDate || '-';
+          const amt = hit.InvoiceGrossAmount ? `${hit.DocumentCurrency ? hit.DocumentCurrency + ' ' : ''}${hit.InvoiceGrossAmount}` : '-';
+          return redactServerCredentials(
+            `${SAP_SOURCE_LABEL}: Found invoice ${no}, invoicing party ${party}, date ${dt}, amount ${amt}.`
+          );
+        }
+        return redactServerCredentials(`Not found in ${SAP_SOURCE_LABEL}.`);
+      }
+
+      // STEP 1 to STEP 6: Scoped chat routing & answer logic (classifies scope BEFORE any DB read)
+      const scopedResult = await handleScopedChatQuestion(rawQ, {
+        sessionKey: user,
+        checkId: checkId || null,
+      });
+      return sanitizeChatOutput(redactServerCredentials(scopedResult.reply));
     };
 
     this.on('askInvoice', async req => {
-      const { checkId, question, lastInvoice, history, page, source } = req.data || {};
-      return handleInvoiceQuestion(req, checkId, question, { lastInvoice, history, page, source });
+      const { checkId, question } = req.data;
+      return handleInvoiceQuestion(req, checkId, question);
     });
 
     this.on('chat', async req => {
-      const { message, checkId, lastInvoice, history, page, source } = req.data || {};
-      return handleInvoiceQuestion(req, checkId || null, String(message || '').trim(), { lastInvoice, history, page, source });
-    });
-
-    this.on('error', (err, req) => {
-      const corrId = getCorrelationId(req);
-      console.error(`[FraudService][corrId=${corrId}] Error:`, err && err.stack ? err.stack : err);
-      if (isPoolOrDbStartupError(err)) {
-        err.message = 'Database is starting, retry in a minute';
-        err.status = 503;
-      } else if (!err.message || err.message === 'Internal Server Error') {
-        err.message = `Request could not be completed (Ref: ${corrId.slice(0, 8)}). Please retry.`;
-      }
+      const message = String(req.data.message || '').trim();
+      const checkId = req.data.checkId || null;
+      return handleInvoiceQuestion(req, checkId, message);
     });
 
     return super.init();

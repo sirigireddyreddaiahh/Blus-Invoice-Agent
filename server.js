@@ -327,73 +327,6 @@ async function handleExportLedgerExcel(req, res) {
   }
 }
 
-const REVIEW_QUEUE_EXPORT_HEADERS = [
-  'Invoice No',
-  'Supplier',
-  'Rule / Issue',
-  'Status',
-  'Reason',
-  'Created At',
-];
-
-function extractReviewQueueRowCells(r) {
-  const verdict = String(r.tier || r.status || 'REJECT').toUpperCase() === 'HOLD' ? 'REVIEW' : 'REJECT';
-  return [
-    r.invoiceNo || '—',
-    r.supplierName || '—',
-    r.issue || r.ruleId || r.title || '—',
-    verdict,
-    r.reason || r.text || '—',
-    r.createdAt ? String(r.createdAt).slice(0, 19).replace('T', ' ') : '—',
-  ];
-}
-
-async function fetchReviewQueueChunk(filters = {}, offset = 0, limit = 500) {
-  const status = String(filters.status || 'ALL').trim();
-  const out = await getReviewQueueQuery({
-    page: Math.floor(offset / limit) + 1,
-    limit,
-    status,
-  });
-  return (out && Array.isArray(out.rows)) ? out.rows : [];
-}
-
-async function handleExportReviewQueueCsv(req, res) {
-  try {
-    const filters = { ...(req.query || {}), ...(req.body || {}) };
-    await streamCsv({
-      res,
-      filename: 'blus-invoice-agent-exception-review.csv',
-      headers: REVIEW_QUEUE_EXPORT_HEADERS,
-      extractCells: extractReviewQueueRowCells,
-      fetchChunk: (offset, limit) => fetchReviewQueueChunk(filters, offset, limit),
-    });
-  } catch (err) {
-    if (!res.headersSent) {
-      res.status(500).json({ error: { message: err.message || 'Exception Review CSV export failed' } });
-    }
-  }
-}
-
-async function handleExportReviewQueueExcel(req, res) {
-  try {
-    const filters = { ...(req.query || {}), ...(req.body || {}) };
-    await streamExcel({
-      res,
-      filename: 'blus-invoice-agent-exception-review.xlsx',
-      sheetName: 'Exception Review',
-      headers: REVIEW_QUEUE_EXPORT_HEADERS,
-      totalColIndex: -1,
-      extractCells: extractReviewQueueRowCells,
-      fetchChunk: (offset, limit) => fetchReviewQueueChunk(filters, offset, limit),
-    });
-  } catch (err) {
-    if (!res.headersSent) {
-      res.status(500).json({ error: { message: err.message || 'Exception Review Excel export failed' } });
-    }
-  }
-}
-
 async function fetchActivityChunk(filters = {}, offset = 0, limit = 500) {
   if (Array.isArray(filters.rows)) {
     return filters.rows.slice(offset, offset + limit);
@@ -506,11 +439,6 @@ async function main() {
   app.post('/fraud/exportLedgerCsv', handleExportLedgerCsv);
   app.get('/fraud/exportLedgerExcel', handleExportLedgerExcel);
   app.post('/fraud/exportLedgerExcel', handleExportLedgerExcel);
-
-  app.get('/fraud/exportReviewQueueCsv', handleExportReviewQueueCsv);
-  app.post('/fraud/exportReviewQueueCsv', handleExportReviewQueueCsv);
-  app.get('/fraud/exportReviewQueueExcel', handleExportReviewQueueExcel);
-  app.post('/fraud/exportReviewQueueExcel', handleExportReviewQueueExcel);
 
   app.get('/fraud/exportActivityExcel', handleExportActivityExcel);
   app.post('/fraud/exportActivityExcel', handleExportActivityExcel);
@@ -1041,33 +969,6 @@ async function main() {
 
   // Serve FraudService via CAP
   await cds.serve('FraudService').from('srv/fraud-service').in(app);
-
-  // Global error handler with correlation ID and HANA pool acquire timeout message
-  app.use((err, req, res, next) => {
-    const corrId = (req && req.headers && (req.headers['x-correlation-id'] || req.headers['x-request-id'])) || crypto.randomUUID();
-    console.error(`[Server][corrId=${corrId}] Error:`, err && err.stack ? err.stack : err);
-    if (res.headersSent) return next(err);
-    const msg = String((err && (err.message || err.code)) || err || '');
-    const isPoolErr = /acquireTimeoutMillis|ResourceRequestTimedOut|TimeoutError.*pool|pool.*timeout|ECONNREFUSED|EHDB|Connection failed|Database is starting/i.test(msg);
-    if (isPoolErr) {
-      return res.status(503).json({
-        error: {
-          code: 'DB_POOL_STARTING',
-          correlationId: corrId,
-          message: 'Database is starting, retry in a minute',
-        },
-      });
-    }
-    const cleanMsg = (!msg || msg === 'Internal Server Error')
-      ? `Request could not be completed (Ref: ${corrId.slice(0, 8)}). Please retry.`
-      : msg;
-    return res.status(err.status || err.statusCode || 500).json({
-      error: {
-        correlationId: corrId,
-        message: cleanMsg,
-      },
-    });
-  });
 
   // START LISTENING FIRST BEFORE DB SETUP RUNS
   app.listen(PORT, '0.0.0.0', () => {

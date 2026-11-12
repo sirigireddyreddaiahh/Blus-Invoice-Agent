@@ -7,7 +7,6 @@
     "start": "node server.js",
     "dev": "node server.js",
     "build": "node -e \"console.log('Build succeeded')\"",
-    "lint": "node -c server.js && node -c srv/fraud-service.js && node -c srv/lib/agent-tools.js && node -c app/app.js",
     "test": "node --test test/acceptance.test.js"
   },
   "dependencies": {
@@ -33,11 +32,6 @@
         "kind": "sqlite",
         "credentials": {
           "url": ":memory:"
-        },
-        "pool": {
-          "acquireTimeoutMillis": 10000,
-          "min": 1,
-          "max": 10
         }
       },
       "auth": {
@@ -73,12 +67,7 @@
       },
       "[production]": {
         "db": {
-          "kind": "hana",
-          "pool": {
-            "acquireTimeoutMillis": 10000,
-            "min": 1,
-            "max": 10
-          }
+          "kind": "hana"
         }
       }
     }

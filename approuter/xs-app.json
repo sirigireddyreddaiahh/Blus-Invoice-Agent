@@ -7,8 +7,7 @@
       "target": "/fraud/$1",
       "destination": "srv-api",
       "authenticationType": "none",
-      "csrfProtection": false,
-      "timeout": 60000
+      "csrfProtection": false
     },
     {
       "source": "^/(.*)$",

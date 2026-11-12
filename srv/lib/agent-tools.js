@@ -35,7 +35,7 @@ const CHAT_MODEL_SYSTEM_INSTRUCTION =
 
 const CHAT_MODEL_TEMPERATURE = 0.2;
 const CHAT_MODEL_MAX_OUTPUT_TOKENS = 300;
-const CHAT_MODEL_TIMEOUT_MS = 20000;
+const CHAT_MODEL_TIMEOUT_MS = 8000;
 
 let chatModelTestHook = null;
 let chatModelCallCount = 0;
@@ -325,8 +325,10 @@ function formatLedgerToolReply(res, { forceListFormat = false, subPage = 1 } = {
     );
   });
 
-  const endIdx = Math.min(total, startIdx + slice.length);
-  lines.push(`Showing ${startIdx + 1}-${endIdx} of ${total}`);
+  const remaining = total - (startIdx + slice.length);
+  if (remaining > 0) {
+    lines.push(`and ${remaining} more`);
+  }
 
   return lines.join('\n');
 }
@@ -1333,7 +1335,9 @@ function formatInvoicesToolReply(res) {
     lines.push(`| ${r.invoiceNo || '—'} | ${r.supplierName || '—'} | ${r.invoiceDate || '—'} | ${formatInr(r.total)} | ${r.source || 'Chat'} |`);
   });
 
-  lines.push(`Showing 1-${slice.length} of ${total}`);
+  if (total > slice.length) {
+    lines.push(`and ${total - slice.length} more`);
+  }
 
   return sanitizeChatOutput(lines.join('\n'));
 }
@@ -1393,7 +1397,9 @@ function formatLedgerTableReply(res) {
     lines.push(`| ${r.invoiceNo || '—'} | ${r.supplierName || '—'} | ${r.invoiceDate || '—'} | ${formatInr(r.total)} | ${r.source || 'Import'} |`);
   });
 
-  lines.push(`Showing 1-${slice.length} of ${total}`);
+  if (total > slice.length) {
+    lines.push(`and ${total - slice.length} more`);
+  }
 
   return sanitizeChatOutput(lines.join('\n'));
 }
@@ -3867,7 +3873,9 @@ async function handleScopedChatQuestion(rawMessage, { sessionKey = 'default', ch
       const st = r.status || r.decision || 'PASS';
       lines.push(`| ${invNo} | ${supp} | ${dt} | ${tot} | ${st} |`);
     });
-    lines.push(`Showing 1-${Math.min(total, 50)} of ${total}`);
+    if (total > 50) {
+      lines.push(`and ${total - 50} more`);
+    }
 
     const templateReply = lines.join('\n');
     const { reply, modelCalled, usedFallback } = await resolveReplyWithModelOrTemplate({
@@ -4170,7 +4178,9 @@ async function handleScopedChatQuestion(rawMessage, { sessionKey = 'default', ch
         `| ${r.invoiceNo || '—'} | ${r.supplierName || '—'} | ${r.invoiceDate || '—'} | ${formatInr(r.total)} | ${r.source || 'Chat'} |`
       );
     });
-    lines.push(`Showing 1-${slice.length} of ${total}`);
+    if (total > 10) {
+      lines.push(`and ${total - 10} more`);
+    }
     const templateReply = lines.join('\n');
     const { reply, modelCalled, usedFallback } = await resolveReplyWithModelOrTemplate({
       scope,
@@ -4220,7 +4230,9 @@ async function handleScopedChatQuestion(rawMessage, { sessionKey = 'default', ch
         `| ${idx + 1} | ${r.invoiceNo || '—'} | ${r.supplierName || '—'} | ${ruleLabel} | ${r.tier || 'HOLD'} | ${reason} |`
       );
     });
-    lines.push(`Showing 1-${slice.length} of ${total}`);
+    if (total > 10) {
+      lines.push(`and ${total - 10} more`);
+    }
     const templateReply = lines.join('\n');
     const { reply, modelCalled } = await resolveReplyWithModelOrTemplate({
       scope,
@@ -4274,7 +4286,9 @@ async function handleScopedChatQuestion(rawMessage, { sessionKey = 'default', ch
         `| #${r.idx} | ${shortTs} | ${r.action || 'ACTION'} | ${fileCell} | ${cleanedDetail} |`
       );
     });
-    lines.push(`Showing 1-${slice.length} of ${total}`);
+    if (total > 10) {
+      lines.push(`and ${total - 10} more`);
+    }
     const templateReply = lines.join('\n');
     const { reply, modelCalled } = await resolveReplyWithModelOrTemplate({
       scope,
@@ -4322,7 +4336,9 @@ async function handleScopedChatQuestion(rawMessage, { sessionKey = 'default', ch
         `| ${idx + 1} | ${r.invoiceNo || '—'} | ${r.supplierName || '—'} | ${dt} | ${formatInr(r.total)} | ${r.status || 'PASS'} |`
       );
     });
-    lines.push(`Showing 1-${slice.length} of ${total}`);
+    if (total > 10) {
+      lines.push(`and ${total - 10} more`);
+    }
     const templateReply = lines.join('\n');
     const { reply, modelCalled } = await resolveReplyWithModelOrTemplate({
       scope,
@@ -4439,18 +4455,6 @@ const LEDGER_TOOLS = {
   last_check,
 };
 
-// ============================================================================
-// STRUCTURED CHAT CLASSIFIER, CARD BUILDER & PAGINATED TABLE HANDLER
-// ============================================================================
-
-const CLASSIFIER_SYSTEM_PROMPT = `You are Blus Invoice Agent. Classify the request and return only
-{"intent":"...","invoices":[...],"page":1}.
-Intents: invoice_details, multi_invoice_details, recent_invoice, ledger_list,
-review_queue_list, status_only, next_page.
-Invoice numbers come only from the current message. If the message says
-'this invoice', 'it', 'same', 'yes' or has no number, use LAST_INVOICE.
-'full details' always means invoice_details. Never change a number the user typed.`;
-
 module.exports = {
   AGENT_TOOLS,
   LEDGER_TOOLS,
@@ -4525,720 +4529,4 @@ module.exports = {
   runReadOnlyAgentQuery,
   getLlmStatus,
   triggerStartupLlmCheck,
-  CLASSIFIER_SYSTEM_PROMPT,
-  extractInvoiceNumbersFromText,
-  classifyStructuredChatIntent,
-  buildCard,
-  handleStructuredInvoiceChat,
 };
-
-function extractInvoiceNumbersFromText(questionText) {
-  const raw = String(questionText || '');
-  if (!raw.trim()) return [];
-
-  // Strip dates (YYYY-MM-DD, DD-MM-YYYY, DD/MM/YYYY), fiscal years (2025-26, 2025-2026), and 15-char GSTINs
-  const cleaned = raw
-    .replace(/\b\d{2}[A-Z]{5}\d{4}[A-Z][1-9A-Z]Z[0-9A-Z]\b/gi, ' ')
-    .replace(/\b\d{4}[-/]\d{2}[-/]\d{2}\b/g, ' ')
-    .replace(/\b\d{1,2}[-/]\d{1,2}[-/]\d{4}\b/g, ' ')
-    .replace(/\b20\d{2}\s*[-/]\s*(?:20)?\d{2}\b/g, ' ')
-    .replace(/\bpage\s+\d+\b/gi, ' ')
-    .replace(/\b\d+\s+rows?\b/gi, ' ');
-
-  const results = [];
-  const seen = new Set();
-  const addToken = (tok) => {
-    const t = String(tok || '').replace(/^[#"'`(\[]+|[?.!,;:"'`)\]]+$/g, '').trim();
-    if (!t || t.length < 3) return;
-    if (/^(2020|2021|2022|2023|2024|2025|2026|2027|2028|2029|2030)$/.test(t)) return;
-    if (!/\d/.test(t)) return;
-    const key = t.toLowerCase();
-    if (!seen.has(key)) {
-      seen.add(key);
-      results.push(t);
-    }
-  };
-
-  // Match alphanumeric/numeric invoice tokens in the exact order they appear
-  const tokenRegex = /\b(?:(?:INV|BILL|TVD|KA|MH|DL|TN|TS|AP|GJ|UP|WB|RJ|MP|HR|PB|KL|OD|CG|JH|UK|HP|GA|AS|BR|CH|PY|JK|LA|XYZ)[-/_]?[A-Za-z0-9/_-]{2,}|[A-Za-z]{2,8}[-/][A-Za-z0-9/_-]*\d[A-Za-z0-9/_-]*|\d{5,16})\b/gi;
-  let m;
-  while ((m = tokenRegex.exec(cleaned)) !== null) {
-    addToken(m[0]);
-  }
-
-  // Also check explicit "invoice <no>" or "details of <no>" if not already captured
-  const explicitMatch = cleaned.match(/\b(?:invoice|bill|details\s+of|check)\s+#?([A-Za-z0-9/_-]{3,30})\b/i);
-  if (explicitMatch && explicitMatch[1] && /\d/.test(explicitMatch[1])) {
-    addToken(explicitMatch[1]);
-  }
-
-  return results;
-}
-
-async function classifyStructuredChatIntent({ question = '', lastInvoice = '', history = [], page = 1, source = '' } = {}) {
-  const q = String(question || '').trim();
-  const lower = q.toLowerCase();
-  const reqPage = Math.max(1, parseInt(page, 10) || 1);
-  const extractedInvoices = extractInvoiceNumbersFromText(q);
-  const hasFullDetailsPhrase = /\bfull\s+details?\b/i.test(q);
-  const refersToLastInvoice =
-    /\b(this\s+invoice|that\s+invoice|same\s+invoice|\bit\b|\bsame\b|\byes\b|\byeah\b|\bsure\b|\bokay\b|\bok\b)\b/i.test(q) ||
-    hasFullDetailsPhrase;
-
-  // 1. Explicit pagination request or Next/Previous page
-  if (
-    reqPage > 1 ||
-    /\b(next\s+page|prev(?:ious)?\s+page|^next$|^previous$|\bpage\s+\d+\b)\b/i.test(lower)
-  ) {
-    const pageInText = lower.match(/\bpage\s+(\d+)\b/i);
-    const resolvedPage = pageInText ? Math.max(1, parseInt(pageInText[1], 10) || 1) : (reqPage > 1 ? reqPage : 2);
-    return {
-      intent: 'next_page',
-      invoices: [],
-      page: resolvedPage,
-      source: source || 'ledger',
-    };
-  }
-
-  // 2. Explicit Review Queue / Exception Review list request
-  if (
-    /\b(show\s+(?:the\s+)?(?:review\s+queue|exception\s+review)|(?:review\s+queue|exception\s+review)\s+(?:data|list|table|items|invoices)|^(?:show\s+)?(?:review\s+queue|exception\s+review)$|held\s+or\s+rejected\s+invoices|open\s+alerts\s+list)\b/i.test(lower)
-  ) {
-    return {
-      intent: 'review_queue_list',
-      invoices: [],
-      page: reqPage,
-      source: 'review_queue',
-    };
-  }
-
-  // 3. Explicit Ledger Data list request
-  if (
-    /\b(show\s+(?:all\s+)?(?:the\s+)?(?:posted\s+)?ledger(?:\s+data|\s+table|\s+list|\s+invoices)?|^(?:show\s+)?(?:posted\s+)?ledger(?:\s+data|\s+table|\s+list)?$|list\s+(?:all\s+)?ledger(?:\s+data)?|view\s+ledger(?:\s+data)?)\b/i.test(lower)
-  ) {
-    return {
-      intent: 'ledger_list',
-      invoices: [],
-      page: reqPage,
-      source: 'ledger',
-    };
-  }
-
-  // 4. Most recent / latest invoice (without a specific supplier filter)
-  const hasSupplierInRecent = /\b(?:from|by|of|for)\s+[A-Za-z]{3,}/i.test(q) && !/\b(?:from|in)\s+(?:the\s+)?(?:ledger|database|hana)\b/i.test(q);
-  if (
-    !hasSupplierInRecent &&
-    /\b(most\s+recent|latest|newest|last\s+posted)\s+invoice\b/i.test(lower) &&
-    extractedInvoices.length === 0
-  ) {
-    return {
-      intent: 'recent_invoice',
-      invoices: [],
-      page: 1,
-    };
-  }
-
-  // 5. Multiple invoice numbers in the current message (unless comparing two invoices side-by-side)
-  const isCompare = /\bcompare\b/i.test(lower);
-  if (extractedInvoices.length >= 2 && !isCompare) {
-    return {
-      intent: 'multi_invoice_details',
-      invoices: extractedInvoices,
-      page: 1,
-    };
-  }
-
-  // 6. Single invoice details or status_only (with explicit number or LAST_INVOICE reference)
-  const wantsDetailsOrCard =
-    hasFullDetailsPhrase ||
-    /\b(details?\s+(?:of|for|on)|full\s+details?|invoice\s+details?|show\s+(?:invoice|details)|check\s+invoice|tell\s+me\s+about|explain\s+invoice|card\s+for)\b/i.test(lower) ||
-    (extractedInvoices.length === 1 && !/\b(how\s+many|count|compare|delete|remove|update)\b/i.test(lower));
-
-  const wantsStatusOnly =
-    !hasFullDetailsPhrase &&
-    !/\bdetails?\b/i.test(lower) &&
-    /\b(status\s+of|verdict\s+of|what\s+is\s+the\s+(?:status|verdict)|just\s+the\s+status|status\s+only)\b/i.test(lower);
-
-  if (extractedInvoices.length === 1 && (wantsDetailsOrCard || wantsStatusOnly)) {
-    return {
-      intent: hasFullDetailsPhrase ? 'invoice_details' : (wantsStatusOnly ? 'status_only' : 'invoice_details'),
-      invoices: [extractedInvoices[0]],
-      page: 1,
-    };
-  }
-
-  if (extractedInvoices.length === 0 && (hasFullDetailsPhrase || wantsDetailsOrCard || wantsStatusOnly || /^(this\s+invoice|it|same|yes|full\s+details?|show\s+details?|details?|status)$/i.test(lower))) {
-    const resolvedLast = String(lastInvoice || '').trim();
-    return {
-      intent: hasFullDetailsPhrase ? 'invoice_details' : (wantsStatusOnly ? 'status_only' : 'invoice_details'),
-      invoices: resolvedLast ? [resolvedLast] : ['LAST_INVOICE'],
-      page: 1,
-    };
-  }
-
-  // 7. Try LLM Classifier if API key is configured and message might be a natural-language variant of one of the 7 intents
-  const cfg = getLlmEnvConfig();
-  if (
-    cfg.apiKey &&
-    !isCredentialOrServerSettingQuestion(q) &&
-    !isWriteOrRawSqlAttempt(q) &&
-    !isOffTopicQuestion(q) &&
-    (refersToLastInvoice || extractedInvoices.length > 0)
-  ) {
-    let timer = null;
-    try {
-      const ai = new GoogleGenAI({
-        apiKey: cfg.apiKey,
-        httpOptions: { headers: { 'User-Agent': 'aistudio-build' } },
-      });
-      const historyLines = Array.isArray(history)
-        ? history.slice(-6).map(h => `${h.role || 'user'}: ${String(h.text || h.content || '').slice(0, 160)}`).join('\n')
-        : '';
-      const promptPayload = JSON.stringify({
-        question: q,
-        lastInvoice: lastInvoice || '',
-        history: historyLines,
-        page: reqPage,
-      });
-      const timeoutPromise = new Promise((_, reject) => {
-        timer = setTimeout(() => reject(new Error('LLM_TIMEOUT_20S')), CHAT_MODEL_TIMEOUT_MS);
-      });
-      const res = await Promise.race([
-        ai.models.generateContent({
-          model: cfg.modelName || 'gemini-3.8-flash',
-          contents: promptPayload,
-          config: {
-            systemInstruction: CLASSIFIER_SYSTEM_PROMPT,
-            temperature: 0.1,
-          },
-        }),
-        timeoutPromise,
-      ]);
-      const rawJson = String((res && res.text) || '').trim().replace(/^```(?:json)?\s*|\s*```$/gi, '');
-      const parsed = JSON.parse(rawJson);
-      const validIntents = new Set([
-        'invoice_details',
-        'multi_invoice_details',
-        'recent_invoice',
-        'ledger_list',
-        'review_queue_list',
-        'status_only',
-        'next_page',
-      ]);
-      if (parsed && validIntents.has(parsed.intent)) {
-        let finalIntent = parsed.intent;
-        if (hasFullDetailsPhrase) finalIntent = 'invoice_details';
-        // Enforce strict rule: invoice numbers come ONLY from the current message or LAST_INVOICE
-        let safeInvoices = [];
-        if (extractedInvoices.length > 0) {
-          safeInvoices = extractedInvoices;
-          if (safeInvoices.length >= 2) finalIntent = 'multi_invoice_details';
-        } else if (lastInvoice) {
-          safeInvoices = [String(lastInvoice).trim()];
-        } else {
-          safeInvoices = ['LAST_INVOICE'];
-        }
-        return {
-          intent: finalIntent,
-          invoices: safeInvoices,
-          page: Math.max(1, parseInt(parsed.page, 10) || reqPage),
-        };
-      }
-    } catch (err) {
-      markApiKeyInvalidIfApplicable(err, cfg.apiKey);
-    } finally {
-      if (timer) clearTimeout(timer);
-    }
-  }
-
-  return null;
-}
-
-/**
- * Builds a single invoice full-details card object per Requirement 3, 4, 5, 7, 8, 11.
- * Takes all extracted fields from the ledger row (ap.Posted) when present, never from the PDF header.
- * Status labels: PASS / APPROVE, REJECT, REVIEW (never "Blocked").
- */
-function buildCard(no, ledgerRow = null, reviewRows = [], checkRow = null) {
-  const cleanNo = String(no || '').trim();
-  const alerts = Array.isArray(reviewRows) ? reviewRows : (reviewRows ? [reviewRows] : []);
-
-  if (!ledgerRow && alerts.length === 0 && !checkRow) {
-    return {
-      invoiceNo: cleanNo,
-      notFound: true,
-      cardBadge: 'NOT FOUND',
-      verdict: 'NOT FOUND',
-      message: `Invoice ${cleanNo} not found in ledger or review queue.`,
-      text: `Invoice ${cleanNo} not found in ledger or review queue.`,
-    };
-  }
-
-  const vendors = loadMastersVendors();
-  const mappedLedger = ledgerRow ? mapLedgerRow(ledgerRow, vendors) : null;
-
-  let checkParsed = {};
-  if (checkRow && checkRow.resultJson) {
-    try {
-      checkParsed = typeof checkRow.resultJson === 'string'
-        ? JSON.parse(checkRow.resultJson || '{}')
-        : (checkRow.resultJson || {});
-    } catch (_e) {}
-  }
-  const checkFields = (checkParsed && checkParsed.fields) || {};
-
-  // Gather failed checks from Exception Review (ap.Alerts) and/or checkRow
-  const failedChecks = [];
-  const seenCheckKey = new Set();
-  const pushFailedCheck = (ruleIdOrName, tierVal, reasonVal) => {
-    const rName = getRuleName(ruleIdOrName || 'Check');
-    const cleanReason = sanitizeChatOutput(cleanRuleText(reasonVal || ''));
-    const normTier = String(tierVal || 'REJECT').toUpperCase() === 'HOLD' ? 'REVIEW' : 'REJECT';
-    const key = `${rName.toLowerCase()}:${cleanReason.toLowerCase()}`;
-    if (!seenCheckKey.has(key)) {
-      seenCheckKey.add(key);
-      failedChecks.push({
-        ruleName: rName,
-        tier: normTier,
-        reason: cleanReason || 'check details unavailable',
-      });
-    }
-  };
-
-  alerts.forEach(a => {
-    if (!a) return;
-    pushFailedCheck(a.ruleId || a.title, a.tier || 'REJECT', a.text || a.title || a.reason || '');
-  });
-
-  // If not in ledger (or if in review queue), also inspect checkRow activeResults for failed checks
-  if (!mappedLedger && checkRow) {
-    const activeRules = Array.isArray(checkParsed.activeResults)
-      ? checkParsed.activeResults
-      : (Array.isArray(checkParsed.results) ? checkParsed.results.filter(r => ['AP-02', 'AP-03', 'AP-09', 'AP-11'].includes(r.id)) : []);
-    activeRules.forEach(r => {
-      if (r && r.tier && r.tier !== 'PASS' && r.tier !== 'SKIPPED') {
-        pushFailedCheck(r.id || r.title, r.tier, r.text || r.title || '');
-      }
-    });
-    if (String(checkRow.status || '').toUpperCase() === 'INCOMPLETE' || checkParsed.isIncomplete) {
-      pushFailedCheck('Required fields check', 'REJECT', checkParsed.explanation || 'Missing required invoice amount, date, or supplier fields.');
-    }
-  }
-
-  const inLedger = Boolean(mappedLedger);
-  const inReviewQueue = alerts.length > 0 || (!inLedger && failedChecks.length > 0) || (!inLedger && checkRow && String(checkRow.status || '').toUpperCase() !== 'PASS');
-
-  // Determine Verdict (PASS / REJECT / REVIEW) and cardBadge (PASS / FAIL)
-  let verdict = 'PASS';
-  let statusLabel = 'APPROVE';
-  let cardBadge = 'PASS';
-
-  if (inLedger && alerts.length === 0 && !ledgerRow.blocked) {
-    verdict = 'PASS';
-    statusLabel = 'APPROVE';
-    cardBadge = 'PASS';
-  } else if (inReviewQueue || failedChecks.length > 0 || (ledgerRow && ledgerRow.blocked)) {
-    cardBadge = 'FAIL';
-    const hasReject =
-      failedChecks.some(c => c.tier === 'REJECT') ||
-      alerts.some(a => String(a.tier || '').toUpperCase() === 'REJECT') ||
-      (checkRow && ['REJECT', 'INCOMPLETE', 'NOT_AN_INVOICE', 'COULD_NOT_READ'].includes(String(checkRow.status || '').toUpperCase()));
-    verdict = hasReject ? 'REJECT' : 'REVIEW';
-    statusLabel = verdict;
-  }
-
-  // Requirement 3 & 8: All extracted fields taken from the ledger row (ap.Posted) when present; supplier always from the ledger row.
-  const invoiceNo = (mappedLedger && mappedLedger.invoiceNo) || (checkRow && checkRow.invoiceNo) || (alerts[0] && alerts[0].invoiceNo) || cleanNo;
-  const supplierName = (mappedLedger && mappedLedger.supplierName) || (checkRow && checkRow.supplierName) || (alerts[0] && alerts[0].supplierName) || checkFields.supplierName || '—';
-  const supplierGstin = (mappedLedger && mappedLedger.supplierGstin) || (checkRow && checkRow.supplierGstin) || checkFields.supplierGstin || '—';
-  const invoiceDate = (mappedLedger && mappedLedger.invoiceDate) || (checkRow && checkRow.invoiceDate) || checkFields.invoiceDate || '—';
-  const postingDate = (mappedLedger && mappedLedger.postingDate) || checkFields.postingDate || (checkRow && checkRow.createdAt ? String(checkRow.createdAt).slice(0, 10) : '—');
-  const fiscalYear = (mappedLedger && mappedLedger.fiscalYear) || checkFields.fiscalYear || (invoiceDate && invoiceDate !== '—' ? U.fiscalYear(invoiceDate) : '—');
-
-  const rawTotal = mappedLedger
-    ? mappedLedger.total
-    : ((checkRow && checkRow.total !== undefined && checkRow.total !== null) ? Number(checkRow.total) : (checkFields.total !== undefined ? Number(checkFields.total) : null));
-  const amountFormatted = rawTotal !== null && rawTotal !== undefined && !Number.isNaN(Number(rawTotal))
-    ? formatInr(Number(rawTotal))
-    : '—';
-
-  const source = mappedLedger
-    ? mappedLedger.source
-    : formatLedgerSourceLabel((checkRow && checkRow.source) || checkFields.source || (alerts.length > 0 ? 'Exception Review' : 'Chat'));
-
-  const description = (mappedLedger && mappedLedger.description)
-    ? mappedLedger.description
-    : (checkFields.description || '—');
-
-  // Requirement 3: Never say "no checks failed" if verdict is REJECT (or REVIEW/FAIL) or check list is not empty;
-  // if check data is missing on a failed invoice say "check details unavailable".
-  let failedChecksSummary = '';
-  if (verdict === 'PASS' && failedChecks.length === 0) {
-    failedChecksSummary = 'None (Passed all checks)';
-  } else if (failedChecks.length > 0) {
-    failedChecksSummary = failedChecks.map(c => `${c.ruleName} (${c.tier}): ${c.reason}`).join(' | ');
-  } else {
-    failedChecksSummary = 'check details unavailable';
-  }
-
-  let nextStep = 'Posted in ledger (APPROVE) — no further action required.';
-  if (verdict === 'REJECT') {
-    nextStep = 'Do not pay — review and confirm rejection in Exception Review.';
-  } else if (verdict === 'REVIEW') {
-    nextStep = 'Inspect flagged check in Exception Review and record controller decision.';
-  }
-
-  const textLines = [
-    `Invoice No: ${invoiceNo} (${cardBadge} · ${verdict})`,
-    `Supplier: ${supplierName}`,
-    `GSTIN: ${supplierGstin}`,
-    `Invoice date: ${invoiceDate}`,
-    `Posted on: ${postingDate}`,
-    `Fiscal Year: ${fiscalYear}`,
-    `Amount (INR): ${amountFormatted}`,
-    `Source: ${source}`,
-    `Description: ${description || '—'}`,
-    `Verdict: ${verdict}`,
-    `Failed checks: ${failedChecksSummary}`,
-    `Next step: ${nextStep}`,
-  ];
-
-  return {
-    invoiceNo,
-    notFound: false,
-    inLedger,
-    inReviewQueue,
-    cardBadge,      // 'PASS' or 'FAIL'
-    verdict,        // 'PASS' | 'REJECT' | 'REVIEW'
-    statusLabel,    // 'APPROVE' | 'REJECT' | 'REVIEW'
-    supplierName,
-    supplierGstin,
-    invoiceDate,
-    postingDate,
-    fiscalYear,
-    total: rawTotal !== null && rawTotal !== undefined && !Number.isNaN(Number(rawTotal)) ? Number(rawTotal) : null,
-    amountFormatted,
-    source,
-    description: description || '—',
-    failedChecks,
-    failedChecksSummary,
-    nextStep,
-    text: textLines.join('\n'),
-  };
-}
-
-async function fetchInvoiceCardByNo(invoiceNo) {
-  const cleanNo = String(invoiceNo || '').trim();
-  const ledgerRows = (await runParameterizedReadOnly(
-    `SELECT * FROM ap_Posted WHERE lower(trim(invoiceNo)) = lower(trim(?)) ORDER BY postedAt desc, invoiceDate desc LIMIT ?`,
-    [cleanNo, 5]
-  ) || []).map(r => normalizeRow(r, 'ap.Posted'));
-
-  const alertRows = (await runParameterizedReadOnly(
-    `SELECT * FROM ap_Alerts WHERE lower(trim(invoiceNo)) = lower(trim(?)) ORDER BY createdAt desc LIMIT ?`,
-    [cleanNo, 10]
-  ) || []).map(r => normalizeRow(r, 'ap.Alerts'));
-
-  const checkRows = (await runParameterizedReadOnly(
-    `SELECT * FROM ap_Checks WHERE lower(trim(invoiceNo)) = lower(trim(?)) ORDER BY createdAt desc LIMIT ?`,
-    [cleanNo, 5]
-  ) || []).map(r => normalizeRow(r, 'ap.Checks'));
-
-  return buildCard(cleanNo, ledgerRows[0] || null, alertRows, checkRows[0] || null);
-}
-
-/**
- * Handles the 7 structured intents (invoice_details, multi_invoice_details, recent_invoice,
- * ledger_list, review_queue_list, status_only, next_page) with PAGE = 50 and HANA queries.
- * Returns null if the question is a general/conversational query outside these 7 intents.
- */
-async function handleStructuredInvoiceChat({
-  question = '',
-  lastInvoice = '',
-  history = [],
-  page = 1,
-  source = '',
-  sessionKey = 'default',
-  checkId = null,
-} = {}) {
-  const PAGE = 50;
-  const sessionLast = getSessionLastCheck(sessionKey);
-  const effectiveLastInvoice = String(
-    lastInvoice || (sessionLast && sessionLast.invoiceNo && sessionLast.invoiceNo !== '—' ? sessionLast.invoiceNo : '')
-  ).trim();
-
-  const classification = await classifyStructuredChatIntent({
-    question,
-    lastInvoice: effectiveLastInvoice,
-    history,
-    page,
-    source,
-  });
-
-  if (!classification) return null;
-
-  const { intent, invoices } = classification;
-  const safePage = Math.max(1, parseInt(classification.page || page, 10) || 1);
-
-  // 1. invoice_details / multi_invoice_details / status_only
-  if (intent === 'invoice_details' || intent === 'multi_invoice_details' || intent === 'status_only') {
-    const resolvedNos = (invoices || [])
-      .map(inv => (inv === 'LAST_INVOICE' ? effectiveLastInvoice : String(inv || '').trim()))
-      .filter(Boolean);
-
-    if (resolvedNos.length === 0) {
-      return {
-        type: 'text',
-        intent,
-        lastInvoice: effectiveLastInvoice,
-        text: 'Please provide an invoice number (or upload an invoice first) so I can show its details.',
-        reply: 'Please provide an invoice number (or upload an invoice first) so I can show its details.',
-      };
-    }
-
-    const cards = [];
-    for (const no of resolvedNos) {
-      const card = await fetchInvoiceCardByNo(no);
-      cards.push(card);
-    }
-
-    const newLastInvoice = cards[cards.length - 1] && cards[cards.length - 1].invoiceNo
-      ? cards[cards.length - 1].invoiceNo
-      : effectiveLastInvoice;
-
-    if (newLastInvoice) {
-      const lastCard = cards[cards.length - 1];
-      if (lastCard && !lastCard.notFound) {
-        setSessionLastCheck(sessionKey, {
-          invoiceNo: lastCard.invoiceNo,
-          supplierName: lastCard.supplierName,
-          supplierGstin: lastCard.supplierGstin,
-          invoiceDate: lastCard.invoiceDate,
-          total: lastCard.total,
-          status: lastCard.verdict === 'PASS' ? 'PASS' : (lastCard.verdict === 'REVIEW' ? 'HOLD' : 'REJECT'),
-        });
-      }
-    }
-
-    const combinedText = cards.map(c => c.text || c.message).join('\n\n');
-    return {
-      type: 'cards',
-      intent,
-      statusOnly: intent === 'status_only',
-      cards,
-      lastInvoice: newLastInvoice,
-      text: combinedText,
-      reply: combinedText,
-    };
-  }
-
-  // 2. recent_invoice
-  if (intent === 'recent_invoice') {
-    const newestRows = (await runParameterizedReadOnly(
-      `SELECT * FROM ap_Posted ORDER BY postedAt desc, invoiceDate desc LIMIT ?`,
-      [1]
-    ) || []).map(r => normalizeRow(r, 'ap.Posted'));
-
-    if (!newestRows || newestRows.length === 0) {
-      const msg = 'No posted invoices found in the ledger.';
-      return {
-        type: 'text',
-        intent: 'recent_invoice',
-        lastInvoice: effectiveLastInvoice,
-        text: msg,
-        reply: msg,
-      };
-    }
-
-    const newest = newestRows[0];
-    const card = buildCard(newest.invoiceNo, newest, [], null);
-    const newLastInvoice = card.invoiceNo || effectiveLastInvoice;
-
-    setSessionLastCheck(sessionKey, {
-      invoiceNo: card.invoiceNo,
-      supplierName: card.supplierName,
-      supplierGstin: card.supplierGstin,
-      invoiceDate: card.invoiceDate,
-      total: card.total,
-      status: 'PASS',
-    });
-
-    return {
-      type: 'cards',
-      intent: 'recent_invoice',
-      cards: [card],
-      lastInvoice: newLastInvoice,
-      text: `Most recent invoice in Posted Ledger:\n${card.text}`,
-      reply: `Most recent invoice in Posted Ledger:\n${card.text}`,
-    };
-  }
-
-  // Determine whether next_page is for ledger or review_queue
-  const lastTableSource = sessionMemory.get(`${sessionKey}:lastTableSource`) || 'ledger';
-  const targetSource =
-    intent === 'review_queue_list'
-      ? 'review_queue'
-      : (intent === 'ledger_list' ? 'ledger' : (source || lastTableSource || 'ledger'));
-
-  // 3. ledger_list (or next_page for ledger)
-  if (intent === 'ledger_list' || (intent === 'next_page' && targetSource === 'ledger')) {
-    sessionMemory.set(`${sessionKey}:lastTableSource`, 'ledger');
-    const countRes = (await runParameterizedReadOnly(
-      `SELECT count(*) as count, sum(total) as grandTotal FROM ap_Posted`,
-      []
-    ) || []).map(r => normalizeRow(r, 'ap.Posted'));
-    const total = (countRes && countRes[0] && Number(countRes[0].count)) || 0;
-    const grandSum = (countRes && countRes[0] && Number(countRes[0].grandTotal || countRes[0].GRANDTOTAL)) || 0;
-
-    const offset = (safePage - 1) * PAGE;
-    const rawRows = (await runParameterizedReadOnly(
-      `SELECT * FROM ap_Posted ORDER BY postedAt desc, invoiceDate desc LIMIT ? OFFSET ?`,
-      [PAGE, offset]
-    ) || []).map(r => normalizeRow(r, 'ap.Posted'));
-
-    const vendors = loadMastersVendors();
-    const rows = rawRows.map(r => {
-      const m = mapLedgerRow(r, vendors);
-      return {
-        ...m,
-        amountFormatted: formatInr(m.total),
-        verdict: 'APPROVE',
-      };
-    });
-
-    const pageSum = rows.reduce((acc, r) => acc + (Number(r.total) || 0), 0);
-    const startRow = total === 0 || rows.length === 0 ? 0 : offset + 1;
-    const endRow = total === 0 || rows.length === 0 ? 0 : offset + rows.length;
-    const hasPrev = safePage > 1;
-    const hasNext = offset + rows.length < total;
-    const newLastInvoice = (rows[0] && rows[0].invoiceNo) || effectiveLastInvoice;
-
-    const textLines = [
-      `Posted Ledger — Showing ${startRow}-${endRow} of ${total} (Page ${safePage})`,
-      '| Invoice No | Supplier | GSTIN | Invoice date | Posted on | Amount (INR) | Fiscal Year | Source |',
-      '| --- | --- | --- | --- | --- | --- | --- | --- |',
-    ];
-    rows.forEach(r => {
-      textLines.push(
-        `| ${r.invoiceNo} | ${r.supplierName} | ${r.supplierGstin} | ${r.invoiceDate} | ${r.postingDate} | ${r.amountFormatted} | ${r.fiscalYear} | ${r.source} |`
-      );
-    });
-    textLines.push(`Showing ${startRow}-${endRow} of ${total} · Page Total: INR ${formatInr(pageSum)} · Grand Total: INR ${formatInr(grandSum)}`);
-
-    return {
-      type: 'table',
-      intent: 'ledger_list',
-      source: 'ledger',
-      title: 'Posted Ledger',
-      rows,
-      page: safePage,
-      pageSize: PAGE,
-      total,
-      startRow,
-      endRow,
-      pageTotal: formatInr(pageSum),
-      grandTotal: formatInr(grandSum),
-      hasPrev,
-      hasNext,
-      lastInvoice: newLastInvoice,
-      text: textLines.join('\n'),
-      reply: textLines.join('\n'),
-    };
-  }
-
-  // 4. review_queue_list (or next_page for review_queue)
-  if (intent === 'review_queue_list' || (intent === 'next_page' && targetSource === 'review_queue')) {
-    sessionMemory.set(`${sessionKey}:lastTableSource`, 'review_queue');
-    const countRes = (await runParameterizedReadOnly(
-      `SELECT count(*) as count FROM ap_Alerts WHERE decision = 'OPEN'`,
-      []
-    ) || []).map(r => normalizeRow(r, 'ap.Alerts'));
-    const total = (countRes && countRes[0] && Number(countRes[0].count)) || 0;
-
-    const offset = (safePage - 1) * PAGE;
-    const alertRows = (await runParameterizedReadOnly(
-      `SELECT * FROM ap_Alerts WHERE decision = 'OPEN' ORDER BY createdAt desc LIMIT ? OFFSET ?`,
-      [PAGE, offset]
-    ) || []).map(r => normalizeRow(r, 'ap.Alerts'));
-
-    const rows = [];
-    for (const a of alertRows) {
-      const invNo = a.invoiceNo || '—';
-      let checkRow = null;
-      if (a.check_ID) {
-        const cRows = (await runParameterizedReadOnly(
-          `SELECT * FROM ap_Checks WHERE ID = ? LIMIT ?`,
-          [a.check_ID, 1]
-        ) || []).map(r => normalizeRow(r, 'ap.Checks'));
-        checkRow = cRows[0] || null;
-      }
-      let ledgerRow = null;
-      if (invNo && invNo !== '—') {
-        const lRows = (await runParameterizedReadOnly(
-          `SELECT * FROM ap_Posted WHERE lower(trim(invoiceNo)) = lower(trim(?)) ORDER BY postedAt desc LIMIT ?`,
-          [invNo, 1]
-        ) || []).map(r => normalizeRow(r, 'ap.Posted'));
-        ledgerRow = lRows[0] || null;
-      }
-      const card = buildCard(invNo, ledgerRow, [a], checkRow);
-      rows.push({
-        alertId: a.ID,
-        invoiceNo: card.invoiceNo,
-        supplierName: card.supplierName,
-        supplierGstin: card.supplierGstin,
-        invoiceDate: card.invoiceDate,
-        postingDate: card.postingDate,
-        total: card.total || 0,
-        amountFormatted: card.amountFormatted,
-        fiscalYear: card.fiscalYear,
-        source: card.source,
-        description: card.description,
-        verdict: card.verdict === 'PASS' ? 'REVIEW' : card.verdict,
-        failedChecks: card.failedChecks,
-        failedChecksSummary: card.failedChecksSummary,
-      });
-    }
-
-    const pageSum = rows.reduce((acc, r) => acc + (Number(r.total) || 0), 0);
-    const startRow = total === 0 || rows.length === 0 ? 0 : offset + 1;
-    const endRow = total === 0 || rows.length === 0 ? 0 : offset + rows.length;
-    const hasPrev = safePage > 1;
-    const hasNext = offset + rows.length < total;
-    const newLastInvoice = (rows[0] && rows[0].invoiceNo && rows[0].invoiceNo !== '—') ? rows[0].invoiceNo : effectiveLastInvoice;
-
-    const textLines = [
-      `Exception Review — Showing ${startRow}-${endRow} of ${total} (Page ${safePage})`,
-      '| Invoice No | Supplier | GSTIN | Invoice date | Posted on | Amount (INR) | Fiscal Year | Verdict | Failed Checks |',
-      '| --- | --- | --- | --- | --- | --- | --- | --- | --- |',
-    ];
-    rows.forEach(r => {
-      textLines.push(
-        `| ${r.invoiceNo} | ${r.supplierName} | ${r.supplierGstin} | ${r.invoiceDate} | ${r.postingDate} | ${r.amountFormatted} | ${r.fiscalYear} | ${r.verdict} | ${r.failedChecksSummary} |`
-      );
-    });
-    textLines.push(`Showing ${startRow}-${endRow} of ${total} · Page Total: INR ${formatInr(pageSum)}`);
-
-    return {
-      type: 'table',
-      intent: 'review_queue_list',
-      source: 'review_queue',
-      title: 'Exception Review',
-      rows,
-      page: safePage,
-      pageSize: PAGE,
-      total,
-      startRow,
-      endRow,
-      pageTotal: formatInr(pageSum),
-      grandTotal: formatInr(pageSum),
-      hasPrev,
-      hasNext,
-      lastInvoice: newLastInvoice,
-      text: textLines.join('\n'),
-      reply: textLines.join('\n'),
-    };
-  }
-
-  return null;
-}
-

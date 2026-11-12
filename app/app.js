@@ -162,10 +162,6 @@ const state = {
     consistent: true,
     consistencyWarning: null,
   },
-  lastInvoice: '',
-  chatHistory: [],
-  chatTablePage: 1,
-  chatTableSource: 'ledger',
 };
 
 const $ = (id) => document.getElementById(id);
@@ -835,8 +831,7 @@ function switchPage(pageId) {
     pageId = 'activity';
   }
   document.querySelectorAll('.nav-item').forEach(btn => {
-    const tabId = btn.dataset.tab || btn.dataset.page;
-    btn.classList.toggle('active', tabId === pageId);
+    btn.classList.toggle('active', btn.dataset.page === pageId);
   });
   document.querySelectorAll('.page-section').forEach(sec => {
     sec.classList.toggle('active', sec.id === 'page-' + pageId);
@@ -859,11 +854,10 @@ function switchPage(pageId) {
 
 document.querySelectorAll('.nav-item').forEach(btn => {
   btn.addEventListener('click', () => {
-    const targetTab = btn.dataset.tab || btn.dataset.page;
     if (!state.welcomeDismissed) {
-      dismissWelcomeScreen({ targetPage: targetTab });
+      dismissWelcomeScreen({ targetPage: btn.dataset.page });
     } else {
-      switchPage(targetTab);
+      switchPage(btn.dataset.page);
     }
   });
 });
@@ -1041,14 +1035,14 @@ if ($('chatFileInput')) {
 // ============================================================================
 function toVerdictLabel(status, activeResults = []) {
   if (status === 'Failed to read' || status === 'COULD_NOT_READ' || status === 'INCOMPLETE' || status === 'NOT_AN_INVOICE') {
-    return 'REJECT';
+    return 'Blocked';
   }
   const hasReject = status === 'REJECT' || activeResults.some(r => r.tier === 'REJECT');
-  if (hasReject) return 'REJECT';
+  if (hasReject) return 'Blocked';
   const hasHold = status === 'HOLD' || activeResults.some(r => r.tier === 'HOLD');
-  if (hasHold) return 'REVIEW';
-  if (status && status !== 'PASS') return 'REJECT';
-  return 'APPROVE';
+  if (hasHold) return 'Needs review';
+  if (status && status !== 'PASS') return 'Blocked';
+  return 'Passed checks';
 }
 
 function renderAiChatResultMessage(res, checkedFileName) {
@@ -1059,9 +1053,6 @@ function renderAiChatResultMessage(res, checkedFileName) {
 
   const inv = res.invoice || res.fields || {};
   const hasInvoiceNo = Boolean(inv.invoiceNo && String(inv.invoiceNo).trim() && String(inv.invoiceNo).trim() !== '—');
-  if (hasInvoiceNo) {
-    state.lastInvoice = String(inv.invoiceNo).trim();
-  }
   const hasSupplierName = Boolean(inv.supplierName && String(inv.supplierName).trim() && String(inv.supplierName).trim() !== '—');
   const hasTotal = inv.total !== undefined && inv.total !== null && inv.total !== '' && !Number.isNaN(Number(inv.total));
   const hasNoInvoiceData = !hasInvoiceNo || !hasSupplierName || !hasTotal || res.ok === false || res.status === 'Failed to read' || res.status === 'INCOMPLETE';
@@ -1147,15 +1138,15 @@ function renderAiChatResultMessage(res, checkedFileName) {
   msgCard.appendChild(noteEl);
 
   const canPostRole = state.roles.includes('APClerk') || state.roles.includes('APController');
-  const isBlocked = verdict === 'REJECT' || verdict === 'Blocked' || res.status === 'REJECT' || hasNoInvoiceData || res.status === 'NOT_AN_INVOICE';
-  const isPass = !hasNoInvoiceData && !isBlocked && (verdict === 'APPROVE' || verdict === 'Passed checks' || res.status === 'PASS');
-  const isHoldOrReject = isBlocked || res.status === 'HOLD' || verdict === 'REVIEW' || verdict === 'Needs review';
+  const isBlocked = verdict === 'Blocked' || res.status === 'REJECT' || hasNoInvoiceData || res.status === 'NOT_AN_INVOICE';
+  const isPass = !hasNoInvoiceData && !isBlocked && (verdict === 'Passed checks' || res.status === 'PASS');
+  const isHoldOrReject = isBlocked || res.status === 'HOLD' || verdict === 'Needs review';
 
   const guidanceEl = el(
     'div',
     isPass
-      ? 'Verification complete: Passed checks. You can post this invoice to the Posted Ledger and view it in the Posted Ledger tab.'
-      : 'Verification complete: Flagged by rules. Check the Posted Ledger tab for passed invoices and check the Exception Review tab for held or rejected invoices.',
+      ? 'Verification complete: Passed checks. You can post this invoice to the Ledger and view it in the Ledger tab.'
+      : 'Verification complete: Flagged by rules. Check the Ledger tab for passed invoices and check the 3. Review queue tab for held or rejected invoices.',
     'chat-guidance-banner'
   );
   msgCard.appendChild(guidanceEl);
@@ -1368,19 +1359,19 @@ function parseMarkdownTableBlock(tableLines, contextTitle = '') {
   let bannerLabel = '';
   let bannerMeta = '';
 
-  if (/review\s*queue|exception\s*review|open\s*alert/i.test(ctxLower) || /rule\s*\/\s*issue/i.test(headerJoined)) {
+  if (/review\s*queue|open\s*alert/i.test(ctxLower) || /rule\s*\/\s*issue/i.test(headerJoined)) {
     variant = 'review';
-    bannerLabel = 'Exception Review · Open Alerts';
+    bannerLabel = '3. Review Queue · Open Alerts';
     bannerMeta = `${rows.length} alert${rows.length === 1 ? '' : 's'}`;
   } else if (/activity\s*log|audit/i.test(ctxLower) || /entry\s*#|timestamp/i.test(headerJoined)) {
     variant = 'activity';
-    bannerLabel = 'Audit Trail · Tamper-Evident Log';
+    bannerLabel = '5. Activity Log · Audit Trail';
     bannerMeta = `${rows.length} entr${rows.length === 1 ? 'y' : 'ies'}`;
-  } else if (/check\s*history|verification\s*history|total\s*invoices:/i.test(ctxLower) || /\bverdict\b/i.test(headerJoined)) {
+  } else if (/check\s*history|total\s*invoices:/i.test(ctxLower) || /\bverdict\b/i.test(headerJoined)) {
     variant = 'history';
-    bannerLabel = 'Verification History · Check Log';
+    bannerLabel = '4. Check History · Verification Log';
     bannerMeta = `${rows.length} check${rows.length === 1 ? '' : 's'}`;
-  } else if (/difference|తేడా|check\s*history/i.test(ctxLower) || /check\s*history/i.test(headerJoined)) {
+  } else if (/difference|తేడా|4\.\s*check\s*history/i.test(ctxLower) || /4\.\s*check\s*history/i.test(headerJoined)) {
     variant = 'compare';
     bannerLabel = 'Tab Comparison · System Guide';
     bannerMeta = 'Overview';
@@ -1623,282 +1614,7 @@ function appendMessageToChat(node) {
   scrollChatToBottom();
 }
 
-function renderStructuredInvoiceCards(container, payload) {
-  container.textContent = '';
-  container.classList.add('chat-structured-cards-reply');
-  const cards = Array.isArray(payload.cards) ? payload.cards : [];
-
-  if (payload.intent === 'recent_invoice' && cards.length === 1 && !cards[0].notFound) {
-    const intro = el('div', 'Most recent invoice in Posted Ledger:', 'chat-cards-intro');
-    container.appendChild(intro);
-  } else if (cards.length > 1) {
-    const passCount = cards.filter(c => !c.notFound && c.cardBadge === 'PASS').length;
-    const failCount = cards.filter(c => !c.notFound && c.cardBadge === 'FAIL').length;
-    const intro = el(
-      'div',
-      `Checked ${cards.length} invoices — ${passCount} PASS (in Posted Ledger), ${failCount} FAIL (in Exception Review):`,
-      'chat-cards-intro'
-    );
-    container.appendChild(intro);
-  }
-
-  const stack = el('div', null, 'chat-invoice-cards-stack');
-
-  cards.forEach(card => {
-    if (card.notFound) {
-      const notFoundBox = el('div', card.message || `Invoice ${card.invoiceNo} not found in ledger or review queue.`, 'chat-invoice-detail-card not-found-card');
-      stack.appendChild(notFoundBox);
-      return;
-    }
-
-    const isPass = card.cardBadge === 'PASS' || card.verdict === 'PASS';
-    const verdictText = card.verdict || (isPass ? 'PASS' : 'REJECT');
-    const stateLabel = isPass ? 'PASS' : 'FAIL';
-    const cardEl = el('div', null, `chat-invoice-detail-card ${isPass ? 'card-pass' : 'card-fail'}`);
-
-    // Card Header: Invoice No + PASS / FAIL + Verdict badge (PASS / REJECT / REVIEW)
-    const header = el('div', null, 'chat-invoice-card-header');
-    const titleLeft = el('div', null, 'chat-invoice-card-title');
-    titleLeft.append(
-      el('span', stateLabel, `badge ${isPass ? 'PASS' : (verdictText === 'REVIEW' ? 'HOLD' : 'REJECT')}`),
-      el('strong', `Invoice ${card.invoiceNo || '—'}`, 'chat-invoice-card-no'),
-      el('span', card.inLedger ? 'Posted Ledger' : 'Exception Review', 'chat-invoice-card-origin')
-    );
-    const verdictRight = el(
-      'span',
-      `Verdict: ${verdictText}`,
-      `badge ${verdictText === 'PASS' ? 'PASS' : (verdictText === 'REVIEW' ? 'HOLD' : 'REJECT')}`
-    );
-    header.append(titleLeft, verdictRight);
-    cardEl.appendChild(header);
-
-    // Extracted fields grid (taken from ledger row ap.Posted, never from PDF header; no Grand Total on single card)
-    const grid = el('div', null, 'chat-invoice-card-grid');
-    const fields = [
-      ['Invoice No', formatCellValue(card.invoiceNo)],
-      ['Supplier', formatCellValue(card.supplierName)],
-      ['GSTIN', formatCellValue(card.supplierGstin)],
-      ['Invoice date', formatCellValue(card.invoiceDate)],
-      ['Posted on', formatCellValue(card.postingDate)],
-      ['Fiscal Year', formatCellValue(card.fiscalYear)],
-      ['Amount (INR)', card.amountFormatted && card.amountFormatted !== '—' ? `INR ${card.amountFormatted}` : (card.total !== null && card.total !== undefined ? `INR ${formatMoney(card.total)}` : '—')],
-      ['Source', formatCellValue(card.source)],
-      ['Verdict', verdictText],
-    ];
-
-    fields.forEach(([lbl, val]) => {
-      const item = el('div', null, 'chat-invoice-field-item');
-      item.append(
-        el('span', lbl, 'chat-invoice-field-label'),
-        el('span', String(val), 'chat-invoice-field-val')
-      );
-      grid.appendChild(item);
-    });
-    cardEl.appendChild(grid);
-
-    // Description (item lines)
-    const descRow = el('div', null, 'chat-invoice-full-row');
-    descRow.append(
-      el('strong', 'Description: ', 'chat-invoice-row-label'),
-      el('span', formatCellValue(card.description), 'chat-invoice-row-val')
-    );
-    cardEl.appendChild(descRow);
-
-    // Failed checks with reasons
-    const checksRow = el('div', null, 'chat-invoice-full-row');
-    checksRow.appendChild(el('strong', 'Failed checks: ', 'chat-invoice-row-label'));
-    const failedList = Array.isArray(card.failedChecks) ? card.failedChecks : [];
-    if (isPass && failedList.length === 0) {
-      checksRow.appendChild(el('span', 'None — passed all rule checks.', 'chat-invoice-row-val'));
-    } else if (failedList.length > 0) {
-      const ul = el('div', null, 'chat-invoice-failed-list');
-      failedList.forEach(fc => {
-        const line = el('div', null, 'chat-invoice-failed-item');
-        const badgeTier = fc.tier === 'REVIEW' ? 'HOLD' : 'REJECT';
-        line.append(
-          el('span', fc.tier || 'REJECT', `badge ${badgeTier}`),
-          el('strong', `${fc.ruleName || 'Check'}: `, 'chat-failed-rule-name'),
-          el('span', fc.reason || 'check details unavailable', 'chat-failed-rule-reason')
-        );
-        ul.appendChild(line);
-      });
-      checksRow.appendChild(ul);
-    } else {
-      // Never say "no checks failed" if verdict is REJECT/REVIEW or check list is not empty
-      checksRow.appendChild(el('span', 'check details unavailable', 'chat-invoice-row-val'));
-    }
-    cardEl.appendChild(checksRow);
-
-    // Next step
-    const nextRow = el('div', null, 'chat-invoice-full-row chat-invoice-next-step');
-    nextRow.append(
-      el('strong', 'Next step: ', 'chat-invoice-row-label'),
-      el('span', card.nextStep || (isPass ? 'Posted in ledger — no further action required.' : 'Review in Exception Review.'), 'chat-invoice-row-val')
-    );
-    cardEl.appendChild(nextRow);
-
-    stack.appendChild(cardEl);
-  });
-
-  container.appendChild(stack);
-}
-
-function renderStructuredChatTable(container, payload) {
-  container.textContent = '';
-  container.classList.add('chat-structured-table-reply');
-
-  const isReview = payload.source === 'review_queue';
-  const rows = Array.isArray(payload.rows) ? payload.rows : [];
-  const total = Number(payload.total) || 0;
-  const page = Number(payload.page) || 1;
-  const startRow = Number(payload.startRow) || (rows.length ? (page - 1) * 50 + 1 : 0);
-  const endRow = Number(payload.endRow) || (rows.length ? startRow + rows.length - 1 : 0);
-
-  const wrap = el('div', null, `chat-table-wrap ${isReview ? 'chat-variant-tab chat-variant-review' : 'chat-variant-ledger'}`);
-
-  // Header bar with Title + Full-Dataset Download CSV & Excel buttons
-  const topBar = el('div', null, 'chat-structured-table-topbar');
-  const titleLeft = el('div', null, 'chat-structured-table-title');
-  titleLeft.append(
-    el('strong', isReview ? 'Exception Review' : 'Posted Ledger'),
-    el('span', `Showing ${startRow}-${endRow} of ${total}`, 'chat-structured-table-sub')
-  );
-
-  const exportActions = el('div', null, 'chat-structured-export-btns');
-  const btnCsv = el('button', 'Download CSV', 'btn-sm');
-  btnCsv.type = 'button';
-  btnCsv.addEventListener('click', () => {
-    triggerStreamingDownload(
-      isReview ? '/fraud/exportReviewQueueCsv' : '/fraud/exportLedgerCsv',
-      {},
-      isReview ? 'blus-invoice-agent-exception-review.csv' : 'blus-invoice-agent-ledger.csv'
-    );
-  });
-
-  const btnExcel = el('button', 'Download Excel', 'btn-sm primary');
-  btnExcel.type = 'button';
-  btnExcel.addEventListener('click', () => {
-    triggerStreamingDownload(
-      isReview ? '/fraud/exportReviewQueueExcel' : '/fraud/exportLedgerExcel',
-      {},
-      isReview ? 'blus-invoice-agent-exception-review.xlsx' : 'blus-invoice-agent-ledger.xlsx'
-    );
-  });
-
-  exportActions.append(btnCsv, btnExcel);
-  topBar.append(titleLeft, exportActions);
-  wrap.appendChild(topBar);
-
-  if (rows.length === 0) {
-    const emptyEl = el('div', isReview ? 'No held or rejected invoices in Exception Review.' : 'No invoices found in Posted Ledger.', 'chat-table-empty');
-    wrap.appendChild(emptyEl);
-    container.appendChild(wrap);
-    return;
-  }
-
-  const table = el('table', null, 'chat-grid-table');
-  const thead = document.createElement('thead');
-  const trHead = document.createElement('tr');
-
-  const headers = isReview
-    ? ['Invoice No', 'Supplier', 'GSTIN', 'Invoice date', 'Posted on', 'Amount (INR)', 'Fiscal Year', 'Source', 'Verdict', 'Failed Checks']
-    : ['Invoice No', 'Supplier', 'GSTIN', 'Invoice date', 'Posted on', 'Amount (INR)', 'Fiscal Year', 'Source'];
-
-  headers.forEach(h => {
-    const th = el('th', h);
-    if (h === 'Amount (INR)') th.className = 'chat-col-num';
-    else if (h === 'Invoice No') th.className = 'chat-col-code';
-    else if (h === 'Invoice date' || h === 'Posted on') th.className = 'chat-col-date';
-    trHead.appendChild(th);
-  });
-  thead.appendChild(trHead);
-  table.appendChild(thead);
-
-  const tbody = document.createElement('tbody');
-  rows.forEach(r => {
-    const tr = document.createElement('tr');
-    const amtStr = r.amountFormatted || formatMoney(r.total);
-
-    const tdInv = el('td', formatCellValue(r.invoiceNo), 'chat-col-code');
-    const tdSupp = el('td', formatCellValue(r.supplierName));
-    const tdGstin = el('td', formatCellValue(r.supplierGstin));
-    const tdInvDate = el('td', formatCellValue(r.invoiceDate), 'chat-col-date');
-    const tdPostDate = el('td', formatCellValue(r.postingDate), 'chat-col-date');
-    const tdAmt = el('td', amtStr, 'chat-col-num');
-    const tdFy = el('td', formatCellValue(r.fiscalYear));
-    const tdSrc = el('td', formatCellValue(r.source));
-
-    tr.append(tdInv, tdSupp, tdGstin, tdInvDate, tdPostDate, tdAmt, tdFy, tdSrc);
-
-    if (isReview) {
-      const tdVerdict = document.createElement('td');
-      const vLabel = String(r.verdict || 'REJECT').toUpperCase();
-      tdVerdict.appendChild(el('span', vLabel, `badge ${vLabel === 'REVIEW' ? 'HOLD' : 'REJECT'}`));
-      const tdReason = el('td', r.failedChecksSummary || 'check details unavailable');
-      tr.append(tdVerdict, tdReason);
-    }
-
-    tbody.appendChild(tr);
-  });
-  table.appendChild(tbody);
-
-  // List Table Footer: Page Total and Grand Total (Grand Total only on list tables)
-  const tfoot = document.createElement('tfoot');
-  const trPageFoot = document.createElement('tr');
-  trPageFoot.className = 'grand-total-row';
-  const tdPageLabel = el('td', `Showing ${startRow}-${endRow} of ${total} · Page Total`);
-  tdPageLabel.colSpan = 5;
-  const tdPageSum = el('td', `INR ${payload.pageTotal || '0.00'}`, 'chat-col-num');
-  const tdGrandRest = el('td', `Grand Total: INR ${payload.grandTotal || payload.pageTotal || '0.00'}`);
-  tdGrandRest.colSpan = headers.length - 6;
-  trPageFoot.append(tdPageLabel, tdPageSum, tdGrandRest);
-  tfoot.appendChild(trPageFoot);
-  table.appendChild(tfoot);
-
-  const scrollBox = el('div', null, 'chat-table-scroll');
-  scrollBox.appendChild(table);
-  wrap.appendChild(scrollBox);
-
-  // Pagination Bar: Showing X-Y of total + Previous / Next buttons
-  const pagBar = el('div', null, 'chat-table-pagination-bar');
-  const pagInfo = el('span', `Showing ${startRow}-${endRow} of ${total} (Page ${page})`, 'chat-table-pagination-info');
-  const pagControls = el('div', null, 'chat-table-pagination-controls');
-
-  if (payload.hasPrev || page > 1) {
-    const btnPrev = el('button', '← Previous', 'btn-page');
-    btnPrev.type = 'button';
-    btnPrev.addEventListener('click', () => {
-      const prevPage = Math.max(1, page - 1);
-      askQuestionInAiThread(
-        isReview ? `Show review queue page ${prevPage}` : `Show ledger data page ${prevPage}`,
-        '',
-        { page: prevPage, source: payload.source }
-      );
-    });
-    pagControls.appendChild(btnPrev);
-  }
-
-  if (payload.hasNext) {
-    const btnNext = el('button', 'Next →', 'btn-page primary');
-    btnNext.type = 'button';
-    btnNext.addEventListener('click', () => {
-      const nextPage = page + 1;
-      askQuestionInAiThread(
-        isReview ? `Show review queue page ${nextPage}` : `Show ledger data page ${nextPage}`,
-        '',
-        { page: nextPage, source: payload.source }
-      );
-    });
-    pagControls.appendChild(btnNext);
-  }
-
-  pagBar.append(pagInfo, pagControls);
-  wrap.appendChild(pagBar);
-
-  container.appendChild(wrap);
-}
-
-async function askQuestionInAiThread(questionText, explicitCheckId = '', opts = {}) {
+async function askQuestionInAiThread(questionText, explicitCheckId = '') {
   const q = String(questionText || '').trim();
   if (!q) return;
 
@@ -1910,70 +1626,15 @@ async function askQuestionInAiThread(questionText, explicitCheckId = '', opts = 
   const replyBubble = createAiThinkingBox('Thinking...');
   appendMessageToChat(replyBubble);
 
-  const reqPage = Math.max(1, parseInt(opts.page, 10) || 1);
-  const reqSource = String(opts.source || '').trim();
-  const historySlice = Array.isArray(state.chatHistory) ? state.chatHistory.slice(-6) : [];
-
   try {
     const checkId = explicitCheckId || (state.currentResult && state.currentResult.checkId) || '';
-    const reply = await api('askInvoice', {
-      checkId,
-      question: q,
-      lastInvoice: state.lastInvoice || '',
-      history: JSON.stringify(historySlice),
-      page: reqPage,
-      source: reqSource,
-    });
+    const reply = await api('askInvoice', { checkId, question: q });
     replyBubble.classList.remove('thinking-indicator', 'ai-thinking-box');
-
-    state.chatHistory.push({ role: 'user', text: q });
-
-    if (reply && typeof reply === 'object') {
-      if (reply.lastInvoice) {
-        state.lastInvoice = String(reply.lastInvoice).trim();
-      }
-      if (reply.poolError || /Database is starting, retry in a minute/i.test(reply.message || reply.text || '')) {
-        setBanner('chatComposerBanner', 'Database is starting, retry in a minute', 'warning');
-        replyBubble.textContent = 'Database is starting, retry in a minute';
-        state.chatHistory.push({ role: 'assistant', text: replyBubble.textContent });
-      } else if (reply.type === 'cards') {
-        renderStructuredInvoiceCards(replyBubble, reply);
-        state.chatHistory.push({ role: 'assistant', text: String(reply.text || `Displayed ${reply.cards ? reply.cards.length : 1} invoice card(s)`).slice(0, 300) });
-      } else if (reply.type === 'table') {
-        state.chatTablePage = reply.page || reqPage;
-        state.chatTableSource = reply.source || 'ledger';
-        renderStructuredChatTable(replyBubble, reply);
-        state.chatHistory.push({ role: 'assistant', text: `Displayed ${reply.title || 'table'} page ${reply.page || 1}` });
-      } else {
-        const textVal = String(reply.text || reply.reply || reply.message || JSON.stringify(reply));
-        renderFormattedAssistantReply(replyBubble, textVal);
-        state.chatHistory.push({ role: 'assistant', text: textVal.slice(0, 300) });
-      }
-    } else {
-      const replyStr = typeof reply === 'string' ? reply : JSON.stringify(reply);
-      if (/Database is starting, retry in a minute/i.test(replyStr)) {
-        setBanner('chatComposerBanner', 'Database is starting, retry in a minute', 'warning');
-      }
-      // Extract invoice number mentioned in assistant reply to keep state.lastInvoice updated
-      const invMatch = replyStr.match(/\b(?:Invoice(?:\s+No)?[:\s]+|invoice\s+)([A-Za-z0-9/_-]*\d[A-Za-z0-9/_-]*)\b/i);
-      if (invMatch && invMatch[1]) {
-        state.lastInvoice = invMatch[1].trim();
-      }
-      renderFormattedAssistantReply(replyBubble, replyStr);
-      state.chatHistory.push({ role: 'assistant', text: replyStr.slice(0, 300) });
-    }
-    if (state.chatHistory.length > 12) {
-      state.chatHistory = state.chatHistory.slice(-6);
-    }
+    const replyStr = typeof reply === 'string' ? reply : JSON.stringify(reply);
+    renderFormattedAssistantReply(replyBubble, replyStr);
   } catch (err) {
     replyBubble.classList.remove('thinking-indicator', 'ai-thinking-box');
-    const errMsg = err.message || 'The assistant is not configured.';
-    if (/Database is starting|acquireTimeoutMillis|pool/i.test(errMsg)) {
-      setBanner('chatComposerBanner', 'Database is starting, retry in a minute', 'warning');
-      replyBubble.textContent = 'Database is starting, retry in a minute';
-    } else {
-      replyBubble.textContent = errMsg;
-    }
+    replyBubble.textContent = err.message || 'The assistant is not configured.';
   }
   scrollChatToBottom();
 }
@@ -2180,7 +1841,7 @@ async function performAiChatCheck(userPromptText = '') {
         // 2. Clear Guidance Banner telling user where to check Passed vs Failed
         const guidanceBanner = el(
           'div',
-          `Verification completed across all ${totalChecked} invoice(s). Check the Posted Ledger tab for passed invoices (${passCnt} PASS) and check the Exception Review tab for held or rejected invoices (${failedCnt} Failed: ${holdCnt} HOLD, ${rejCnt} REJECT). Review the Passed and Failed cards below and choose whether to post them:`,
+          `Verification completed across all ${totalChecked} invoice(s). Check the Ledger tab for passed invoices (${passCnt} PASS) and check the 3. Review queue tab for held or rejected invoices (${failedCnt} Failed: ${holdCnt} HOLD, ${rejCnt} REJECT). Review the Passed and Failed cards below and choose whether to post them:`,
           'chat-guidance-banner'
         );
         summaryBubble.appendChild(guidanceBanner);
@@ -2367,8 +2028,8 @@ async function performAiChatCheck(userPromptText = '') {
               const data = await resp.json().catch(() => ({}));
               if (!resp.ok) throw new Error((data.error && data.error.message) || 'Failed to post to Review Queue');
               failStatusBanner.className = 'status-banner success';
-              failStatusBanner.textContent = `${data.message || `Posted ${failedRows.length} failed invoice(s) to Exception Review.`} Check the Exception Review tab to review them.`;
-              btnPostFailReview.textContent = `Posted ${failedRows.length} Failed to Exception Review ✓`;
+              failStatusBanner.textContent = `${data.message || `Posted ${failedRows.length} failed invoice(s) to the Review Queue.`} Check the 3. Review queue tab to review them.`;
+              btnPostFailReview.textContent = `Posted ${failedRows.length} Failed to Review Queue ✓`;
               loadTopSummary();
               if ($('page-alerts') && $('page-alerts').classList.contains('active')) {
                 loadAlertsQueue(1);

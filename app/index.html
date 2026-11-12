@@ -10,7 +10,7 @@
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
   <link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;500;600&family=Plus+Jakarta+Sans:wght@400;500;600;700;800&display=swap" rel="stylesheet">
-  <link rel="stylesheet" href="style.css?v=7">
+  <link rel="stylesheet" href="style.css?v=6">
 </head>
 <body>
   <!-- =========================================================
@@ -122,41 +122,41 @@
         </button>
       </div>
       <nav class="sidebar-nav" id="sidebarNav">
-        <button type="button" class="nav-item active" data-tab="upload" data-page="upload" id="nav-upload" title="Invoice Agent">
+        <button type="button" class="nav-item active" data-page="upload" id="nav-upload" title="1. Upload invoice">
           <span class="nav-icon" aria-hidden="true">
             <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><polyline points="14 2 14 8 20 8"/><line x1="12" y1="18" x2="12" y2="12"/><polyline points="9 15 12 12 15 15"/></svg>
           </span>
-          <span class="nav-label">Invoice Agent</span>
+          <span class="nav-label">1. Upload invoice</span>
         </button>
-        <button type="button" class="nav-item" data-tab="s4" data-page="s4" id="nav-s4" title="S/4HANA Sync">
+        <button type="button" class="nav-item" data-page="s4" id="nav-s4" title="2. S/4HANA extract">
           <span class="nav-icon" aria-hidden="true">
             <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><ellipse cx="12" cy="5" rx="9" ry="3"/><path d="M21 12c0 1.66-4 3-9 3s-9-1.34-9-3"/><path d="M3 5v14c0 1.66 4 3 9 3s9-1.34 9-3V5"/></svg>
           </span>
-          <span class="nav-label">S/4HANA Sync</span>
+          <span class="nav-label">2. S/4HANA extract</span>
         </button>
-        <button type="button" class="nav-item" data-tab="ledger" data-page="ledger" id="nav-ledger" title="Posted Ledger">
+        <button type="button" class="nav-item" data-page="ledger" id="nav-ledger" title="Ledger">
           <span class="nav-icon" aria-hidden="true">
             <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M4 19.5A2.5 2.5 0 0 1 6.5 17H20"/><path d="M6.5 2H20v20H6.5A2.5 2.5 0 0 1 4 19.5v-15A2.5 2.5 0 0 1 6.5 2z"/></svg>
           </span>
-          <span class="nav-label">Posted Ledger</span>
+          <span class="nav-label">Ledger</span>
         </button>
-        <button type="button" class="nav-item" data-tab="alerts" data-page="alerts" id="nav-alerts" title="Exception Review">
+        <button type="button" class="nav-item" data-page="alerts" id="nav-alerts" title="3. Review queue">
           <span class="nav-icon" aria-hidden="true">
             <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"/><line x1="12" y1="8" x2="12" y2="12"/><line x1="12" y1="16" x2="12.01" y2="16"/></svg>
           </span>
-          <span class="nav-label">Exception Review</span>
+          <span class="nav-label">3. Review queue</span>
         </button>
-        <button type="button" class="nav-item" data-tab="history" data-page="history" id="nav-history" title="Verification History">
+        <button type="button" class="nav-item" data-page="history" id="nav-history" title="4. Check history">
           <span class="nav-icon" aria-hidden="true">
             <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="10"/><polyline points="12 6 12 12 16 14"/></svg>
           </span>
-          <span class="nav-label">Verification History</span>
+          <span class="nav-label">4. Check history</span>
         </button>
-        <button type="button" class="nav-item" data-tab="activity" data-page="activity" id="nav-activity" title="Audit Trail">
+        <button type="button" class="nav-item" data-page="activity" id="nav-activity" title="5. Activity log">
           <span class="nav-icon" aria-hidden="true">
             <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="22 12 18 12 15 21 9 3 6 12 2 12"/></svg>
           </span>
-          <span class="nav-label">Audit Trail</span>
+          <span class="nav-label">5. Activity log</span>
         </button>
       </nav>
     </aside>
@@ -244,7 +244,7 @@
       <section id="page-s4" class="page-section" aria-labelledby="heading-s4">
         <div class="page-header page-header-row">
           <div>
-            <h2 id="heading-s4">S/4HANA Sync</h2>
+            <h2 id="heading-s4">S/4HANA extract</h2>
             <p>Check supplier invoices against the ledger and SAP.</p>
           </div>
           <span id="sapSourceBadge" class="source-chip" title="SAP sandbox (demo data)">Source: Uploaded file</span>
@@ -487,7 +487,7 @@
       <section id="page-ledger" class="page-section" aria-labelledby="heading-ledger">
         <div class="page-header page-header-row">
           <div>
-            <h2 id="heading-ledger">Posted Ledger</h2>
+            <h2 id="heading-ledger">Ledger</h2>
             <p>Invoices saved to the reference ledger.</p>
           </div>
           <span id="ledgerSourceBadge" class="source-chip">Source: Ledger (HANA ap.Posted)</span>
@@ -541,7 +541,7 @@
            ========================================================= -->
       <section id="page-alerts" class="page-section" aria-labelledby="heading-alerts">
         <div class="page-header">
-          <h2 id="heading-alerts">Exception Review</h2>
+          <h2 id="heading-alerts">Review queue</h2>
           <p>Invoices on hold or rejected, waiting for a decision.</p>
         </div>
 
@@ -611,7 +611,7 @@
            ========================================================= -->
       <section id="page-history" class="page-section" aria-labelledby="heading-history">
         <div class="page-header">
-          <h2 id="heading-history">Verification History</h2>
+          <h2 id="heading-history">Check history</h2>
           <p>Complete history of invoice checks and rule evaluations.</p>
         </div>
 
@@ -710,7 +710,7 @@
       <section id="page-activity" class="page-section" aria-labelledby="heading-activity">
         <div class="page-header page-header-row">
           <div>
-            <h2 id="heading-activity">Audit Trail</h2>
+            <h2 id="heading-activity">Activity log</h2>
             <p>Tamper-evident record of checks, imports and decisions.</p>
           </div>
           <div id="auditChainBadge" class="integrity-chip">Audit chain verified · 0 entries</div>
@@ -845,6 +845,6 @@
     <div id="failedReadsDrawerBody" class="drawer-body"></div>
   </aside>
 
-  <script src="app.js?v=6"></script>
+  <script src="app.js?v=5"></script>
 </body>
 </html>
