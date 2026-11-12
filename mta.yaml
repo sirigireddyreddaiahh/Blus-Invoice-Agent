@@ -56,8 +56,11 @@ modules:
     type: approuter.nodejs
     path: approuter
     parameters:
+      buildpack: nodejs_buildpack
       memory: 256M
       disk-quota: 512M
+    properties:
+      INCOMING_CONNECTION_TIMEOUT: 120000
     requires:
       - name: blus-invoice-agent-auth
       - name: srv-api
@@ -66,6 +69,7 @@ modules:
           name: srv-api
           url: ~{srv-url}
           forwardAuthToken: true
+          timeout: 120000
 
 resources:
   # ----------------- HANA HDI CONTAINER -----------------
