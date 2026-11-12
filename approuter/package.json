@@ -2,9 +2,6 @@
   "name": "blus-invoice-agent-approuter",
   "version": "1.0.0",
   "description": "Approuter for Blus Invoice Agent",
-  "engines": {
-    "node": ">=18.0.0"
-  },
   "scripts": {
     "start": "node node_modules/@sap/approuter/approuter.js"
   },

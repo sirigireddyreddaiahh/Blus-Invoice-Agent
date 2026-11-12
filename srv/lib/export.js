@@ -326,7 +326,7 @@ async function generateHistoryExcelBuffer(rows) {
   const workbook = new ExcelJS.Workbook();
   workbook.creator = 'Blus Invoice Agent';
   workbook.created = new Date();
-  const sheet = workbook.addWorksheet('Verification History');
+  const sheet = workbook.addWorksheet('Check History');
 
   const headerRow = sheet.addRow(HISTORY_EXPORT_HEADERS);
   headerRow.height = 24;

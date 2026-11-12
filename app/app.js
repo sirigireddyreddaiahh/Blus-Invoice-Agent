@@ -1185,13 +1185,13 @@ function renderAiChatResultMessage(res, checkedFileName) {
 
   if (!canPostRole) btnPost.classList.add('hidden');
 
-  const btnPostReview = el('button', 'Post to Exception Review', 'primary');
+  const btnPostReview = el('button', 'Post to Review Queue', 'primary');
   btnPostReview.type = 'button';
   if (!isHoldOrReject || isPass) {
     btnPostReview.classList.add('hidden');
   }
 
-  const btnOpenTarget = el('button', isPass ? 'Open Posted Ledger' : 'Open Exception Review', '');
+  const btnOpenTarget = el('button', isPass ? 'Open Ledger' : 'Open Review Queue', '');
   btnOpenTarget.type = 'button';
   btnOpenTarget.addEventListener('click', () => {
     if (isPass) {
@@ -1212,7 +1212,7 @@ function renderAiChatResultMessage(res, checkedFileName) {
   if (isAlreadyInLedger) {
     const dupLine = el(
       'div',
-      'This invoice is already saved in the ledger. No duplicate added. Would you like to post this failed check to Exception Review?',
+      'This invoice is already saved in the ledger. No duplicate added. Would you like to post this failed check to the Review Queue?',
       'chat-hold-reject-reason'
     );
     dupLine.style.fontSize = '12.5px';
@@ -1222,8 +1222,8 @@ function renderAiChatResultMessage(res, checkedFileName) {
   } else if (isHoldOrReject || !isPass) {
     const holdRejectMsg = hasNoInvoiceData
       ? 'This invoice has no data. Rejected invoices cannot be posted to the ledger.'
-      : cleanReasonDisplayText(res.explanation || TERM_MEANINGS[displayTerm] || 'Held or rejected invoices are routed to Exception Review.');
-    const reasonText = el('div', `${holdRejectMsg} Would you like to post this failed invoice to Exception Review?`, 'chat-hold-reject-reason');
+      : cleanReasonDisplayText(res.explanation || TERM_MEANINGS[displayTerm] || 'Held or rejected invoices are routed to the Review Queue.');
+    const reasonText = el('div', `${holdRejectMsg} Would you like to post this failed invoice to the Review Queue?`, 'chat-hold-reject-reason');
     reasonText.style.fontSize = '12.5px';
     reasonText.style.color = 'var(--text-muted)';
     reasonText.style.marginTop = '4px';
@@ -1235,7 +1235,7 @@ function renderAiChatResultMessage(res, checkedFileName) {
   btnPostReview.addEventListener('click', async () => {
     if (btnPostReview.disabled) return;
     actionStatusEl.className = 'status-banner info';
-    actionStatusEl.textContent = 'Posting failed invoice to Exception Review...';
+    actionStatusEl.textContent = 'Posting failed invoice to Review Queue...';
     btnPostReview.disabled = true;
     try {
       const triggered = activeRows.find(r => r.tier !== 'PASS' && r.tier !== 'SKIPPED') || activeRows[0] || {};
@@ -1256,15 +1256,15 @@ function renderAiChatResultMessage(res, checkedFileName) {
         }),
       });
       const data = await resp.json().catch(() => ({}));
-      if (!resp.ok) throw new Error((data.error && data.error.message) || 'Failed to post to Exception Review');
+      if (!resp.ok) throw new Error((data.error && data.error.message) || 'Failed to post to Review Queue');
       actionStatusEl.className = 'status-banner success';
-      actionStatusEl.textContent = data.message || 'Posted to Exception Review.';
-      btnPostReview.textContent = 'Posted to Exception Review ✓';
+      actionStatusEl.textContent = data.message || 'Posted to Review Queue.';
+      btnPostReview.textContent = 'Posted to Review Queue ✓';
       loadTopSummary();
     } catch (err) {
       btnPostReview.disabled = false;
       actionStatusEl.className = 'status-banner error';
-      actionStatusEl.textContent = err.message || 'Posting to Exception Review failed.';
+      actionStatusEl.textContent = err.message || 'Posting to Review Queue failed.';
     }
   });
 
@@ -2240,13 +2240,13 @@ async function performAiChatCheck(userPromptText = '') {
           const passFooter = el('div', null, 'chat-batch-card-footer');
           const passPrompt = el(
             'div',
-            `Would you like to post these ${passedRows.length} passed invoice(s) to the Posted Ledger?`,
+            `Would you like to post these ${passedRows.length} passed invoice(s) to the Ledger?`,
             'chat-batch-prompt'
           );
           const passActions = el('div', null, 'chat-batch-actions');
-          const btnPostPassLedger = el('button', `Post ${passedRows.length} Passed to Posted Ledger`, 'primary');
+          const btnPostPassLedger = el('button', `Post ${passedRows.length} Passed to Ledger`, 'primary');
           btnPostPassLedger.type = 'button';
-          const btnViewLedger = el('button', 'Open Posted Ledger', '');
+          const btnViewLedger = el('button', 'Open Ledger', '');
           btnViewLedger.type = 'button';
           const passStatusBanner = el('div', '', 'status-banner hidden');
 
@@ -2254,7 +2254,7 @@ async function performAiChatCheck(userPromptText = '') {
             if (btnPostPassLedger.disabled) return;
             btnPostPassLedger.disabled = true;
             passStatusBanner.className = 'status-banner info';
-            passStatusBanner.textContent = `Posting ${passedRows.length} passed invoice(s) to Posted Ledger...`;
+            passStatusBanner.textContent = `Posting ${passedRows.length} passed invoice(s) to Ledger...`;
             try {
               const resp = await fetch('/fraud/postBatchToLedger', {
                 method: 'POST',
@@ -2265,10 +2265,10 @@ async function performAiChatCheck(userPromptText = '') {
                 }),
               });
               const data = await resp.json().catch(() => ({}));
-              if (!resp.ok) throw new Error((data.error && data.error.message) || 'Failed to post passed invoices to Posted Ledger');
+              if (!resp.ok) throw new Error((data.error && data.error.message) || 'Failed to post passed invoices to Ledger');
               passStatusBanner.className = 'status-banner success';
-              passStatusBanner.textContent = `${data.message || `Posted ${passedRows.length} passed invoice(s) to the Posted Ledger.`} You can view them in the Posted Ledger tab.`;
-              btnPostPassLedger.textContent = `Posted ${passedRows.length} Passed to Posted Ledger ✓`;
+              passStatusBanner.textContent = `${data.message || `Posted ${passedRows.length} passed invoice(s) to the Ledger.`} You can view them in the Ledger tab.`;
+              btnPostPassLedger.textContent = `Posted ${passedRows.length} Passed to Ledger ✓`;
               loadTopSummary();
               if ($('page-ledger') && $('page-ledger').classList.contains('active')) {
                 loadLedgerView(1);
@@ -2276,7 +2276,7 @@ async function performAiChatCheck(userPromptText = '') {
             } catch (err) {
               btnPostPassLedger.disabled = false;
               passStatusBanner.className = 'status-banner error';
-              passStatusBanner.textContent = err.message || 'Failed to post passed invoices to Posted Ledger.';
+              passStatusBanner.textContent = err.message || 'Failed to post passed invoices to Ledger.';
             }
           });
 
@@ -2340,13 +2340,13 @@ async function performAiChatCheck(userPromptText = '') {
           const failFooter = el('div', null, 'chat-batch-card-footer');
           const failPrompt = el(
             'div',
-            `Would you like to post these ${failedRows.length} failed invoice(s) to Exception Review for review?`,
+            `Would you like to post these ${failedRows.length} failed invoice(s) to the Review Queue for review?`,
             'chat-batch-prompt'
           );
           const failActions = el('div', null, 'chat-batch-actions');
-          const btnPostFailReview = el('button', `Post ${failedRows.length} Failed to Exception Review`, 'primary');
+          const btnPostFailReview = el('button', `Post ${failedRows.length} Failed to Review Queue`, 'primary');
           btnPostFailReview.type = 'button';
-          const btnViewReviewQueue = el('button', 'Open Exception Review', '');
+          const btnViewReviewQueue = el('button', 'Open Review Queue', '');
           btnViewReviewQueue.type = 'button';
           const failStatusBanner = el('div', '', 'status-banner hidden');
 
@@ -2354,7 +2354,7 @@ async function performAiChatCheck(userPromptText = '') {
             if (btnPostFailReview.disabled) return;
             btnPostFailReview.disabled = true;
             failStatusBanner.className = 'status-banner info';
-            failStatusBanner.textContent = `Posting ${failedRows.length} failed invoice(s) to Exception Review...`;
+            failStatusBanner.textContent = `Posting ${failedRows.length} failed invoice(s) to Review Queue...`;
             try {
               const resp = await fetch('/fraud/postBatchToReviewQueue', {
                 method: 'POST',
@@ -2365,7 +2365,7 @@ async function performAiChatCheck(userPromptText = '') {
                 }),
               });
               const data = await resp.json().catch(() => ({}));
-              if (!resp.ok) throw new Error((data.error && data.error.message) || 'Failed to post to Exception Review');
+              if (!resp.ok) throw new Error((data.error && data.error.message) || 'Failed to post to Review Queue');
               failStatusBanner.className = 'status-banner success';
               failStatusBanner.textContent = `${data.message || `Posted ${failedRows.length} failed invoice(s) to Exception Review.`} Check the Exception Review tab to review them.`;
               btnPostFailReview.textContent = `Posted ${failedRows.length} Failed to Exception Review ✓`;
@@ -2376,7 +2376,7 @@ async function performAiChatCheck(userPromptText = '') {
             } catch (err) {
               btnPostFailReview.disabled = false;
               failStatusBanner.className = 'status-banner error';
-              failStatusBanner.textContent = err.message || 'Failed to post to Exception Review.';
+              failStatusBanner.textContent = err.message || 'Failed to post to Review Queue.';
             }
           });
 
@@ -2409,7 +2409,7 @@ async function performAiChatCheck(userPromptText = '') {
 
         const actionsRow = el('div', null, 'chat-result-actions');
         actionsRow.style.marginTop = '12px';
-        const btnOpenAll = el('button', 'Open all results in S/4HANA Sync', '');
+        const btnOpenAll = el('button', 'Open all results in S/4HANA extract', '');
         btnOpenAll.type = 'button';
         btnOpenAll.addEventListener('click', () => {
           switchPage('s4');
@@ -3133,7 +3133,7 @@ if ($('btnFetchSapNow')) {
 if ($('btnUseSampleS4')) {
   $('btnUseSampleS4').addEventListener('click', async () => {
     closeAllDropdowns();
-    setBanner('s4Banner', 'Loading sample S/4HANA Sync data...', 'info');
+    setBanner('s4Banner', 'Loading sample S/4HANA extract...', 'info');
     try {
       setS4SourceChip('uploaded');
       state.lastImportedS4FileKey = null;
@@ -3142,7 +3142,7 @@ if ($('btnUseSampleS4')) {
       state.currentJobId = null;
       if ($('resultCardS4')) $('resultCardS4').classList.add('hidden');
       renderS4Table();
-      setBanner('s4Banner', `Loaded ${state.s4List.length} invoices from sample S/4HANA Sync.`, 'success');
+      setBanner('s4Banner', `Loaded ${state.s4List.length} invoices from sample S/4HANA extract.`, 'success');
     } catch (err) {
       setBanner('s4Banner', err.message, 'error');
     }
@@ -3866,7 +3866,7 @@ function renderAlertsTable() {
   renderTableGrandTotal(tbody, {
     totalCols: colCount,
     amountColIndex: -1,
-    label: 'Grand Total (Exception Review)',
+    label: 'Grand Total (Review Queue)',
     trailingText: `${state.alertsList.length} ${state.alertsList.length === 1 ? 'alert' : 'alerts'}`,
   });
 }
@@ -4273,7 +4273,7 @@ function renderActivityTable() {
   renderTableGrandTotal(tbody, {
     totalCols: 5,
     amountColIndex: -1,
-    label: 'Grand Total (Audit Trail)',
+    label: 'Grand Total (Activity Log)',
     trailingText: `${state.activityList.length} ${state.activityList.length === 1 ? 'entry' : 'entries'}`,
   });
 }
@@ -4308,7 +4308,7 @@ if ($('btnExportActivityCsv')) {
       const timeVal = row.ts ? formatIST(row.ts) : '—';
       lines.push([timeVal, actionPlain, fileSource, resVal, byVal].map(escapeCsv).join(','));
     }
-    triggerDownload('\uFEFF' + lines.join('\r\n'), 'blus-invoice-agent-audit-trail.csv', 'text/csv;charset=utf-8');
+    triggerDownload('\uFEFF' + lines.join('\r\n'), 'blus-invoice-agent-activity-log.csv', 'text/csv;charset=utf-8');
   });
 }
 
@@ -4321,7 +4321,7 @@ async function downloadActivityExcel() {
     body: JSON.stringify({ action, view }),
   });
   if (!r.ok) {
-    throw new Error(`Audit Trail Excel download failed (${r.status})`);
+    throw new Error(`Activity Log Excel download failed (${r.status})`);
   }
   const xlsxArrayBuffer = await r.arrayBuffer();
   const xlsxBlob = new Blob([xlsxArrayBuffer], {

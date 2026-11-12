@@ -784,8 +784,8 @@ async function getSummaryQuery({ fromDate = '', toDate = '', forceMismatch = fal
     _simulateMismatch === 'true' ||
     _simulateMismatch === '1';
   const consistent = !isForcedMismatch;
-  const consistencyMessage = consistent ? '' : 'Count check failed: see Audit Trail.';
-  const consistencyWarning = consistent ? null : 'Count check failed: see Audit Trail.';
+  const consistencyMessage = consistent ? '' : 'Count check failed: see Activity log.';
+  const consistencyWarning = consistent ? null : 'Count check failed: see Activity log.';
 
   const summaryLine = `Uploaded: ${uploaded} · Saved to ledger: ${savedToLedger} · Passed: ${passed} · Held: ${held} · Rejected: ${rejected} · Failed to read: ${failedToRead}`;
 

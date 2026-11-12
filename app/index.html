@@ -53,7 +53,7 @@
           <span class="welcome-card-icon" aria-hidden="true">
             <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><polyline points="14 2 14 8 20 8"/><line x1="12" y1="18" x2="12" y2="12"/><polyline points="9 15 12 12 15 15"/></svg>
           </span>
-          <span class="welcome-card-title">Invoice Agent</span>
+          <span class="welcome-card-title">Upload invoice</span>
           <span class="welcome-card-desc">Upload a PDF, PNG, or JPG invoice for instant duplicate and split checks.</span>
         </button>
 
@@ -61,15 +61,15 @@
           <span class="welcome-card-icon" aria-hidden="true">
             <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><rect x="8" y="8" width="12" height="12" rx="2"/><path d="M16 8V6a2 2 0 0 0-2-2H6a2 2 0 0 0-2 2v8a2 2 0 0 0 2 2h2"/></svg>
           </span>
-          <span class="welcome-card-title">S/4HANA Sync</span>
-          <span class="welcome-card-desc">Verify batch S/4HANA Sync files against the Posted Ledger.</span>
+          <span class="welcome-card-title">Check duplicates</span>
+          <span class="welcome-card-desc">Verify batch S/4HANA extracts against the reference invoice ledger.</span>
         </button>
 
         <button type="button" class="welcome-option-card card-stagger-3" id="welcomeCardActivity" data-welcome-action="activity" role="listitem">
           <span class="welcome-card-icon" aria-hidden="true">
             <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><polyline points="22 12 18 12 15 21 9 3 6 12 2 12"/></svg>
           </span>
-          <span class="welcome-card-title">Audit Trail</span>
+          <span class="welcome-card-title">Activity log</span>
           <span class="welcome-card-desc">See every check and decision</span>
         </button>
       </div>
@@ -184,7 +184,7 @@
               <span class="summary-sep">·</span>
               <button type="button" class="summary-metric-btn" data-summary-action="failed">Failed to read: <span id="uploadSummaryFailed">0</span></button>
             </div>
-            <div class="summary-consistency-warning hidden" id="uploadSummaryConsistencyWarn">Count check failed: see Audit Trail.</div>
+            <div class="summary-consistency-warning hidden" id="uploadSummaryConsistencyWarn">Count check failed: see Activity log.</div>
           </div>
 
           <!-- Chat Message Area: fills all space between top bar and composer; empty on static load -->
@@ -265,7 +265,7 @@
             <span class="summary-sep">·</span>
             <button type="button" class="summary-metric-btn" data-summary-action="failed">Failed to read: <span id="s4SummaryFailed">0</span></button>
           </div>
-          <div class="summary-consistency-warning hidden" id="s4SummaryConsistencyWarn">Count check failed: see Audit Trail.</div>
+          <div class="summary-consistency-warning hidden" id="s4SummaryConsistencyWarn">Count check failed: see Activity log.</div>
         </div>
 
         <!-- Four KPI cards in one row: Total, PASS, HOLD, REJECT -->
@@ -404,7 +404,7 @@
           </div>
 
           <div class="table-wrap">
-            <table id="s4Table" aria-label="S/4HANA Sync invoices">
+            <table id="s4Table" aria-label="S/4HANA extract invoices">
               <thead>
                 <tr>
                   <th>Invoice No</th>
@@ -565,7 +565,7 @@
           <div class="filter-bar">
             <label for="filterAlertsStatus" class="inline-select-label">
               Status
-              <select id="filterAlertsStatus" aria-label="Filter Exception Review by status">
+              <select id="filterAlertsStatus" aria-label="Filter review queue by status">
                 <option value="ALL" selected>All</option>
                 <option value="HOLD">HOLD</option>
                 <option value="REJECT">REJECT</option>
@@ -579,7 +579,7 @@
           <div id="alertsBanner" class="status-banner hidden"></div>
 
           <div class="table-wrap">
-            <table id="alertsTable" aria-label="Exception Review alerts">
+            <table id="alertsTable" aria-label="Review queue alerts">
               <thead>
                 <tr>
                   <th>Invoice No</th>
@@ -668,7 +668,7 @@
           </div>
 
           <div class="table-wrap">
-            <table id="historyTable" aria-label="Verification History table">
+            <table id="historyTable" aria-label="Check history table">
               <thead>
                 <tr>
                   <th>Time</th>
@@ -717,9 +717,9 @@
         </div>
 
         <div class="card">
-          <!-- Audit Trail Filter Row: Showing: Checks only / All events + Action filter -->
+          <!-- Activity Log Filter Row: Showing: Checks only / All events + Action filter -->
           <div class="filter-bar activity-filter-bar">
-            <div class="activity-view-toggle" role="group" aria-label="Audit Trail record scope">
+            <div class="activity-view-toggle" role="group" aria-label="Activity log record scope">
               <span class="activity-showing-label" id="activityShowingLabel">Showing: Checks only</span>
               <div class="segmented-control" id="activityViewSegmented">
                 <button type="button" class="seg-btn active" id="btnActivityViewChecks" data-view="CHECKS">Checks only</button>
@@ -729,7 +729,7 @@
 
             <label for="filterActivityAction" class="inline-select-label">
               Action
-              <select id="filterActivityAction" aria-label="Filter Audit Trail by action">
+              <select id="filterActivityAction" aria-label="Filter activity log by action">
                 <option value="ALL">All actions</option>
                 <option value="CHAT_CHECK">Check</option>
                 <option value="IMPORT">Import</option>
@@ -750,7 +750,7 @@
           </div>
 
           <div class="table-wrap">
-            <table id="activityTable" aria-label="Audit Trail table">
+            <table id="activityTable" aria-label="Activity log table">
               <thead>
                 <tr>
                   <th>Time</th>

@@ -282,7 +282,7 @@ function buildDetectionAndInvoiceSummary({ checkRecord, parsedResult = {}, activ
     lines.push('6. Ran the active rules AP-02, AP-03, AP-09, AP-11 — Evaluates the 4 active fraud and duplicate detection rules.');
     lines.push('7. Looked up similar past invoices — Cross-checks against posted invoices and vendor master records.');
     lines.push('8. Decided from the rules — Computes PASS (Passed checks), HOLD (Needs review), or REJECT (Blocked).');
-    lines.push('9. Saved to the check log — Records the tamper-evident check and audit trail for Verification History export.');
+    lines.push('9. Saved to the check log — Records the tamper-evident check and audit trail for Check History export.');
     lines.push('10. Showed the result — Displays the verdict, triggered rule reasons, and recommended next action.');
   }
 
@@ -524,7 +524,7 @@ function buildTenSteps({
 
   const nextAction = finalStatus === 'REJECT'
     ? 'Do not post. Escalate or reject supplier bill.'
-    : (finalStatus === 'HOLD' ? 'Route to APController in Exception Review or post with payment block.' : 'Ready to post to Posted Ledger.');
+    : (finalStatus === 'HOLD' ? 'Route to APController in Review queue or post with payment block.' : 'Ready to post to ledger.');
 
   return [
     {
@@ -580,7 +580,7 @@ function buildTenSteps({
       step: 9,
       title: 'Saved to the check log.',
       status: checkId ? 'done' : 'waiting',
-      detail: 'Saved. Export is available in Verification History.',
+      detail: 'Saved. Export is available in Check history.',
     },
     {
       step: 10,
@@ -2130,7 +2130,6 @@ class FraudService extends cds.ApplicationService {
         const scopedResult = await handleScopedChatQuestion(rawQ, {
           sessionKey: user,
           checkId: checkId || null,
-          lastInvoice,
         });
         return sanitizeChatOutput(redactServerCredentials(scopedResult.reply));
       } catch (e) {
